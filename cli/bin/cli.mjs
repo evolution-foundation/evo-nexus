@@ -199,10 +199,18 @@ async function main() {
   console.log(`  ${BOLD}Installing dependencies...${RESET}\n`);
 
   // Python deps
+  // Pass EVO_NEXUS_INSTALL=1 to signal setup.py that it is being run as
+  // a pip build backend — this makes it skip the interactive wizard and
+  // use setuptools.setup() for proper metadata (prevents EOFError when
+  // pip runs without a TTY).
+  const pipEnv = { ...process.env, EVO_NEXUS_INSTALL: "1" };
   if (check("uv --version")) {
     run("uv sync -q", { cwd: targetPath });
   } else {
-    run("pip3 install -q -r requirements.txt 2>/dev/null || pip3 install -q -e .", { cwd: targetPath });
+    run("pip3 install -q -r requirements.txt 2>/dev/null || pip3 install -q -e .", {
+      cwd: targetPath,
+      env: pipEnv,
+    });
   }
 
   // Frontend deps

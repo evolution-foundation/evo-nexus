@@ -23,16 +23,30 @@
       "requires_logout": true
     },
     "openai": {
-      "name": "OpenAI",
-      "description": "GPT-4.x via API Key ou GPT-5.x via Codex OAuth",
+      "name": "OpenAI (API Key)",
+      "description": "GPT-4.x / GPT-5.x via API Key da OpenAI",
       "cli_command": "openclaude",
       "env_vars": {
         "CLAUDE_CODE_USE_OPENAI": "1",
         "OPENAI_API_KEY": "",
-        "OPENAI_MODEL": "gpt-5.4"
+        "OPENAI_MODEL": ""
       },
       "default_model": "gpt-4.1",
       "requires_logout": true
+    },
+    "codex_auth": {
+      "name": "OpenAI Codex (OAuth)",
+      "description": "GPT-5.x via ChatGPT Codex — login OAuth, sem API key",
+      "cli_command": "openclaude",
+      "env_vars": {
+        "CLAUDE_CODE_USE_OPENAI": "1",
+        "OPENAI_MODEL": "codexplan"
+      },
+      "default_model": "codexplan",
+      "auth_type": "oauth",
+      "auth_file": "~/.codex/auth.json",
+      "requires_logout": true,
+      "setup_hint": "Use o botão Login para autenticar via OAuth do ChatGPT"
     },
     "gemini": {
       "name": "Google Gemini (em breve)",
