@@ -1,6 +1,6 @@
 ---
 name: fin-monthly-close-kickoff
-description: "Monthly close kickoff — initiates the month-end closing process with a checklist, simplified P&L, pending reconciliations, receivables, payables, and action items for the finance team. Trigger when user says 'monthly close', 'start closing', 'closing kickoff', or on the 1st of each month."
+description: "Monthly close kickoff — initiates the month-end closing process with a checklist, simplified P&L (Stripe + Omie + Evo Academy), pending reconciliations, receivables, payables, and action items for the finance team. Trigger when user says 'monthly close', 'start closing', 'closing kickoff', or on the 1st of each month."
 ---
 
 # Monthly Close Kickoff
@@ -33,14 +33,30 @@ Use `/int-omie`:
 - Invoices issued during the month
 - Invoices that should have been issued but were not
 
-### 2c. Outstanding receivables
+
+### 2c. Revenue (Evo Academy)
+Call `GET /api/v1/analytics/summary?period=30d` (env: `$EVO_ACADEMY_BASE_URL`, auth: `Bearer $EVO_ACADEMY_API_KEY`):
+- `revenue.total` → receita bruta do mês
+- `orders.completed / pending / refunded` → contagem por status
+- `subscriptions.active / cancelled` → base e churn do mês
+
+Fetch todos os orders do mês: `GET /api/v1/analytics/orders?status=completed&created_after=YYYY-MM-01&created_before=YYYY-MM-31&per_page=100`
+- Itere por cursor até `has_more=false`
+- Some `amount` → receita total do mês
+- Separe por produto: Evo Academy (R$950/mês), Evolution Builder (R$970/mês), Curso Agentic Engineer (R$2k/mês), Beta Access (R$370/mês), one-time (Blueprint Pack, Fast Start Pro), Evo Setup (R$5/mês)
+- Identifique renovações (`is_renewal=true`) vs novos clientes
+
+Fetch assinaturas ativas no fim do mês: `GET /api/v1/analytics/subscriptions?status=active&per_page=100`
+- MRR Evo Academy = soma de `plan.price` das ativas
+
+### 2d. Outstanding receivables
 - List all open receivables (from the month or earlier)
 - Highlight overdue items
 
-### 2d. Next month's payables
+### 2e. Next month's payables
 - List payables due in the current month (the upcoming month)
 
-### 2e. Previous month (for comparison)
+### 2f. Previous month (for comparison)
 - Read the previous month's financial report from `workspace/finance/reports/monthly/` if it exists
 - Or use data from the last monthly close
 
@@ -51,6 +67,7 @@ Structure the income statement with:
 | Account | Actual | Prior Month | Variance |
 |---------|--------|-------------|----------|
 | Gross Revenue (Stripe) | | | |
+| Gross Revenue (Evo Academy) | | | |
 | Gross Revenue (Omie/Services) | | | |
 | (-) Taxes | | | |
 | **Net Revenue** | | | |
@@ -68,14 +85,15 @@ Structure the income statement with:
 Generate a checklist with initial status for each item:
 
 1. **Reconcile Stripe** — verify all charges match received payments
-2. **Reconcile Omie** — verify entries and exits in the ERP are correct
-3. **Issue pending invoices** — list invoices that need to be issued (finance team)
-4. **Collect overdue accounts** — list clients with late payments
-5. **Categorize expenses** — verify all expenses are categorized
-6. **Review entries** — verify manual or atypical entries
-7. **Calculate taxes** — verify month's tax obligations
-8. **Generate final income statement** — after reconciliations, generate the definitive P&L
-9. **Approve close** — the responsible person reviews and approves
+2. **Reconcile Evo Academy** — verify orders and subscriptions match expected MRR
+3. **Reconcile Omie** — verify entries and exits in the ERP are correct
+4. **Issue pending invoices** — list invoices that need to be issued (finance team)
+5. **Collect overdue accounts** — list clients with late payments
+6. **Categorize expenses** — verify all expenses are categorized
+7. **Review entries** — verify manual or atypical entries
+8. **Calculate taxes** — verify month's tax obligations
+9. **Generate final income statement** — after reconciliations, generate the definitive P&L
+10. **Approve close** — the responsible person reviews and approves
 
 Possible statuses:
 - `done` (checkmark) — already completed automatically
@@ -161,7 +179,7 @@ Create the directory `workspace/finance/reports/monthly/` if it does not exist.
 **File:** workspace/finance/reports/monthly/[C] YYYY-MM-monthly-close.html
 **Month:** {reference month}
 **Revenue:** R$ X,XXX | **Expenses:** R$ X,XXX | **Result:** R$ X,XXX
-**Checklist:** X/9 completed
+**Checklist:** X/10 completed
 **Finance team pending items:** {N} items
 ```
 
