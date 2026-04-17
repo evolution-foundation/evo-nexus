@@ -1,0 +1,163 @@
+## ============================================================================
+## EvoNexus — Portainer / Docker Swarm deployment stack
+##
+## Before deploying, replace the placeholders below with your own values:
+##   * ghcr.io/OWNER/...            → the ghcr.io namespace where your CI
+##                                    publishes the images (e.g. your fork,
+##                                    or `evolutionapi` once the images are
+##                                    published officially).
+##   * evonexus.example.com         → your public hostname (two places)
+##   * traefik-public               → the external Docker network shared
+##                                    with your Traefik stack (some setups
+##                                    call it `web`, `proxy`, etc.)
+##
+## Images are published automatically by .github/workflows/docker-publish.yml
+## on every version tag and on pushes to `main`.
+##
+## Everything else (provider API keys, integration tokens, channel
+## credentials) is configured through the dashboard UI after the first
+## deploy. The stack intentionally ships with zero secrets.
+## ============================================================================
+version: "3.7"
+
+services:
+
+  evonexus_dashboard:
+    image: ghcr.io/OWNER/evo-nexus-dashboard:latest  ## replace OWNER
+
+    volumes:
+      - evonexus_config:/workspace/config
+      - evonexus_workspace:/workspace/workspace
+      - evonexus_dashboard_data:/workspace/dashboard/data
+      - evonexus_memory:/workspace/memory
+      - evonexus_adw_logs:/workspace/ADWs/logs
+      - evonexus_agent_memory:/workspace/.claude/agent-memory
+      - evonexus_codex_auth:/root/.codex
+
+    networks:
+      - traefik-public
+
+    environment:
+      ## Infrastructure-only env vars. Everything else (Anthropic, OpenAI,
+      ## Codex, Telegram, Stripe, Omie, Bling, Asaas, etc.) is configured
+      ## through the dashboard UI after the first boot. The entrypoint
+      ## generates EVONEXUS_SECRET_KEY automatically on first boot.
+      - TZ=America/Sao_Paulo
+      - EVONEXUS_PORT=8080
+      - TERMINAL_SERVER_PORT=32352
+      - FORWARDED_ALLOW_IPS=*
+
+    deploy:
+      placement:
+        constraints:
+          - node.role == manager
+      resources:
+        limits:
+          cpus: "1"
+          memory: 1024M
+      labels:
+        - traefik.enable=1
+        - traefik.docker.network=traefik-public
+
+        ## Primary router — Flask / SPA on port 8080
+        - traefik.http.routers.evonexus_dashboard.rule=Host(`evonexus.example.com`)
+        - traefik.http.routers.evonexus_dashboard.entrypoints=websecure
+        - traefik.http.routers.evonexus_dashboard.priority=1
+        - traefik.http.routers.evonexus_dashboard.tls.certresolver=letsencryptresolver
+        - traefik.http.routers.evonexus_dashboard.service=evonexus_dashboard
+        - traefik.http.services.evonexus_dashboard.loadbalancer.server.port=8080
+        - traefik.http.services.evonexus_dashboard.loadbalancer.passHostHeader=true
+
+        ## Terminal-server router — Node PTY (HTTP + WebSocket) on port 32352.
+        ## Higher priority (10) so /terminal/* wins over the primary router.
+        ## The stripprefix middleware removes /terminal before forwarding
+        ## because the terminal-server exposes /api/... at its root.
+        - traefik.http.routers.evonexus_terminal.rule=Host(`evonexus.example.com`) && PathPrefix(`/terminal`)
+        - traefik.http.routers.evonexus_terminal.entrypoints=websecure
+        - traefik.http.routers.evonexus_terminal.priority=10
+        - traefik.http.routers.evonexus_terminal.tls.certresolver=letsencryptresolver
+        - traefik.http.routers.evonexus_terminal.service=evonexus_terminal
+        - traefik.http.routers.evonexus_terminal.middlewares=evonexus_terminal_strip
+        - traefik.http.middlewares.evonexus_terminal_strip.stripprefix.prefixes=/terminal
+        - traefik.http.services.evonexus_terminal.loadbalancer.server.port=32352
+        - traefik.http.services.evonexus_terminal.loadbalancer.passHostHeader=true
+
+  evonexus_telegram:
+    image: ghcr.io/OWNER/evo-nexus-runtime:latest  ## replace OWNER
+    command:
+      - "claude"
+      - "--channels"
+      - "plugin:telegram@claude-plugins-official"
+      - "--dangerously-skip-permissions"
+
+    volumes:
+      - evonexus_config:/workspace/config
+      - evonexus_workspace:/workspace/workspace
+      - evonexus_memory:/workspace/memory
+      - evonexus_adw_logs:/workspace/ADWs/logs
+      - evonexus_agent_memory:/workspace/.claude/agent-memory
+      - evonexus_codex_auth:/root/.codex
+
+    networks:
+      - traefik-public
+
+    environment:
+      ## The entrypoint waits in a 30s polling loop until ANTHROPIC_API_KEY
+      ## appears in the .env file (i.e. until you configure the provider in
+      ## the dashboard). No crash-loop while the user is still onboarding.
+      - TZ=America/Sao_Paulo
+      - REQUIRE_ANTHROPIC_KEY=1
+
+    stdin_open: true
+    tty: true
+
+    deploy:
+      placement:
+        constraints:
+          - node.role == manager
+      resources:
+        limits:
+          cpus: "1"
+          memory: 1024M
+
+  evonexus_scheduler:
+    image: ghcr.io/OWNER/evo-nexus-runtime:latest  ## replace OWNER
+    command: ["uv", "run", "python", "scheduler.py"]
+
+    volumes:
+      - evonexus_config:/workspace/config
+      - evonexus_workspace:/workspace/workspace
+      - evonexus_memory:/workspace/memory
+      - evonexus_adw_logs:/workspace/ADWs/logs
+      - evonexus_agent_memory:/workspace/.claude/agent-memory
+      - evonexus_codex_auth:/root/.codex
+
+    networks:
+      - traefik-public
+
+    environment:
+      - TZ=America/Sao_Paulo
+      - REQUIRE_ANTHROPIC_KEY=1
+
+    deploy:
+      placement:
+        constraints:
+          - node.role == manager
+      resources:
+        limits:
+          cpus: "1"
+          memory: 1024M
+
+volumes:
+  evonexus_config:
+  evonexus_workspace:
+  evonexus_dashboard_data:
+  evonexus_memory:
+  evonexus_adw_logs:
+  evonexus_agent_memory:
+  evonexus_codex_auth:
+
+networks:
+  traefik-public:
+    external: true
+    name: traefik-public

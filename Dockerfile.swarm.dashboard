@@ -1,0 +1,120 @@
+# ============================================================================
+# Dockerfile.swarm.dashboard — EvoNexus Dashboard para Docker Swarm
+#
+# The upstream Dockerfile.dashboard is Python-only (Flask + React). That
+# is enough for local dev but the embedded terminal — a core feature —
+# needs the Node terminal-server running inside the container, plus
+# the `claude` and `openclaude` binaries that sessions spawn.
+#
+# Three stages:
+#   Stage 1 (frontend-build):   compiles React with Vite (node:22-alpine)
+#   Stage 2 (terminal-build):   compiles terminal-server's native deps
+#                               (node-pty needs python3 + g++ + make)
+#   Stage 3 (runtime):          python:3.12-slim + Node.js 22 + uv +
+#                               claude-code + openclaude@latest +
+#                               start-dashboard.sh (Flask + terminal-server)
+#
+# Runtime image stays lean: no build toolchain, just the compiled
+# node_modules from stage 2.
+# ============================================================================
+
+# ---- Stage 1: Frontend build ---------------------------------------------
+FROM node:22-alpine AS frontend-build
+WORKDIR /frontend
+COPY dashboard/frontend/package.json dashboard/frontend/package-lock.json* ./
+RUN npm install
+COPY dashboard/frontend/ ./
+RUN npm run build
+
+# ---- Stage 2: Terminal-server native deps --------------------------------
+# node-pty uses node-gyp to compile a C++ addon at install time. That
+# requires python3 + make + g++ which we don't want in the final image.
+FROM node:22-slim AS terminal-build
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3 make g++ \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /terminal
+COPY dashboard/terminal-server/package.json dashboard/terminal-server/package-lock.json* ./
+RUN npm install --omit=dev --no-audit --no-fund
+
+# ---- Stage 3: Python + Node runtime --------------------------------------
+FROM python:3.12-slim AS runtime
+
+# System deps: curl for healthcheck + Node.js 22 for terminal-server binary.
+# We use NodeSource so the final image is clean (no build toolchain).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        curl ca-certificates gnupg openssl \
+    && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# uv (Python package manager used by Evo Nexus)
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+ENV PATH="/root/.local/bin:${PATH}"
+
+# Both CLIs — the Providers page in the UI switches between them at runtime.
+# @gitlawb/openclaude@latest is pinned to the npm dist-tag which as of the
+# current fix is ≥0.3.0 (first version with the Codex shortcut endpoint).
+RUN npm install -g \
+        @anthropic-ai/claude-code \
+        @gitlawb/openclaude@latest
+
+# Timezone
+ENV TZ=America/Sao_Paulo
+RUN ln -snf /usr/share/zoneinfo/${TZ} /etc/localtime && echo "${TZ}" > /etc/timezone
+
+WORKDIR /workspace
+
+# Python deps (cached layer — only rebuilt when pyproject.toml or uv.lock change)
+COPY pyproject.toml uv.lock ./
+RUN uv venv .venv && uv sync --no-dev
+
+# Application code
+COPY dashboard/       dashboard/
+COPY social-auth/     social-auth/
+COPY scheduler.py     ./
+COPY .claude/         .claude/
+COPY memory/          memory/
+COPY ADWs/            ADWs/
+COPY config/          config/
+COPY Makefile         ./
+COPY .env.example     ./
+
+# Pre-compiled terminal-server node_modules from stage 2
+COPY --from=terminal-build /terminal/node_modules dashboard/terminal-server/node_modules
+
+# Built frontend from stage 1
+COPY --from=frontend-build /frontend/dist dashboard/frontend/dist
+
+# SQLite data dir (matches upstream Dockerfile.dashboard)
+RUN mkdir -p dashboard/data
+
+# First-boot defaults for the bootstrap entrypoint (writable config volume)
+RUN mkdir -p /workspace/_defaults/config \
+    && cp -a /workspace/config/. /workspace/_defaults/config/ 2>/dev/null || true \
+    && cp /workspace/.env.example /workspace/_defaults/.env.example 2>/dev/null || true
+
+# Bootstrap wrapper (config volume + source .env + wait-for-key)
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
+# Multi-process supervisor (Flask on :8080 + terminal-server on :32352)
+COPY start-dashboard.sh /usr/local/bin/start-dashboard.sh
+RUN chmod +x /usr/local/bin/start-dashboard.sh
+
+# OCI metadata
+LABEL org.opencontainers.image.title="evo-nexus-dashboard" \
+      org.opencontainers.image.description="EvoNexus Dashboard for Swarm (Flask + React + embedded CLI terminal)" \
+      org.opencontainers.image.source="https://github.com/EvolutionAPI/evo-nexus" \
+      org.opencontainers.image.licenses="MIT"
+
+ENV EVONEXUS_PORT=8080
+ENV TERMINAL_SERVER_PORT=32352
+EXPOSE 8080 32352
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD curl -fsS "http://localhost:${EVONEXUS_PORT}/api/version" || exit 1
+
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+CMD ["/usr/local/bin/start-dashboard.sh"]
