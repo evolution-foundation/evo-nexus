@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.24.0] - 2026-04-17
+
+### Added
+
+- **Docker Swarm / Portainer / Traefik deployment path** — new production overlay with `Dockerfile.swarm`, `Dockerfile.swarm.dashboard`, `evonexus.stack.yml`, `entrypoint.sh`, `start-dashboard.sh`, GitHub Actions workflow to publish images to ghcr.io, and full `README.swarm.md` guide. 100% additive: VPS bare-metal (`make setup`) and local Docker Compose paths are untouched. UI-first configuration — zero secrets baked in; everything configured via the dashboard after first boot. Services that need `ANTHROPIC_API_KEY` wait in a 30s polling loop instead of crash-looping (PR #13 by @NeritonDias).
+- **Dedicated `codex_auth` provider for Codex OAuth** — split from the API-key `openai` provider. Codex OAuth now requires OpenClaude ≥0.3.0 and uses model aliases (`codexplan` / `codexspark`) to route to the Codex backend. Setting a raw `gpt-5.x` model name bypasses OAuth and falls back to chat-completions — the new provider entry and env-var defaults prevent that silent failure. Bilingual (EN + PT-BR) provider guide at `docs/providers/codex-oauth.md` (PR #12 by @NeritonDias).
+- **Live model discovery for OpenAI provider** — dashboard Providers page now calls `GET /v1/models` with the user's API key, filters coding-relevant models, and renders them in a typed combobox with debounced validation. No more copy-pasting model names from docs (PR #12).
+- **OpenClaude 0.3.0+ enforced across install surfaces** — `setup.py`, `cli/bin/cli.mjs`, and the Docker image all install / upgrade `@gitlawb/openclaude@latest`. Service user (`evonexus`) also gets OpenClaude under `~/.local` during systemd setup (PR #12).
+
+### Fixed
+
+- **`pip install -e .` / `npx @evoapi/evo-nexus` no longer crash with `EOFError`** — `setup.py` now detects pip build-backend context via `EVO_NEXUS_INSTALL=1` + narrow argv markers (`egg_info`, `dist_info`, `bdist_wheel`, `--editable`) and exposes proper package metadata via `setuptools.setup()` with `find_packages()` instead of running the interactive wizard. Version is read from `pyproject.toml` (single source of truth) instead of being hardcoded (PR #11 by @ricardosantisinc, refined in PR #12).
+- **Scheduler no longer starts duplicate instances on rapid restarts** — atomic PID lock using `O_CREAT | O_EXCL` replaces the TOCTOU-prone check-then-create pattern. Prevents double-firing of routines (review-todoist, git-sync) and duplicate Telegram messages.
+- **`restart-all` in the dashboard actually restarts everything** — replaced unreliable `systemctl restart evo-nexus` (broken by `Type=oneshot + KillMode=none`) with direct `pkill` of the known processes followed by `start-services.sh`. Works without sudo.
+- **Heartbeats stopped failing with `unknown option '---\nname:...'`** — Claude CLI has no `-p` flag; the prompt (which starts with YAML frontmatter `---`) was being parsed as a CLI option. Now passed as a positional argument with `--output-format json`.
+
 ## [0.23.2] - 2026-04-16
 
 ### Fixed

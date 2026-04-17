@@ -132,7 +132,7 @@ EvoNexus runs on **Anthropic's Claude** by default — no extra config needed. F
 | **OpenRouter** (200+ models) | `openclaude` | `CLAUDE_CODE_USE_OPENAI`, `OPENAI_BASE_URL`, `OPENAI_API_KEY`, `OPENAI_MODEL` |
 | **OpenAI** | `openclaude` | `CLAUDE_CODE_USE_OPENAI`, `OPENAI_API_KEY`, `OPENAI_MODEL` |
 | **Google Gemini** | `openclaude` | `CLAUDE_CODE_USE_GEMINI`, `GEMINI_API_KEY`, `GEMINI_MODEL` |
-| **Codex Auth** (OpenAI via OAuth) | `openclaude` | `CLAUDE_CODE_USE_OPENAI`, `OPENAI_API_KEY` |
+| **Codex Auth** (OpenAI via OAuth) | `openclaude` | `CLAUDE_CODE_USE_OPENAI`, `OPENAI_MODEL=codexplan` (auth via `~/.codex/auth.json`, no API key) — see [docs/providers/codex-oauth.md](docs/providers/codex-oauth.md) |
 | **AWS Bedrock** | `openclaude` | `CLAUDE_CODE_USE_BEDROCK`, `AWS_REGION`, `AWS_BEARER_TOKEN_BEDROCK` |
 | **Google Vertex AI** | `openclaude` | `CLAUDE_CODE_USE_VERTEX`, `ANTHROPIC_VERTEX_PROJECT_ID`, `CLOUD_ML_REGION` |
 
