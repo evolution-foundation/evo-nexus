@@ -155,6 +155,8 @@ def _spawn_cli(cli_command: str, prompt: str, agent: str | None, provider_env: d
 _ALLOWED_ENV_VARS = frozenset({
     "CLAUDE_CODE_USE_OPENAI", "CLAUDE_CODE_USE_GEMINI", "CLAUDE_CODE_USE_BEDROCK",
     "CLAUDE_CODE_USE_VERTEX", "OPENAI_BASE_URL", "OPENAI_API_KEY", "OPENAI_MODEL",
+    # Codex OAuth support (OpenClaude 0.3+ auto-reads ~/.codex/auth.json)
+    "CODEX_AUTH_JSON_PATH", "CODEX_API_KEY",
     "GEMINI_API_KEY", "GEMINI_MODEL", "AWS_REGION", "AWS_BEARER_TOKEN_BEDROCK",
     "ANTHROPIC_VERTEX_PROJECT_ID", "CLOUD_ML_REGION",
 })
@@ -164,6 +166,8 @@ def _get_provider_config() -> tuple[str, dict]:
     """Read active provider CLI command and env vars from config/providers.json.
 
     Only allowlisted CLI commands and env var names are returned.
+    For OpenAI-based providers, injects a sensible default OPENAI_MODEL when
+    missing — 'codexplan' for Codex OAuth, 'gpt-4.1' for plain API key mode.
     """
     config_path = WORKSPACE / "config" / "providers.json"
     if not config_path.is_file():
@@ -179,6 +183,13 @@ def _get_provider_config() -> tuple[str, dict]:
             k: v for k, v in provider.get("env_vars", {}).items()
             if v and k in _ALLOWED_ENV_VARS
         }
+        # Codex OAuth: OpenClaude expects 'codexplan' / 'codexspark' aliases
+        # to route to the Codex backend. A raw gpt-5.x string bypasses Codex.
+        if not env_vars.get("OPENAI_MODEL"):
+            if active == "codex_auth":
+                env_vars["OPENAI_MODEL"] = "codexplan"
+            elif active == "openai":
+                env_vars["OPENAI_MODEL"] = "gpt-4.1"
         return cli, env_vars
     except (json.JSONDecodeError, OSError):
         return "claude", {}

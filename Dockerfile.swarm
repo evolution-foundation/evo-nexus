@@ -1,0 +1,84 @@
+# ============================================================================
+# Dockerfile.swarm — EvoNexus runtime para Docker Swarm / Portainer
+#
+# This is a Swarm-specific variant of the upstream Dockerfile. It matches
+# the upstream feature set (Python + Node + claude + openclaude + gh +
+# todoist) but adds a bootstrap entrypoint that:
+#   * Creates /workspace/config on first boot from baked-in defaults
+#   * Sources /workspace/config/.env so UI-edited values become env vars
+#   * Generates EVONEXUS_SECRET_KEY on first boot if absent
+#   * Supports Docker Secrets (_FILE pattern, /run/secrets/*)
+#   * Waits for ANTHROPIC_API_KEY if REQUIRE_ANTHROPIC_KEY=1 (no crash-loop)
+#
+# The upstream Dockerfile and docker-compose.yml are NOT modified; local
+# `docker compose up` and `make setup` on VPS continue to work as before.
+# ============================================================================
+FROM node:22-slim AS base
+
+# System deps — mirrors upstream Dockerfile line-for-line
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3 python3-pip python3-venv \
+        curl ca-certificates git jq screen openssl \
+        gnupg \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install uv (Python package manager)
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+ENV PATH="/root/.local/bin:${PATH}"
+
+# Install Claude Code CLI (default provider)
+RUN npm install -g @anthropic-ai/claude-code
+
+# Install OpenClaude CLI — pinned to @latest which is ≥0.3.0 (the first
+# release with the Codex shortcut endpoint fix that resolves the
+# api.responses.write scope issue). Upstream setup.py also installs @latest
+# so Swarm and VPS behavior stay aligned.
+RUN npm install -g @gitlawb/openclaude@latest
+
+# GitHub CLI
+RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+        | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+        | tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
+    && apt-get update && apt-get install -y --no-install-recommends gh \
+    && rm -rf /var/lib/apt/lists/*
+
+# Todoist CLI (used by int-todoist skill)
+RUN npm install -g todoist-ts-cli
+
+# Timezone (default America/Sao_Paulo, override via TZ env var)
+ENV TZ=America/Sao_Paulo
+RUN ln -snf /usr/share/zoneinfo/${TZ} /etc/localtime && echo "${TZ}" > /etc/timezone
+
+WORKDIR /workspace
+
+# Python deps (cache-friendly layer)
+COPY pyproject.toml uv.lock ./
+RUN uv venv .venv && uv sync
+
+# Application code — everything else
+COPY . .
+
+# Stash first-boot defaults somewhere the bootstrap entrypoint can find them.
+# /workspace/config is a writable volume in Swarm; on first boot entrypoint.sh
+# copies these seeds into it so the dashboard has something to edit.
+RUN mkdir -p /workspace/_defaults/config \
+    && if [ -d /workspace/config ]; then \
+          cp -a /workspace/config/. /workspace/_defaults/config/ 2>/dev/null || true; \
+       fi \
+    && if [ -f /workspace/.env.example ]; then \
+          cp /workspace/.env.example /workspace/_defaults/.env.example; \
+       fi
+
+# Bootstrap / secrets-to-env / wait-for-config wrapper
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
+# OCI metadata
+LABEL org.opencontainers.image.title="evo-nexus-runtime" \
+      org.opencontainers.image.description="EvoNexus runtime for Swarm (telegram/scheduler/ad-hoc routines)" \
+      org.opencontainers.image.source="https://github.com/EvolutionAPI/evo-nexus" \
+      org.opencontainers.image.licenses="MIT"
+
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+CMD ["bash"]

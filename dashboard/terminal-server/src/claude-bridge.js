@@ -18,6 +18,9 @@ class ClaudeBridge {
       'CLAUDE_CODE_USE_OPENAI', 'CLAUDE_CODE_USE_GEMINI',
       'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX',
       'OPENAI_BASE_URL', 'OPENAI_API_KEY', 'OPENAI_MODEL',
+      // Codex OAuth support (OpenClaude 0.3+ reads ~/.codex/auth.json
+      // automatically, but these allow overriding the path or token)
+      'CODEX_AUTH_JSON_PATH', 'CODEX_API_KEY',
       'GEMINI_API_KEY', 'GEMINI_MODEL',
       'AWS_REGION', 'AWS_BEARER_TOKEN_BEDROCK',
       'ANTHROPIC_VERTEX_PROJECT_ID', 'CLOUD_ML_REGION',
@@ -46,13 +49,29 @@ class ClaudeBridge {
         )
       );
 
-      // If Codex OAuth auth.json exists, remove OPENAI_API_KEY to let
-      // OpenClaude use the OAuth token instead of a potentially stale key
-      if (active === 'openai' || active === 'codex_auth') {
-        const codexAuthPath = path.join(process.env.HOME || '/', '.codex', 'auth.json');
-        if (fs.existsSync(codexAuthPath)) {
+      // Provider isolation — the active_provider in providers.json is the
+      // user's explicit choice between API-key mode ('openai') and OAuth
+      // mode ('codex_auth'). Respect it literally:
+      //
+      //   active === 'codex_auth' → OAuth mode: remove any stale
+      //       OPENAI_API_KEY from the provider env so OpenClaude falls
+      //       back to ~/.codex/auth.json (the OAuth token source).
+      //
+      //   active === 'openai'    → API-key mode: keep OPENAI_API_KEY.
+      //       Even if ~/.codex/auth.json happens to exist on disk (from
+      //       a past OAuth login), the user has chosen API-key mode now.
+      //       Previously this branch also deleted the key, which caused
+      //       the two cards to bleed into each other on toggle.
+      //
+      //   anything else          → untouched.
+      if (active === 'codex_auth') {
+        if ('OPENAI_API_KEY' in envVars) {
           delete envVars['OPENAI_API_KEY'];
-          console.log('[provider] Codex auth.json found — using OAuth token, removing OPENAI_API_KEY');
+          console.log('[provider] codex_auth active — stripping OPENAI_API_KEY, OpenClaude will use ~/.codex/auth.json');
+        }
+        const codexAuthPath = path.join(process.env.HOME || '/', '.codex', 'auth.json');
+        if (!fs.existsSync(codexAuthPath)) {
+          console.warn('[provider] codex_auth active but ~/.codex/auth.json is missing — run OAuth login in the Providers page');
         }
       }
 
@@ -211,12 +230,23 @@ class ClaudeBridge {
         if (process.env[key]) cleanEnv[key] = process.env[key];
       }
 
-      // Ensure OPENAI_MODEL is set when using OpenAI provider.
-      // Without it, OpenClaude can't resolve which model to use and
-      // falls back to API key auth instead of Codex OAuth auth.json.
-      if ((active === 'openai' || active === 'codex_auth') && !providerEnv['OPENAI_MODEL']) {
-        providerEnv['OPENAI_MODEL'] = 'gpt-5.4';
-        console.log('[provider] OPENAI_MODEL not set — defaulting to gpt-5.4');
+      // Ensure OPENAI_MODEL is set when using an OpenAI-based provider.
+      // OpenClaude's Codex mode requires 'codexplan' or 'codexspark' aliases
+      // to route to the Codex backend — a raw 'gpt-5.x' falls back to the
+      // regular chat completions API, which bypasses Codex OAuth entirely.
+      //
+      //   codexplan  → GPT-5.4 on Codex backend (high reasoning)
+      //   codexspark → GPT-5.3 Codex Spark (faster)
+      //
+      // For the plain 'openai' provider (API key mode), default to gpt-4.1.
+      if (!providerEnv['OPENAI_MODEL']) {
+        if (active === 'codex_auth') {
+          providerEnv['OPENAI_MODEL'] = 'codexplan';
+          console.log('[provider] OPENAI_MODEL not set — defaulting to codexplan (Codex OAuth)');
+        } else if (active === 'openai') {
+          providerEnv['OPENAI_MODEL'] = 'gpt-4.1';
+          console.log('[provider] OPENAI_MODEL not set — defaulting to gpt-4.1');
+        }
       }
 
       console.log(`[spawn] Args: ${JSON.stringify(args)}`);

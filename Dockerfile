@@ -10,8 +10,13 @@ RUN apt-get update && apt-get install -y \
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 ENV PATH="/root/.local/bin:$PATH"
 
-# Install Claude Code CLI
+# Install Claude Code CLI (default provider)
 RUN npm install -g @anthropic-ai/claude-code
+
+# Install OpenClaude CLI (required for non-Anthropic providers: OpenAI, Codex OAuth, OpenRouter, Gemini, etc.)
+# Pin to @latest to avoid the npm dist-tag lag; min supported is 0.3.0
+# (first version with the Codex shortcut endpoint fix, openclaude#566).
+RUN npm install -g @gitlawb/openclaude@latest
 
 # Install GitHub CLI
 RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \

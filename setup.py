@@ -3,6 +3,11 @@
 EvoNexus — Setup Wizard
 Generates workspace configuration, CLAUDE.md, .env, and folder structure.
 Usage: python setup.py  (or: make setup)
+
+This file also doubles as a setuptools build backend when invoked by pip
+(e.g. via `pip install -e .` or `npx @evoapi/evo-nexus`). In that case the
+interactive wizard is skipped and only package metadata is produced — see
+`_IS_BUILD_BACKEND` below.
 """
 
 import os
@@ -12,6 +17,48 @@ import sys
 from pathlib import Path
 
 WORKSPACE = Path(__file__).parent
+
+# ── Non-interactive / build-backend detection ──────────────────────────
+#
+# We use TWO signals (narrow and explicit) to avoid the false-positive
+# problem Sourcery flagged on upstream PR #11:
+#
+#   1. _IS_TTY    — true when stdin is an interactive terminal.
+#                   Fixes the EOFError from `input()` under pip/npx.
+#
+#   2. _IS_BUILD_BACKEND — true ONLY when setuptools/pip is the caller.
+#                   Detected via the explicit env var EVO_NEXUS_INSTALL=1
+#                   (set by cli/bin/cli.mjs) or narrow argv markers that
+#                   setuptools always injects (egg_info / dist_info /
+#                   bdist_wheel / --editable). We deliberately do NOT use
+#                   generic args like --version because a direct call
+#                   `python setup.py --version` should remain interactive-ish.
+#
+_IS_TTY = sys.stdin.isatty() if sys.stdin else False
+
+_BUILD_ARGV_MARKERS = {"egg_info", "dist_info", "bdist_wheel", "sdist", "--editable"}
+_IS_BUILD_BACKEND = (
+    os.environ.get("EVO_NEXUS_INSTALL") == "1"
+    or any(a in _BUILD_ARGV_MARKERS for a in sys.argv[1:])
+)
+
+
+def _read_version_from_pyproject() -> str:
+    """Single source of truth for the package version.
+
+    Reads [project].version from pyproject.toml. Avoids the drift risk
+    Sourcery flagged on PR #11 (hardcoded "0.23.2" string).
+    """
+    try:
+        import re
+        pyproject = (WORKSPACE / "pyproject.toml").read_text(encoding="utf-8")
+        match = re.search(r'^version\s*=\s*"([^"]+)"', pyproject, re.MULTILINE)
+        if match:
+            return match.group(1)
+    except (OSError, ImportError):
+        pass
+    return "0.0.0"  # fallback; never expected in practice
+
 
 # ANSI colors
 GREEN = "\033[92m"
@@ -31,22 +78,71 @@ def banner():
 """)
 
 
-def _check_tool(name, cmd, install_cmd=None, install_label=None):
-    """Check if a tool is installed. If not, offer to install it."""
+def _parse_semver(s: str) -> tuple[int, int, int] | None:
+    """Extract (major, minor, patch) from a version string. None on failure."""
+    import re
+    m = re.search(r'(\d+)\.(\d+)\.(\d+)', s or "")
+    if not m:
+        return None
+    try:
+        return (int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    except (ValueError, TypeError):
+        return None
+
+
+def _check_tool(name, cmd, install_cmd=None, install_label=None, min_version=None):
+    """Check if a tool is installed. If not, offer to install it.
+
+    If min_version=(major, minor, patch) is given and the installed tool is
+    older, treat it as missing and trigger the install path — this forces an
+    upgrade when the pinned install_cmd specifies a newer version.
+
+    In non-interactive contexts (pip build backend, npx pipe, CI) we skip
+    the input() prompt — this is what fixes EOFError from upstream PR #11.
+    When auto-confirm is appropriate (service user bootstrap), callers can
+    pass EVO_NEXUS_AUTO_INSTALL=1 to proceed without prompting.
+    """
+    needs_upgrade = False
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
         if result.returncode == 0:
             version = result.stdout.strip() or result.stderr.strip()
-            print(f"  {GREEN}✓{RESET} {name}: {DIM}{version}{RESET}")
-            return True
+            if min_version is not None:
+                parsed = _parse_semver(version)
+                if parsed is not None and parsed < min_version:
+                    required = ".".join(str(x) for x in min_version)
+                    print(f"  {YELLOW}!{RESET} {name}: {DIM}{version}{RESET} (upgrading to {required}+)")
+                    needs_upgrade = True
+                else:
+                    print(f"  {GREEN}✓{RESET} {name}: {DIM}{version}{RESET}")
+                    return True
+            else:
+                print(f"  {GREEN}✓{RESET} {name}: {DIM}{version}{RESET}")
+                return True
     except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
 
     if install_cmd:
-        print(f"  {YELLOW}!{RESET} {name} not found")
-        choice = input(f"    Install {name}? (Y/n): ").strip().lower()
+        if not needs_upgrade:
+            print(f"  {YELLOW}!{RESET} {name} not found")
+        # Non-interactive: skip the prompt entirely. Either auto-install
+        # (when EVO_NEXUS_AUTO_INSTALL=1) or report missing.
+        auto_install = os.environ.get("EVO_NEXUS_AUTO_INSTALL") == "1"
+        # For upgrades we always proceed silently — the user already has
+        # the tool and we just need a newer version.
+        if needs_upgrade:
+            choice = "y"
+        elif not _IS_TTY and not auto_install:
+            print(f"    {DIM}Skipping auto-install in non-interactive mode.{RESET}")
+            print(f"    {DIM}Run manually: {install_cmd}{RESET}")
+            return False
+        elif auto_install:
+            choice = "y"
+        else:
+            choice = input(f"    Install {name}? (Y/n): ").strip().lower()
         if choice in ("", "y", "yes", "s", "sim"):
-            print(f"  {DIM}Installing {name}...{RESET}", end="", flush=True)
+            verb_present, verb_base = ("Upgrading", "upgrade") if needs_upgrade else ("Installing", "install")
+            print(f"  {DIM}{verb_present} {name}...{RESET}", end="", flush=True)
             ret = os.system(f"{install_cmd} > /dev/null 2>&1")
             # Re-check after install
             try:
@@ -57,7 +153,7 @@ def _check_tool(name, cmd, install_cmd=None, install_label=None):
                     return True
             except (FileNotFoundError, subprocess.TimeoutExpired):
                 pass
-            print(f"\r  {RED}✗{RESET} Failed to install {name}                    ")
+            print(f"\r  {RED}✗{RESET} Failed to {verb_base} {name}                    ")
         else:
             print(f"  {RED}✗{RESET} {name} is required for EvoNexus")
     else:
@@ -151,8 +247,13 @@ def check_prerequisites():
         missing.append("claude")
 
     # OpenClaude (required for non-Anthropic providers)
+    # min_version=(0, 3, 0) forces an upgrade on systems that already have
+    # an older OpenClaude installed — v0.3.0 is the first release with the
+    # "route OpenAI Codex shortcuts to correct endpoint" fix (#566) which
+    # the codex_auth provider flow relies on.
     if not _check_tool("OpenClaude", ["openclaude", "--version"],
-                        install_cmd="npm install -g @gitlawb/openclaude"):
+                        install_cmd="npm install -g @gitlawb/openclaude@latest",
+                        min_version=(0, 3, 0)):
         missing.append("openclaude")
 
     print()
@@ -389,7 +490,8 @@ def choose_provider() -> str:
             "providers": {
                 "anthropic": {"name": "Anthropic (Claude nativo)", "cli_command": "claude", "env_vars": {}, "requires_logout": False},
                 "openrouter": {"name": "OpenRouter", "cli_command": "openclaude", "env_vars": {"CLAUDE_CODE_USE_OPENAI": "1", "OPENAI_BASE_URL": "", "OPENAI_API_KEY": "", "OPENAI_MODEL": ""}, "default_base_url": "https://openrouter.ai/api/v1", "default_model": "anthropic/claude-sonnet-4", "requires_logout": True},
-                "openai": {"name": "OpenAI", "description": "GPT-4.x via API Key ou GPT-5.x via Codex OAuth", "cli_command": "openclaude", "env_vars": {"CLAUDE_CODE_USE_OPENAI": "1", "OPENAI_API_KEY": "", "OPENAI_MODEL": ""}, "default_model": "gpt-4.1", "requires_logout": True},
+                "openai": {"name": "OpenAI (API Key)", "description": "GPT-4.x / GPT-5.x via API Key da OpenAI", "cli_command": "openclaude", "env_vars": {"CLAUDE_CODE_USE_OPENAI": "1", "OPENAI_API_KEY": "", "OPENAI_MODEL": ""}, "default_model": "gpt-4.1", "requires_logout": True},
+                "codex_auth": {"name": "OpenAI Codex (OAuth)", "description": "GPT-5.x via ChatGPT Codex — login OAuth, sem API key", "cli_command": "openclaude", "env_vars": {"CLAUDE_CODE_USE_OPENAI": "1", "OPENAI_MODEL": "codexplan"}, "default_model": "codexplan", "auth_type": "oauth", "auth_file": "~/.codex/auth.json", "requires_logout": True, "setup_hint": "Use o botão Login para autenticar via OAuth do ChatGPT"},
                 "gemini": {"name": "Google Gemini (em breve)", "cli_command": "openclaude", "env_vars": {"CLAUDE_CODE_USE_GEMINI": "1", "GEMINI_API_KEY": "", "GEMINI_MODEL": ""}, "default_model": "gemini-2.5-pro", "requires_logout": True, "coming_soon": True},
                 "bedrock": {"name": "AWS Bedrock (em breve)", "cli_command": "openclaude", "env_vars": {"CLAUDE_CODE_USE_BEDROCK": "1", "AWS_REGION": "", "AWS_BEARER_TOKEN_BEDROCK": ""}, "requires_logout": True, "coming_soon": True},
                 "vertex": {"name": "Google Vertex AI (em breve)", "cli_command": "openclaude", "env_vars": {"CLAUDE_CODE_USE_VERTEX": "1", "ANTHROPIC_VERTEX_PROJECT_ID": "", "CLOUD_ML_REGION": ""}, "default_region": "us-east5", "requires_logout": True, "coming_soon": True},
@@ -924,6 +1026,24 @@ def main():
             os.system(f"su - {service_user} -c 'npm install -g @anthropic-ai/claude-code --prefix ~/.local' >/dev/null 2>&1")
             print(f"  {GREEN}✓{RESET} Claude Code installed")
 
+        # OpenClaude is required for non-Anthropic providers (OpenAI, Codex OAuth,
+        # OpenRouter, Gemini, etc.). Without it, switching provider in the
+        # dashboard does not work for the service user.
+        # Check if installed AND on a new-enough version (0.3.0+); otherwise (re)install.
+        oc_version = subprocess.run(
+            ["su", "-", service_user, "-c", "export PATH=$HOME/.local/bin:$PATH && openclaude --version 2>/dev/null || true"],
+            capture_output=True, text=True, timeout=10,
+        ).stdout.strip()
+        oc_parsed = _parse_semver(oc_version)
+        oc_ok = oc_parsed is not None and oc_parsed >= (0, 3, 0)
+        if not oc_ok:
+            if oc_parsed is not None:
+                print(f"  {DIM}Upgrading OpenClaude for {service_user} (found {oc_version}, need 0.3.0+)...{RESET}")
+            else:
+                print(f"  {DIM}Installing OpenClaude for {service_user}...{RESET}")
+            os.system(f"su - {service_user} -c 'npm install -g @gitlawb/openclaude@latest --prefix ~/.local' >/dev/null 2>&1")
+            print(f"  {GREEN}✓{RESET} OpenClaude installed")
+
         # Sync deps as service user
         print(f"  {DIM}Syncing dependencies as {service_user}...{RESET}")
         os.system(f"su - {service_user} -c 'export PATH=$HOME/.local/bin:$PATH && cd {service_dir} && uv sync -q' 2>/dev/null")
@@ -1043,4 +1163,27 @@ nohup {install_dir}/.venv/bin/python app.py > {logs_dir}/dashboard.log 2>&1 &
 
 
 if __name__ == "__main__":
-    main()
+    # When invoked as a setuptools/pip build backend (via `pip install -e .`
+    # or the `npx @evoapi/evo-nexus` CLI, which sets EVO_NEXUS_INSTALL=1),
+    # we must NOT run the interactive wizard — there is no TTY, and input()
+    # would raise EOFError. Instead expose proper package metadata and let
+    # pip/setuptools do its job.
+    #
+    # This block improves on upstream PR #11 in two ways:
+    #   1. Version comes from pyproject.toml (single source of truth),
+    #      not a hardcoded string that drifts across releases.
+    #   2. find_packages() discovers real packages, so any wheel built
+    #      this way actually contains code (PR #11 shipped packages=[]).
+    if _IS_BUILD_BACKEND:
+        from setuptools import setup as _setup, find_packages
+        _setup(
+            name="evo-nexus",
+            version=_read_version_from_pyproject(),
+            description="Unofficial open source toolkit for Claude Code — AI-powered business operating system",
+            packages=find_packages(exclude=("tests", "tests.*", "workspace", "workspace.*")),
+            package_dir={"": "."},
+            include_package_data=True,
+            python_requires=">=3.10",
+        )
+    else:
+        main()

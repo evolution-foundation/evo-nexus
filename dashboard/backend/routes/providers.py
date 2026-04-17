@@ -43,6 +43,10 @@ ALLOWED_ENV_VARS = frozenset({
     "OPENAI_BASE_URL",
     "OPENAI_API_KEY",
     "OPENAI_MODEL",
+    # Codex OAuth support (OpenClaude 0.3+ reads ~/.codex/auth.json automatically,
+    # but these allow overriding the auth file path or providing a raw token)
+    "CODEX_AUTH_JSON_PATH",
+    "CODEX_API_KEY",
     "GEMINI_API_KEY",
     "GEMINI_MODEL",
     "AWS_REGION",
@@ -422,7 +426,10 @@ def openai_auth_complete():
     _save_codex_auth(resp.json())
 
     config = _read_config()
-    config["active_provider"] = "openai"
+    # Use dedicated codex_auth provider key when OAuth is used (falls back to
+    # openai for backward compatibility if codex_auth is not configured).
+    providers = config.get("providers", {})
+    config["active_provider"] = "codex_auth" if "codex_auth" in providers else "openai"
     _write_config(config)
 
     return jsonify({"status": "ok", "message": "Autenticado com sucesso!"})
@@ -490,7 +497,8 @@ def openai_device_poll():
     _save_codex_auth(token_resp.json())
 
     config = _read_config()
-    config["active_provider"] = "openai"
+    providers = config.get("providers", {})
+    config["active_provider"] = "codex_auth" if "codex_auth" in providers else "openai"
     _write_config(config)
 
     session.pop("openai_device_auth_id", None)
@@ -515,9 +523,159 @@ def openai_status():
             "authenticated": has_access,
             "method": "codex_oauth",
             "auth_mode": auth.get("auth_mode", "unknown"),
+            "auth_file": str(CODEX_AUTH_FILE),
         })
     except (json.JSONDecodeError, OSError):
         return jsonify({"authenticated": False, "method": "none"})
+
+
+@bp.route("/api/providers/codex_auth/status")
+@login_required
+def codex_auth_status():
+    """Alias for openai/status — reflects the dedicated codex_auth provider key."""
+    return openai_status()
+
+
+# ── Dynamic model discovery ──────────────────────────────
+#
+# These endpoints let the frontend populate the MODEL field in the Configure
+# modal with the actual list of models available to the user, instead of
+# forcing them to memorize the name.
+#
+# For the 'openai' provider we hit api.openai.com/v1/models with the user's
+# API key (POST body, never logged). For 'codex_auth' we return the static
+# list of Codex backend aliases that OpenClaude supports — these are fixed
+# by the upstream project and cannot be discovered via API.
+
+# Prefixes we consider "coding/agent relevant" — excludes embedding, tts,
+# whisper, dall-e, moderation, etc. which are not useful for Claude-Code-
+# style workflows.
+_OPENAI_MODEL_PREFIXES = (
+    "gpt-", "o1", "o3", "o4", "chatgpt-",
+)
+_OPENAI_MODEL_EXCLUDE = (
+    "embedding", "whisper", "tts", "dall-e", "audio", "moderation",
+    "realtime", "search", "image", "transcribe",
+)
+
+# Static ordering hint — lower index = higher in the dropdown
+_OPENAI_MODEL_PRIORITY = [
+    "gpt-4.1", "gpt-4o", "o4", "o3", "o1", "gpt-5", "gpt-4", "gpt-3.5", "chatgpt",
+]
+
+
+def _openai_model_rank(model_id: str) -> tuple[int, str]:
+    """Sort key — (priority bucket, lexical) so gpt-4.1 family floats to top."""
+    for i, prefix in enumerate(_OPENAI_MODEL_PRIORITY):
+        if model_id.startswith(prefix):
+            return (i, model_id)
+    return (len(_OPENAI_MODEL_PRIORITY), model_id)
+
+
+@bp.route("/api/providers/openai/models", methods=["POST"])
+@login_required
+def openai_models():
+    """Validate an OpenAI API key and return the list of usable models.
+
+    Body: {"api_key": "sk-..."}
+    Response:
+      {"valid": true, "models": [{"id": "...", "owned_by": "..."}]}
+      {"valid": false, "error": "..."}
+    """
+    import requests as http_req
+
+    data = request.get_json(silent=True) or {}
+    api_key = (data.get("api_key") or "").strip()
+
+    # Basic sanity check only: reject obviously empty/short keys before hitting
+    # the network. Delegate detailed format validation to OpenAI itself — any
+    # future format change (e.g. new key prefixes or separator chars) will be
+    # correctly rejected as 401 by the upstream /v1/models call, rather than
+    # by a stale regex in this file.
+    if not api_key or len(api_key) < 20:
+        return jsonify({"valid": False, "error": "API key inválida ou vazia"}), 400
+
+    try:
+        resp = http_req.get(
+            "https://api.openai.com/v1/models",
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=10,
+        )
+    except http_req.RequestException as e:
+        # Don't leak the key in error messages
+        return jsonify({"valid": False, "error": f"Falha de rede: {type(e).__name__}"}), 502
+
+    if resp.status_code == 401:
+        return jsonify({"valid": False, "error": "API key rejeitada pela OpenAI (401)"}), 200
+    if resp.status_code != 200:
+        return jsonify({"valid": False, "error": f"OpenAI respondeu HTTP {resp.status_code}"}), 200
+
+    try:
+        payload = resp.json()
+    except ValueError:
+        return jsonify({"valid": False, "error": "Resposta da OpenAI não é JSON"}), 502
+
+    raw_models = payload.get("data", []) or []
+
+    # Filter: only chat-completion-capable models relevant to coding agents
+    filtered = []
+    for m in raw_models:
+        mid = m.get("id", "")
+        if not mid:
+            continue
+        if not mid.startswith(_OPENAI_MODEL_PREFIXES):
+            continue
+        if any(excl in mid for excl in _OPENAI_MODEL_EXCLUDE):
+            continue
+        filtered.append({
+            "id": mid,
+            "owned_by": m.get("owned_by", ""),
+        })
+
+    filtered.sort(key=lambda m: _openai_model_rank(m["id"]))
+
+    return jsonify({"valid": True, "models": filtered, "count": len(filtered)})
+
+
+# Codex OAuth aliases — OpenClaude's Codex mode uses these literal strings
+# to route to the Codex backend. These are hardcoded upstream in OpenClaude
+# itself; there is no OpenAI endpoint to discover them dynamically.
+_CODEX_ALIASES = [
+    {
+        "id": "codexplan",
+        "description": "GPT-5.4 no backend Codex (reasoning alto, default)",
+        "description_en": "GPT-5.4 on Codex backend (high reasoning, default)",
+    },
+    {
+        "id": "codexspark",
+        "description": "GPT-5.3 Codex Spark (mais rápido, mais barato)",
+        "description_en": "GPT-5.3 Codex Spark (faster, cheaper)",
+    },
+]
+
+
+@bp.route("/api/providers/codex_auth/models", methods=["GET"])
+@login_required
+def codex_auth_models():
+    """Return the static list of Codex aliases OpenClaude supports.
+
+    Response: {"valid": bool, "models": [...], "auth_ok": bool}
+    """
+    auth_ok = False
+    if CODEX_AUTH_FILE.is_file():
+        try:
+            auth = json.loads(CODEX_AUTH_FILE.read_text(encoding="utf-8"))
+            tokens = auth.get("tokens", {})
+            auth_ok = bool(tokens.get("access_token") or auth.get("openai-codex", {}).get("access"))
+        except (json.JSONDecodeError, OSError):
+            auth_ok = False
+
+    return jsonify({
+        "valid": True,
+        "models": _CODEX_ALIASES,
+        "auth_ok": auth_ok,
+        "count": len(_CODEX_ALIASES),
+    })
 
 
 @bp.route("/api/providers/openai/logout", methods=["POST"])
