@@ -13,6 +13,18 @@ from pathlib import Path
 
 WORKSPACE = Path(__file__).parent
 
+# Detect if running in interactive terminal (vs pip/automated context)
+IS_TTY = sys.stdin.isatty()
+
+# Detect if running as pip/setuptools build backend (not interactive setup)
+# pip sets these env vars when invoking setup.py as a build backend
+_IS_BUILD_BACKEND = (
+    "SETUPTOOLS_USE_DISTUTILS" in os.environ
+    or "PIP_REQUIREMENTS_GEN" in os.environ
+    or os.environ.get("EVO_NEXUS_INSTALL") == "1"
+    or any(arg in sys.argv for arg in ["--with-specifier-add", "egg_info", "--version", "dist_info", "--editable"])
+)
+
 # ANSI colors
 GREEN = "\033[92m"
 CYAN = "\033[96m"
@@ -44,7 +56,13 @@ def _check_tool(name, cmd, install_cmd=None, install_label=None):
 
     if install_cmd:
         print(f"  {YELLOW}!{RESET} {name} not found")
-        choice = input(f"    Install {name}? (Y/n): ").strip().lower()
+        # Only ask for interactive input if stdin is a TTY
+        if IS_TTY:
+            choice = input(f"    Install {name}? (Y/n): ").strip().lower()
+        else:
+            # Non-interactive (pip/automated): skip install attempt, mark as missing
+            print(f"    {DIM}Skipping auto-install in non-interactive mode{RESET}")
+            choice = "n"
         if choice in ("", "y", "yes", "s", "sim"):
             print(f"  {DIM}Installing {name}...{RESET}", end="", flush=True)
             ret = os.system(f"{install_cmd} > /dev/null 2>&1")
@@ -755,6 +773,10 @@ WantedBy=multi-user.target
 
 
 def main():
+    # If running as pip build backend, just return (pip handles deps via pyproject.toml)
+    if _IS_BUILD_BACKEND:
+        return
+
     banner()
 
     # Prerequisites check
@@ -1043,4 +1065,16 @@ nohup {install_dir}/.venv/bin/python app.py > {logs_dir}/dashboard.log 2>&1 &
 
 
 if __name__ == "__main__":
-    main()
+    # When pip/setuptools runs setup.py as build backend, use setup() for metadata
+    # When called directly (python setup.py), run the interactive wizard
+    if _IS_BUILD_BACKEND:
+        from setuptools import setup as _setup
+        _setup(
+            name="evo-nexus",
+            version="0.23.2",
+            py_modules=[],
+            package_dir={"": "."},
+            packages=[],
+        )
+    else:
+        main()

@@ -16,6 +16,45 @@ from pathlib import Path
 WORKSPACE = Path(__file__).parent
 PYTHON = "uv run python" if os.system("command -v uv > /dev/null 2>&1") == 0 else "python3"
 ROUTINES_DIR = WORKSPACE / "ADWs" / "routines"
+PID_FILE = WORKSPACE / "ADWs" / "logs" / "scheduler.pid"
+
+
+def acquire_lock() -> bool:
+    """Ensure only one scheduler instance runs. Returns False if another is alive.
+
+    Uses O_CREAT|O_EXCL for atomic creation, then validates the PID inside.
+    Avoids the TOCTOU race where two processes both see a stale PID file and
+    both proceed to start.
+    """
+    import fcntl
+    try:
+        fd = os.open(str(PID_FILE), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        os.write(fd, str(os.getpid()).encode())
+        os.close(fd)
+        return True
+    except FileExistsError:
+        # File exists — check if the owner is still alive
+        try:
+            existing_pid = int(PID_FILE.read_text().strip())
+            os.kill(existing_pid, 0)
+            print(f"  Scheduler already running (PID {existing_pid}). Exiting.")
+            return False
+        except (ProcessLookupError, ValueError):
+            # Stale lock — remove and retry once
+            PID_FILE.unlink(missing_ok=True)
+            try:
+                fd = os.open(str(PID_FILE), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+                os.write(fd, str(os.getpid()).encode())
+                os.close(fd)
+                return True
+            except FileExistsError:
+                print("  Scheduler lock contention — another instance just started. Exiting.")
+                return False
+
+
+def release_lock():
+    """Remove PID file on clean shutdown."""
+    PID_FILE.unlink(missing_ok=True)
 
 
 def run_adw(name: str, script: str, args: str = ""):
@@ -115,6 +154,9 @@ def main():
     """Entry point — standalone scheduler."""
     import schedule
 
+    if not acquire_lock():
+        sys.exit(1)
+
     print("EvoNexus Scheduler")
     setup_schedule()
     total = len(schedule.get_jobs())
@@ -122,6 +164,7 @@ def main():
     print(f"  Press Ctrl+C to stop\n")
 
     def shutdown(sig, frame):
+        release_lock()
         print("\n  Scheduler stopped")
         sys.exit(0)
 

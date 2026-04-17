@@ -122,28 +122,38 @@ def run_routine(routine_id):
 
 @bp.route("/api/services/restart-all", methods=["POST"])
 def restart_all_services():
-    """Restart the EvoNexus systemd service (dashboard + scheduler + terminal-server).
-    Spawns the restart with a delay so the HTTP response can be sent first."""
+    """Restart all EvoNexus services (dashboard + scheduler + terminal-server).
+
+    Kills processes directly and re-runs start-services.sh, bypassing
+    'systemctl restart' which doesn't reliably kill children on Type=oneshot
+    services with KillMode=none.
+    """
     import shutil
-    if not shutil.which("systemctl"):
-        return jsonify({"error": "systemctl not available (not running as systemd service)"}), 400
+    import os
+    workspace = str(WORKSPACE)
+    start_script = os.path.join(workspace, "start-services.sh")
 
-    # Check if the service exists
-    result = subprocess.run(
-        ["systemctl", "is-enabled", "evo-nexus"],
-        capture_output=True, text=True
+    if not os.path.exists(start_script):
+        return jsonify({"error": "start-services.sh not found"}), 400
+
+    # Kill existing processes then re-run start-services.sh.
+    # sleep 2 gives Flask time to send this response before app.py dies.
+    cmd = (
+        "sleep 2 && "
+        "pkill -f 'terminal-server/bin/server.js' 2>/dev/null; "
+        "pkill -f 'python.*scheduler.py' 2>/dev/null; "
+        "pkill -f 'python.*app.py' 2>/dev/null; "
+        "sleep 1 && "
+        f"bash {start_script}"
     )
-    if result.returncode != 0:
-        return jsonify({"error": "evo-nexus service not found. Run: sudo bash install-service.sh"}), 400
-
-    # Spawn restart with delay so this response can be sent
     subprocess.Popen(
-        ["bash", "-c", "sleep 2 && systemctl restart evo-nexus"],
+        ["bash", "-c", cmd],
         start_new_session=True,
+        cwd=workspace,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
-    return jsonify({"status": "restarting", "message": "Service will restart in ~2 seconds"})
+    return jsonify({"status": "restarting", "message": "Services will restart in ~3 seconds"})
 
 
 TELEGRAM_LOG = f"{WORKSPACE_STR}/ADWs/logs/telegram.log"

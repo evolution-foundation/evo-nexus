@@ -239,7 +239,8 @@ def step7_invoke_claude(
         "--print",
         "--max-turns", str(max_turns),
         "--dangerously-skip-permissions",
-        "-p", prompt,
+        "--output-format", "json",
+        prompt,  # positional argument — Claude CLI does not have a -p flag
     ]
 
     start_time = time.time()
