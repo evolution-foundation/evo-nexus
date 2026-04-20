@@ -70,7 +70,7 @@ def create_space(connection_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
                      access_rules, content_type_boosts)
                 VALUES
                     (:id, :slug, :name, :description, :owner_id, :visibility,
-                     :access_rules::jsonb, :content_type_boosts::jsonb)
+                     CAST(:access_rules AS jsonb), CAST(:content_type_boosts AS jsonb))
                 """
             ),
             {
