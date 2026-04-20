@@ -187,6 +187,22 @@ def configure_connection(
         }
 
     # ---------------------------------------------------------------
+    # Step 1.5: auto-create database if it doesn't exist
+    # EvoNexus creates the target DB when user has CREATEDB permission.
+    # Falls back to a clear 422 if not permitted.
+    # ---------------------------------------------------------------
+    try:
+        _ensure_database_exists(connection_string)
+    except _DatabaseCreationError as exc:
+        _update_connection_status(sqlite_conn, connection_id, "error", str(exc))
+        _record_event(sqlite_conn, connection_id, "create_db_failed", {"error": str(exc)})
+        return {
+            "status": "error",
+            "error": str(exc),
+            "code": "database_create_failed",
+        }
+
+    # ---------------------------------------------------------------
     # Step 2-7: connect and run migrations
     # ---------------------------------------------------------------
     try:
@@ -388,3 +404,90 @@ def check_drift(connection_id: str, connection_string: str, sqlite_conn) -> Dict
             sqlite_conn, connection_id, "disconnected", str(exc)
         )
         return {"needs_migration": False, "error": str(exc)}
+
+
+# ---------------------------------------------------------------------------
+# Auto-create database — one-click setup
+# ---------------------------------------------------------------------------
+
+class _DatabaseCreationError(Exception):
+    """Raised when the target database does not exist and could not be created."""
+
+
+def _ensure_database_exists(connection_string: str) -> None:
+    """Ensure the target database exists; create it if the user has CREATEDB permission.
+
+    Strategy:
+      1. Try to connect to the target database directly. If it succeeds, no-op.
+      2. If connection fails with 'database "X" does not exist', connect instead to
+         the maintenance database 'postgres' on the same server with the same
+         credentials and run CREATE DATABASE.
+      3. If the role lacks CREATEDB permission (or 'postgres' DB also doesn't exist),
+         raise _DatabaseCreationError with an actionable message.
+    """
+    import psycopg2
+    from psycopg2 import sql
+    from sqlalchemy.engine.url import make_url
+
+    url = make_url(connection_string)
+    target_db = url.database
+    if not target_db:
+        raise _DatabaseCreationError(
+            "Connection string is missing the database name."
+        )
+
+    # Step 1: try the target database directly
+    try:
+        conn = psycopg2.connect(
+            host=url.host,
+            port=url.port or 5432,
+            user=url.username,
+            password=url.password,
+            dbname=target_db,
+            connect_timeout=10,
+        )
+        conn.close()
+        return  # target DB exists and we can connect — done
+    except psycopg2.OperationalError as exc:
+        msg = str(exc)
+        if "does not exist" not in msg or f'"{target_db}"' not in msg:
+            # Not a missing-database error — re-raise so the outer flow surfaces it
+            raise
+
+    # Step 2: connect to maintenance DB 'postgres' and try CREATE DATABASE
+    try:
+        admin_conn = psycopg2.connect(
+            host=url.host,
+            port=url.port or 5432,
+            user=url.username,
+            password=url.password,
+            dbname="postgres",
+            connect_timeout=10,
+        )
+    except psycopg2.OperationalError as exc:
+        raise _DatabaseCreationError(
+            f"Database '{target_db}' does not exist, and EvoNexus could not reach "
+            f"the maintenance database 'postgres' to create it: {exc}. "
+            "Create the database manually or use a user with access to 'postgres'."
+        )
+
+    try:
+        admin_conn.autocommit = True  # CREATE DATABASE cannot run in a transaction
+        with admin_conn.cursor() as cur:
+            cur.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(target_db)))
+    except psycopg2.errors.InsufficientPrivilege:
+        raise _DatabaseCreationError(
+            f"User '{url.username}' does not have CREATEDB permission. "
+            f"Ask a DBA to run: CREATE DATABASE {target_db}; "
+            "or grant CREATEDB to the user: ALTER ROLE "
+            f"{url.username} CREATEDB;"
+        )
+    except psycopg2.errors.DuplicateDatabase:
+        # Race: created by something else between step 1 and step 2 — fine
+        pass
+    except Exception as exc:
+        raise _DatabaseCreationError(
+            f"Failed to create database '{target_db}': {exc}"
+        )
+    finally:
+        admin_conn.close()
