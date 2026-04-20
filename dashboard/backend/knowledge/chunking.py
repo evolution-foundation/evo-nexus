@@ -309,6 +309,41 @@ def _make_chunk(
     )
 
 
+def _build_page_char_offsets(pages: List[Dict[str, Any]]) -> List[tuple]:
+    """Return list of (start_char, end_char, page_number) from pages list.
+
+    Args:
+        pages: list of dicts with keys 'page_number' (int) and 'markdown' (str).
+
+    Returns:
+        Sorted list of (start_char, end_char, page_number).
+    """
+    offsets = []
+    pos = 0
+    for page in pages:
+        md = page.get("markdown") or ""
+        length = len(md)
+        offsets.append((pos, pos + length, page["page_number"]))
+        pos += length + 1  # +1 for implicit separator between pages
+    return offsets
+
+
 def _find_page(content: str, doc_metadata: Dict[str, Any]) -> Optional[int]:
-    """Best-effort page number inference (not tracked per-chunk in v1)."""
-    return None
+    """Infer page number for a chunk by matching content against per-page markdown.
+
+    Uses cumulative char offsets built from doc_metadata['pages'] (GAP-06).
+    Falls back to None if pages metadata is absent.
+    """
+    pages = doc_metadata.get("pages")
+    if not pages:
+        return None
+
+    # Fast path: check which page markdown contains the first line of the chunk
+    first_line = content.split("\n", 1)[0].strip()
+    if not first_line:
+        return None
+
+    for page in pages:
+        page_md = page.get("markdown") or ""
+        if first_line in page_md:
+            return page.get("page_number")
