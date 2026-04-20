@@ -1,6 +1,6 @@
-"""Knowledge Base Flask blueprint — connection management endpoints.
+"""Knowledge Base Flask blueprint — connection management + parser endpoints.
 
-Endpoints (Step 1 scope — connections only):
+Endpoints (Step 1 scope — connections):
   GET    /api/knowledge/connections
   POST   /api/knowledge/connections
   GET    /api/knowledge/connections/<id>
@@ -9,6 +9,10 @@ Endpoints (Step 1 scope — connections only):
   POST   /api/knowledge/connections/<id>/configure
   POST   /api/knowledge/connections/<id>/migrate
   GET    /api/knowledge/connections/<id>/health
+
+Endpoints (Step 2 scope — parsers):
+  GET    /api/knowledge/parsers/status
+  POST   /api/knowledge/parsers/install
 
 All endpoints call assert_master_key() before any action so that missing
 KNOWLEDGE_MASTER_KEY produces a clear 500 rather than a cryptic error.
@@ -298,3 +302,42 @@ def health_check(connection_id: str):
         return jsonify({"error": str(exc)}), 500
     finally:
         sqlite_conn.close()
+
+
+# ---------------------------------------------------------------------------
+# GET /api/knowledge/parsers/status
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/knowledge/parsers/status", methods=["GET"])
+@require_permission("knowledge", "view")
+def parser_status():
+    """Return Marker model installation status."""
+    _assert_key()
+    from knowledge.parser_install import get_parser_status
+    return jsonify(get_parser_status())
+
+
+# ---------------------------------------------------------------------------
+# POST /api/knowledge/parsers/install
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/knowledge/parsers/install", methods=["POST"])
+@require_permission("knowledge", "manage")
+def parser_install():
+    """Trigger Marker model download (ADR-002).
+
+    Downloads Surya models (~500 MB) to ~/.cache/huggingface/.
+    Creates sentinel ~/.cache/evonexus/marker_installed.ok on completion.
+    Idempotent — returns "already_installed" if sentinel exists.
+    """
+    _assert_key()
+    from knowledge.parser_install import download_marker_models
+    from knowledge.parsers.marker_parser import MarkerNotInstalledError
+
+    try:
+        result = download_marker_models()
+        return jsonify(result)
+    except MarkerNotInstalledError as exc:
+        return jsonify({"error": str(exc)}), 422
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500

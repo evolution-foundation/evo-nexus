@@ -21,6 +21,11 @@ dependencies = [
     "cryptography>=42",
     "psycopg2-binary",
     "alembic>=1.13",
+    "tiktoken>=0.7",
+    "sentence-transformers>=3.0",
+    "openai>=1.0",
+    "anthropic>=0.25",
+    "marker-pdf>=1.6.1",
 ]
 
 [project.scripts]

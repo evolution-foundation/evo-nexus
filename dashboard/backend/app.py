@@ -335,6 +335,29 @@ with app.app_context():
         _conn.commit()
     # --- End knowledge connections migration ---
 
+    # --- Knowledge API keys migration (pgvector-knowledge Step 4) ---
+    _existing_tables4 = {row[0] for row in _cur.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    if "knowledge_api_keys" not in _existing_tables4:
+        _cur.executescript("""
+            CREATE TABLE IF NOT EXISTS knowledge_api_keys (
+                id TEXT PRIMARY KEY,
+                name TEXT,
+                prefix TEXT NOT NULL,
+                token_hash TEXT NOT NULL,
+                connection_id TEXT NOT NULL,
+                space_ids TEXT NOT NULL DEFAULT '[]',
+                scopes TEXT NOT NULL DEFAULT '["read"]',
+                rate_limit_per_min INTEGER NOT NULL DEFAULT 60,
+                rate_limit_per_day INTEGER NOT NULL DEFAULT 10000,
+                created_at TEXT NOT NULL,
+                last_used_at TEXT,
+                expires_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_kak_prefix ON knowledge_api_keys(prefix);
+        """)
+        _conn.commit()
+    # --- End knowledge API keys migration ---
+
     # Fix corrupted datetime columns (NULL or non-string values crash SQLAlchemy)
     for _tbl, _col in [("roles", "created_at"), ("users", "created_at"), ("users", "last_login")]:
         try:
@@ -377,6 +400,21 @@ with app.app_context():
         start_health_check_thread(lambda: app)
     except Exception as _kn_exc:
         print(f"WARNING: knowledge background threads init failed: {_kn_exc}")
+
+    # Start knowledge usage janitor (delete usage rows > 7 days)
+    try:
+        from knowledge.usage_janitor import start_janitor_thread as start_usage_janitor
+        start_usage_janitor()
+    except Exception as _uj_exc:
+        print(f"WARNING: knowledge usage janitor init failed: {_uj_exc}")
+
+    # Start knowledge classify worker (async document classification — ADR-008)
+    try:
+        from knowledge.classify_worker import start_classify_worker
+        _sqlite_db_path = app.config["SQLALCHEMY_DATABASE_URI"].replace("sqlite:///", "")
+        start_classify_worker(_sqlite_db_path)
+    except Exception as _cw_exc:
+        print(f"WARNING: knowledge classify worker init failed: {_cw_exc}")
 
     # Cleanup: remove old disabled share records (expired + disabled + older than 30 days)
     from datetime import datetime as _dt, timezone as _tz, timedelta as _td
@@ -463,6 +501,7 @@ def auth_middleware():
         or path.startswith("/api/docs")
         or path.startswith("/api/triggers/webhook/")
         or (path.startswith("/api/shares/") and "/view" in path)
+        or path.startswith("/api/knowledge/v1/")
     ):
         return None
 
@@ -507,6 +546,7 @@ from routes.heartbeats import bp as heartbeats_bp
 from routes.goals import bp as goals_bp
 from routes.tickets import bp as tickets_bp
 from routes.knowledge import bp as knowledge_bp
+from routes.knowledge_public import bp as knowledge_public_bp
 
 app.register_blueprint(overview_bp)
 app.register_blueprint(workspace_bp)
@@ -534,6 +574,7 @@ app.register_blueprint(heartbeats_bp)
 app.register_blueprint(goals_bp)
 app.register_blueprint(tickets_bp)
 app.register_blueprint(knowledge_bp)
+app.register_blueprint(knowledge_public_bp)
 
 # --------------- Social Auth blueprints ---------------
 from auth.youtube import bp as youtube_auth_bp

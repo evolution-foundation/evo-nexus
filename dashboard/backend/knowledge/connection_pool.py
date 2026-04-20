@@ -125,6 +125,41 @@ def start_gc_thread() -> None:
 # Utility: pre-check max_connections before registering a connection
 # ---------------------------------------------------------------------------
 
+def get_dsn(connection_id: str) -> str:
+    """Resolve the plaintext DSN for *connection_id* from the SQLite store.
+
+    Reads ``connection_string_encrypted`` from ``knowledge_connections``, decrypts
+    it via ``crypto.decrypt_secret``, and returns the plaintext DSN.
+
+    Raises ``KeyError`` if the connection is not found.
+    Raises ``ValueError`` if no connection string is stored for this connection.
+    """
+    import os
+    import sqlite3
+
+    from knowledge.crypto import decrypt_secret
+
+    db_uri = os.environ.get("SQLALCHEMY_DATABASE_URI", "")
+    db_path = db_uri.replace("sqlite:///", "")
+    conn = sqlite3.connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT connection_string_encrypted FROM knowledge_connections WHERE id = ?",
+            (connection_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    if row is None:
+        raise KeyError(f"Knowledge connection '{connection_id}' not found in local store.")
+    if row[0] is None:
+        raise ValueError(
+            f"No connection string stored for connection_id='{connection_id}'. "
+            "Configure the connection via POST /api/knowledge/connections/<id>/configure."
+        )
+    return decrypt_secret(bytes(row[0]))
+
+
 def check_max_connections(engine: Engine, n_existing_connections: int) -> Optional[str]:
     """Return a warning string if the pool footprint > 50% of max_connections.
 
