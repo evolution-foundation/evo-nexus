@@ -369,6 +369,15 @@ with app.app_context():
     except Exception as _tj_exc:
         print(f"WARNING: ticket janitor init failed: {_tj_exc}")
 
+    # Start Knowledge pool GC + health check threads
+    try:
+        from knowledge.connection_pool import start_gc_thread
+        from knowledge.health_check import start_health_check_thread
+        start_gc_thread()
+        start_health_check_thread(lambda: app)
+    except Exception as _kn_exc:
+        print(f"WARNING: knowledge background threads init failed: {_kn_exc}")
+
     # Cleanup: remove old disabled share records (expired + disabled + older than 30 days)
     from datetime import datetime as _dt, timezone as _tz, timedelta as _td
     from models import FileShare as _FileShare
@@ -497,6 +506,7 @@ from routes.shares import bp as shares_bp
 from routes.heartbeats import bp as heartbeats_bp
 from routes.goals import bp as goals_bp
 from routes.tickets import bp as tickets_bp
+from routes.knowledge import bp as knowledge_bp
 
 app.register_blueprint(overview_bp)
 app.register_blueprint(workspace_bp)
@@ -523,6 +533,7 @@ app.register_blueprint(shares_bp)
 app.register_blueprint(heartbeats_bp)
 app.register_blueprint(goals_bp)
 app.register_blueprint(tickets_bp)
+app.register_blueprint(knowledge_bp)
 
 # --------------- Social Auth blueprints ---------------
 from auth.youtube import bp as youtube_auth_bp
