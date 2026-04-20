@@ -125,6 +125,39 @@ def start_gc_thread() -> None:
 # Utility: pre-check max_connections before registering a connection
 # ---------------------------------------------------------------------------
 
+def _resolve_sqlite_db_path() -> str:
+    """Locate the EvoNexus SQLite DB, in order of preference.
+
+    1. Flask current_app.config["SQLALCHEMY_DATABASE_URI"] (the real source)
+    2. SQLALCHEMY_DATABASE_URI env var (dev/test override)
+    3. Derived from workspace root: <workspace>/dashboard/data/evonexus.db
+
+    Always returns an absolute filesystem path (not a sqlite:// URI).
+    """
+    import os
+    from pathlib import Path
+
+    # 1. Flask app config — authoritative when running inside a request.
+    try:
+        from flask import current_app
+        uri = current_app.config.get("SQLALCHEMY_DATABASE_URI", "")
+        if uri:
+            return uri.replace("sqlite:///", "")
+    except RuntimeError:
+        # Outside Flask app context (CLI, worker) — fall through.
+        pass
+
+    # 2. Env var override.
+    uri = os.environ.get("SQLALCHEMY_DATABASE_URI", "")
+    if uri:
+        return uri.replace("sqlite:///", "")
+
+    # 3. Derive from this file's location:
+    # dashboard/backend/knowledge/connection_pool.py → workspace/dashboard/data/evonexus.db
+    workspace = Path(__file__).resolve().parent.parent.parent.parent
+    return str(workspace / "dashboard" / "data" / "evonexus.db")
+
+
 def get_dsn(connection_id: str) -> str:
     """Resolve the plaintext DSN for *connection_id* from the SQLite store.
 
@@ -134,13 +167,11 @@ def get_dsn(connection_id: str) -> str:
     Raises ``KeyError`` if the connection is not found.
     Raises ``ValueError`` if no connection string is stored for this connection.
     """
-    import os
     import sqlite3
 
     from knowledge.crypto import decrypt_secret
 
-    db_uri = os.environ.get("SQLALCHEMY_DATABASE_URI", "")
-    db_path = db_uri.replace("sqlite:///", "")
+    db_path = _resolve_sqlite_db_path()
     conn = sqlite3.connect(db_path)
     try:
         row = conn.execute(
