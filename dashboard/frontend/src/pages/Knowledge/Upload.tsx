@@ -119,26 +119,30 @@ export default function KnowledgeUpload() {
         const res = await fetch(`${API}/api/knowledge/connections/${activeConnectionId}/documents/${docId}/status`, { credentials: 'include' })
         if (!res.ok) { clearInterval(interval); return }
         const data = await res.json()
-        const status = data.status as string
-        if (status === 'ready') {
+        // Worker writes `phase` (scanning|parsing|chunking|embedding|storing|classifying|done|error)
+        // Backend may also surface `status` (pending|ready|error) from knowledge_documents.
+        // Prefer `phase` when present; fall back to mapping from `status`.
+        const phase = (data.phase as string | undefined) ||
+          (data.status === 'ready' ? 'done' : data.status === 'error' ? 'error' : undefined)
+
+        if (phase === 'done') {
           clearInterval(interval)
           delete pollers.current[uploadId]
           setPhase(uploadId, 'done')
-        } else if (status === 'error') {
+        } else if (phase === 'error') {
           clearInterval(interval)
           delete pollers.current[uploadId]
-          setPhase(uploadId, 'error', { error: data.error_message || 'Processing failed' })
+          setPhase(uploadId, 'error', { error: data.error || data.error_message || 'Processing failed' })
         } else {
-          // Map backend status to phase
           const phaseMap: Record<string, FilePhase> = {
-            processing: 'parsing',
+            scanning: 'parsing',
             parsing: 'parsing',
             chunking: 'chunking',
             embedding: 'embedding',
             storing: 'storing',
             classifying: 'classifying',
           }
-          setPhase(uploadId, phaseMap[status] || 'parsing')
+          setPhase(uploadId, phaseMap[phase || ''] || 'parsing')
         }
       } catch {}
     }, 2000)
