@@ -34,6 +34,13 @@ INTEGRATIONS = [
     {"name": "Evolution Go", "key": "EVOLUTION_GO_KEY", "category": "messaging"},
     {"name": "Evo CRM", "key": "EVO_CRM_TOKEN", "category": "crm"},
     {"name": "AI Image Creator", "key": "AI_IMG_CREATOR_", "category": "creative", "prefix": True},
+    # --- LLM providers (used by agents, classifiers, RAG synthesis) ---
+    {"name": "OpenAI", "key": "OPENAI_API_KEY", "category": "llm"},
+    {"name": "Anthropic", "key": "ANTHROPIC_API_KEY", "category": "llm"},
+    {"name": "Gemini", "key": "GEMINI_API_KEY", "category": "llm"},
+    # --- Knowledge embedders + parsers (opt-in alternatives to local defaults) ---
+    {"name": "Voyage AI", "key": "VOYAGE_API_KEY", "category": "llm"},
+    {"name": "LlamaParse", "key": "LLAMAPARSE_API_KEY", "category": "llm"},
 ]
 
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]*[a-z0-9]$")
