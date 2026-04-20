@@ -82,4 +82,4 @@ Return summary + footer `Based on {N} chunks from {M} documents`.
 - Neither `document_id` nor `unit_id` passed → "Pass one of the two (mutually exclusive)."
 - Not found → "Not found. Use `knowledge-browse` to list."
 - `ANTHROPIC_API_KEY` missing → "Set `ANTHROPIC_API_KEY` in `.env`."
-- Doc status != ready → "Not indexed (status={status}). Run `knowledge-reindex` or wait."
+- Doc status != ready → "Not indexed (status={status}). Re-upload the document or wait for ingestion to complete."

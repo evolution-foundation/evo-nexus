@@ -2,13 +2,14 @@ import { useEffect, useState, useCallback } from 'react'
 import { RefreshCw, CheckCircle, Download, Info } from 'lucide-react'
 import { api } from '../../lib/api'
 import { useAuth } from '../../context/AuthContext'
-import { useKnowledge } from '../../context/KnowledgeContext'
 
 interface KnowledgeSettings {
-  embedder_provider: 'local' | 'openai' | 'voyage'
+  embedder_provider: 'local' | 'openai'
   embedder_model: string
   vector_dim: number
-  parser_default: 'marker' | 'llamaparse'
+  parser_default: 'marker'
+  locked: boolean
+  openai_api_key_set: boolean
 }
 
 interface ParserStatus {
@@ -17,14 +18,36 @@ interface ParserStatus {
   install_path?: string
 }
 
+interface EmbedderModel {
+  id: string
+  dim: number
+  recommended?: boolean
+  legacy?: boolean
+}
+
+type ModelsByProvider = Record<'local' | 'openai', EmbedderModel[]>
+
+const EMBEDDER_OPTIONS: Array<{
+  value: 'local' | 'openai'
+  label: string
+  desc: string
+  defaultModel?: string
+}> = [
+  { value: 'local', label: 'Local (offline)', desc: 'paraphrase-multilingual-mpnet-base-v2 · 768 dims · No API key required' },
+  { value: 'openai', label: 'OpenAI', desc: '1536 dims · Requires an OpenAI API key', defaultModel: 'text-embedding-3-small' },
+]
+
+const PARSER_OPTIONS: Array<{ value: 'marker'; label: string; desc: string }> = [
+  { value: 'marker', label: 'Marker (default)', desc: 'PDF, DOCX, PPTX, XLSX, HTML, EPUB, images with OCR · Offline · ~500 MB download' },
+]
+
 export default function KnowledgeSettings() {
   const { hasPermission } = useAuth()
-  const { connections } = useKnowledge()
   const canManage = hasPermission('knowledge', 'manage')
-  const hasConnections = connections.length > 0
 
   const [settings, setSettings] = useState<KnowledgeSettings | null>(null)
   const [parserStatus, setParserStatus] = useState<ParserStatus | null>(null)
+  const [models, setModels] = useState<ModelsByProvider | null>(null)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [installing, setInstalling] = useState(false)
@@ -32,27 +55,27 @@ export default function KnowledgeSettings() {
   const [error, setError] = useState<string | null>(null)
   const [saved, setSaved] = useState(false)
 
-  // Local form state
-  const [embedder, setEmbedder] = useState<'local' | 'openai' | 'voyage'>('local')
-  const [parser, setParser] = useState<'marker' | 'llamaparse'>('marker')
+  const [embedder, setEmbedder] = useState<'local' | 'openai'>('local')
+  const [embedderModel, setEmbedderModel] = useState<string>('')
+  const [parser, setParser] = useState<'marker'>('marker')
+  const [openaiKey, setOpenaiKey] = useState<string>('')
+  const [openaiKeySet, setOpenaiKeySet] = useState<boolean>(false)
 
   const load = useCallback(async () => {
     try {
-      // Settings live in config — for now read from first ready connection's config
-      // or fall back to defaults if no connection yet
-      const status = await api.get('/knowledge/parsers/status')
-      setParserStatus(status)
-    } catch {}
-
-    // TODO(Step 3): GET /api/knowledge/settings when backend adds it
-    // For now use defaults
-    setSettings({
-      embedder_provider: 'local',
-      embedder_model: 'paraphrase-multilingual-mpnet-base-v2',
-      vector_dim: 768,
-      parser_default: 'marker',
-    })
-    setLoading(false)
+      const [cfg, status, mdls] = await Promise.all([
+        api.get('/knowledge/settings'),
+        api.get('/knowledge/parsers/status').catch(() => null),
+        api.get('/knowledge/embedders/models').catch(() => null),
+      ])
+      setSettings(cfg)
+      if (status) setParserStatus(status)
+      if (mdls?.providers) setModels(mdls.providers as ModelsByProvider)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to load settings')
+    } finally {
+      setLoading(false)
+    }
   }, [])
 
   useEffect(() => { load() }, [load])
@@ -61,21 +84,58 @@ export default function KnowledgeSettings() {
     if (settings) {
       setEmbedder(settings.embedder_provider)
       setParser(settings.parser_default)
+      setOpenaiKeySet(Boolean(settings.openai_api_key_set))
     }
   }, [settings])
+
+  useEffect(() => {
+    if (!settings || !models) return
+    const list = models[embedder] || []
+    const incoming = embedder === settings.embedder_provider ? settings.embedder_model : ''
+    if (incoming && list.some((m) => m.id === incoming)) {
+      setEmbedderModel(incoming)
+      return
+    }
+    const recommended = list.find((m) => m.recommended)?.id
+    setEmbedderModel(recommended || list[0]?.id || '')
+  }, [settings, models, embedder])
+
+  const providerLocked = Boolean(settings?.locked)
+  const modelEditable = embedder === 'openai'
+  const dirty = Boolean(
+    settings && (
+      embedder !== settings.embedder_provider ||
+      parser !== settings.parser_default ||
+      (modelEditable && embedderModel !== settings.embedder_model) ||
+      (embedder === 'openai' && openaiKey.trim().length > 0)
+    )
+  )
 
   const handleSave = async () => {
     setSaving(true)
     setError(null)
+    setSaved(false)
     try {
-      // TODO(Step 3): PATCH /api/knowledge/settings
-      // For now store locally
+      const payload: Record<string, string> = {
+        embedder_provider: embedder,
+        parser_default: parser,
+      }
+      if (modelEditable && embedderModel.trim()) {
+        payload.embedder_model = embedderModel.trim()
+      }
+      if (embedder === 'openai' && openaiKey.trim()) {
+        payload.openai_api_key = openaiKey.trim()
+      }
+      const updated = await api.put('/knowledge/settings', payload)
+      setSettings(updated)
+      setOpenaiKey('')
       setSaved(true)
-      setTimeout(() => setSaved(false), 2000)
+      setTimeout(() => setSaved(false), 2500)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Save failed')
+    } finally {
+      setSaving(false)
     }
-    setSaving(false)
   }
 
   const handleInstallMarker = async () => {
@@ -105,6 +165,8 @@ export default function KnowledgeSettings() {
     )
   }
 
+  const providerNeedsKey = embedder === 'openai'
+
   return (
     <div className="space-y-6 max-w-2xl">
       {error && (
@@ -120,7 +182,7 @@ export default function KnowledgeSettings() {
             <h3 className="text-sm font-semibold text-[#F9FAFB]">Embedder Provider</h3>
             <p className="text-xs text-[#667085] mt-0.5">Global for all connections. Cannot change after first connection is added.</p>
           </div>
-          {hasConnections && (
+          {providerLocked && (
             <div className="flex items-center gap-1.5 px-2 py-1 bg-yellow-500/10 rounded-lg">
               <Info size={12} className="text-yellow-400" />
               <span className="text-xs text-yellow-400">Locked</span>
@@ -129,29 +191,32 @@ export default function KnowledgeSettings() {
         </div>
 
         <div className="space-y-2">
-          {[
-            { value: 'local', label: 'Local (offline)', desc: 'paraphrase-multilingual-mpnet-base-v2 · 768 dims · No API key required' },
-            { value: 'openai', label: 'OpenAI', desc: 'text-embedding-3-small · 1536 dims · Requires OPENAI_API_KEY' },
-            { value: 'voyage', label: 'Voyage (v1.1)', desc: 'voyage-3-large · 1024 dims · Requires VOYAGE_API_KEY' },
-          ].map((opt) => (
+          {EMBEDDER_OPTIONS.map((opt) => (
             <label
               key={opt.value}
               className={`flex items-start gap-3 p-3 rounded-lg border transition-colors cursor-pointer ${
                 embedder === opt.value
                   ? 'border-[#00FFA7]/40 bg-[#00FFA7]/5'
                   : 'border-[#344054] hover:border-[#344054]/80'
-              } ${hasConnections ? 'opacity-60 cursor-not-allowed' : ''}`}
+              } ${providerLocked || !canManage ? 'opacity-60 cursor-not-allowed' : ''}`}
             >
               <input
                 type="radio"
                 name="embedder"
                 value={opt.value}
                 checked={embedder === opt.value}
-                onChange={() => !hasConnections && setEmbedder(opt.value as typeof embedder)}
-                disabled={hasConnections}
+                onChange={() => {
+                  if (providerLocked || !canManage) return
+                  setEmbedder(opt.value)
+                  const list = models?.[opt.value] || []
+                  const recommended = list.find((m) => m.recommended)?.id
+                  const fallback = list[0]?.id
+                  setEmbedderModel(recommended || fallback || opt.defaultModel || '')
+                }}
+                disabled={providerLocked || !canManage}
                 className="mt-0.5 accent-[#00FFA7]"
               />
-              <div>
+              <div className="flex-1">
                 <p className="text-sm font-medium text-[#D0D5DD]">{opt.label}</p>
                 <p className="text-xs text-[#667085]">{opt.desc}</p>
               </div>
@@ -159,9 +224,68 @@ export default function KnowledgeSettings() {
           ))}
         </div>
 
-        {hasConnections && (
+        {/* Model selector — only for openai/voyage */}
+        {modelEditable && (
+          <div className="mt-4 pt-4 border-t border-[#344054]">
+            <label className="block text-xs font-medium text-[#D0D5DD] mb-1.5">
+              Model
+            </label>
+            <select
+              value={embedderModel}
+              onChange={(e) => setEmbedderModel(e.target.value)}
+              disabled={!canManage || providerLocked}
+              className="w-full px-3 py-2 bg-[#0C111D] border border-[#344054] rounded-lg text-sm text-[#F9FAFB] focus:outline-none focus:border-[#00FFA7]/60 disabled:opacity-60 cursor-pointer"
+            >
+              {(models?.[embedder] || []).map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.id} · {m.dim} dims{m.recommended ? ' · recommended' : ''}{m.legacy ? ' · legacy' : ''}
+                </option>
+              ))}
+            </select>
+            {(() => {
+              const current = models?.[embedder]?.find((m) => m.id === embedderModel)
+              if (!current) return null
+              return (
+                <p className="text-xs text-[#667085] mt-1.5">
+                  Vector dimensions: <code className="text-[#98A2B3] bg-[#0C111D] px-1 py-0.5 rounded">{current.dim}</code>
+                </p>
+              )
+            })()}
+          </div>
+        )}
+
+        {/* OpenAI API key — inline input (never displayed back) */}
+        {providerNeedsKey && (
+          <div className="mt-4 pt-4 border-t border-[#344054]">
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="block text-xs font-medium text-[#D0D5DD]">
+                OpenAI API Key
+              </label>
+              {openaiKeySet && (
+                <span className="flex items-center gap-1 text-xs text-[#00FFA7]">
+                  <CheckCircle size={12} /> Configured
+                </span>
+              )}
+            </div>
+            <input
+              type="password"
+              value={openaiKey}
+              onChange={(e) => setOpenaiKey(e.target.value)}
+              placeholder={openaiKeySet ? '•••••••• · paste a new key to rotate' : 'sk-...'}
+              disabled={!canManage}
+              autoComplete="off"
+              spellCheck={false}
+              className="w-full px-3 py-2 bg-[#0C111D] border border-[#344054] rounded-lg text-sm text-[#F9FAFB] placeholder-[#667085] focus:outline-none focus:border-[#00FFA7]/60 disabled:opacity-60 font-mono"
+            />
+            <p className="text-xs text-[#667085] mt-1.5">
+              Stored in <code className="text-[#98A2B3] bg-[#0C111D] px-1 py-0.5 rounded">.env</code> as <code className="text-[#98A2B3] bg-[#0C111D] px-1 py-0.5 rounded">OPENAI_API_KEY</code>. Only used by the Knowledge embedder.
+            </p>
+          </div>
+        )}
+
+        {providerLocked && (
           <p className="text-xs text-[#667085] mt-3">
-            To change embedder provider, run <code className="text-[#00FFA7] bg-[#0C111D] px-1 py-0.5 rounded">knowledge-reindex</code> skill first.
+            Embedder provider is locked because connections exist. To change the provider, remove all connections and recreate them (reindex feature planned for v0.25.1).
           </p>
         )}
       </div>
@@ -172,10 +296,7 @@ export default function KnowledgeSettings() {
         <p className="text-xs text-[#667085] mb-4">Used when uploading documents without explicit parser selection.</p>
 
         <div className="space-y-2">
-          {[
-            { value: 'marker', label: 'Marker (default)', desc: 'PDF, DOCX, PPTX, XLSX, HTML, EPUB, images with OCR · Offline · ~500 MB download' },
-            { value: 'llamaparse', label: 'LlamaParse', desc: 'Premium accuracy for complex PDFs · Requires API key · Paid per page' },
-          ].map((opt) => (
+          {PARSER_OPTIONS.map((opt) => (
             <label
               key={opt.value}
               className={`flex items-start gap-3 p-3 rounded-lg border transition-colors cursor-pointer ${
@@ -189,7 +310,7 @@ export default function KnowledgeSettings() {
                 name="parser"
                 value={opt.value}
                 checked={parser === opt.value}
-                onChange={() => canManage && setParser(opt.value as typeof parser)}
+                onChange={() => canManage && setParser(opt.value)}
                 disabled={!canManage}
                 className="mt-0.5 accent-[#00FFA7]"
               />
@@ -247,13 +368,16 @@ export default function KnowledgeSettings() {
         <div className="flex items-center gap-3">
           <button
             onClick={handleSave}
-            disabled={saving}
-            className="flex items-center gap-2 px-4 py-2 bg-[#00FFA7] text-[#0C111D] rounded-lg text-sm font-medium hover:bg-[#00FFA7]/90 transition-colors disabled:opacity-50"
+            disabled={saving || !dirty}
+            className="flex items-center gap-2 px-4 py-2 bg-[#00FFA7] text-[#0C111D] rounded-lg text-sm font-medium hover:bg-[#00FFA7]/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {saving ? <RefreshCw size={14} className="animate-spin" /> : null}
             {saved ? 'Saved!' : 'Save Settings'}
           </button>
           {saved && <CheckCircle size={14} className="text-[#00FFA7]" />}
+          {dirty && !saving && !saved && (
+            <span className="text-xs text-[#667085]">Unsaved changes</span>
+          )}
         </div>
       )}
     </div>

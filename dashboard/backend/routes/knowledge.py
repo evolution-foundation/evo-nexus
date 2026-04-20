@@ -504,7 +504,7 @@ def update_settings():
             return jsonify({"error": f"Invalid embedder_provider. Must be one of: {sorted(_ALLOWED_EMBEDDERS)}"}), 400
         if provider != current["embedder_provider"] and current["locked"]:
             return jsonify({
-                "error": "Embedder provider is locked because connections already exist. Run the knowledge-reindex skill first.",
+                "error": "Embedder provider is locked because connections already exist. To change the provider, remove all connections and recreate them (reindex feature planned for v0.25.1).",
                 "code": "embedder_locked",
             }), 409
         kvs["KNOWLEDGE_EMBEDDER_PROVIDER"] = provider

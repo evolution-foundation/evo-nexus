@@ -116,6 +116,8 @@ class TestDocumentsCRUDUnit:
         class FakePopen:
             def __init__(self, *args, **kwargs):
                 popen_calls.append((args, kwargs))
+                from unittest.mock import MagicMock
+                self.stdin = MagicMock()
 
         with patch.object(documents, "get_dsn", return_value="postgresql://test"), \
              patch.object(documents, "get_engine", return_value=mock_engine), \

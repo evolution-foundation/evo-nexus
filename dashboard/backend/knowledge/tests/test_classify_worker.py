@@ -20,85 +20,131 @@ def _add_backend():
 
 
 # ---------------------------------------------------------------------------
-# _classify_document — no LLM key
+# _extract_json — robustness against fences and chatter
 # ---------------------------------------------------------------------------
 
-class TestClassifyNoLLMKey:
-    def test_returns_none_when_no_api_key(self, monkeypatch):
+class TestExtractJson:
+    def test_plain_json_object(self):
         _add_backend()
-        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        from knowledge.classify_worker import _extract_json
 
+        raw = '{"content_type": "tutorial", "difficulty_level": "beginner", "topics": ["python"]}'
+        result = _extract_json(raw)
+        assert result is not None
+        assert result["content_type"] == "tutorial"
+
+    def test_json_with_backtick_fence(self):
+        _add_backend()
+        from knowledge.classify_worker import _extract_json
+
+        raw = '```json\n{"content_type": "reference", "difficulty_level": "advanced", "topics": []}\n```'
+        result = _extract_json(raw)
+        assert result is not None
+        assert result["content_type"] == "reference"
+
+    def test_json_with_leading_chatter(self):
+        _add_backend()
+        from knowledge.classify_worker import _extract_json
+
+        raw = 'Sure! Here is the classification:\n{"content_type": "article", "difficulty_level": "intermediate", "topics": ["ai"]}'
+        result = _extract_json(raw)
+        assert result is not None
+        assert result["content_type"] == "article"
+
+    def test_empty_string_returns_none(self):
+        _add_backend()
+        from knowledge.classify_worker import _extract_json
+
+        assert _extract_json("") is None
+
+    def test_invalid_json_returns_none(self):
+        _add_backend()
+        from knowledge.classify_worker import _extract_json
+
+        assert _extract_json("{not valid json}") is None
+
+    def test_no_braces_returns_none(self):
+        _add_backend()
+        from knowledge.classify_worker import _extract_json
+
+        assert _extract_json("just text, no JSON here") is None
+
+
+# ---------------------------------------------------------------------------
+# _classify_document — claude CLI not on PATH
+# ---------------------------------------------------------------------------
+
+class TestClassifyNoCLI:
+    def test_returns_none_when_claude_not_on_path(self, monkeypatch):
+        """When claude CLI is absent, _classify_document returns None."""
+        _add_backend()
         import knowledge.classify_worker as cw
-        cw._warned_no_llm = False  # Reset warning state
+        cw._warned_no_claude = False  # Reset warning state
 
-        result = cw._classify_document("Sample text content")
+        with patch("shutil.which", return_value=None):
+            result = cw._classify_document("Sample text content")
         assert result is None
 
-    def test_warning_logged_only_once(self, monkeypatch, caplog):
+    def test_warning_logged_only_once_when_no_cli(self, monkeypatch, caplog):
+        """The 'claude CLI not found' warning fires at most once."""
         _add_backend()
         import logging
-        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
-
         import knowledge.classify_worker as cw
-        cw._warned_no_llm = False
+        cw._warned_no_claude = False
 
-        import knowledge.classify_worker as mod
-        with caplog.at_level(logging.WARNING, logger="classify_worker"):
-            mod._classify_document("text 1")
-            mod._classify_document("text 2")
-            mod._classify_document("text 3")
+        with patch("shutil.which", return_value=None), \
+             caplog.at_level(logging.WARNING, logger="classify_worker"):
+            cw._classify_document("text 1")
+            cw._classify_document("text 2")
+            cw._classify_document("text 3")
 
-        # Warning should appear at most once
         warning_count = sum(
             1 for r in caplog.records
-            if "No LLM API key" in r.message
+            if "claude" in r.message.lower() and "not found" in r.message.lower()
         )
         assert warning_count <= 1
 
 
 # ---------------------------------------------------------------------------
-# _classify_document — with mocked Anthropic
+# _classify_document — with mocked claude subprocess
 # ---------------------------------------------------------------------------
 
-class TestClassifyWithAnthropic:
-    def test_returns_classification_dict(self, monkeypatch):
+class TestClassifyWithMockedSubprocess:
+    def test_returns_classification_dict_when_cli_succeeds(self, monkeypatch):
+        """When claude CLI exits 0 and returns valid JSON, result is a dict."""
         _add_backend()
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
-        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
-
         import knowledge.classify_worker as cw
 
-        fake_result = {
-            "content_type": "tutorial",
-            "difficulty_level": "beginner",
-            "topics": ["python", "testing"],
-        }
+        fake_output = '{"content_type": "tutorial", "difficulty_level": "beginner", "topics": ["python"]}'
 
-        mock_msg = MagicMock()
-        mock_msg.content = [MagicMock(text=str(fake_result).replace("'", '"'))]
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = fake_output
+        mock_result.stderr = ""
 
-        mock_client = MagicMock()
-        mock_client.messages.create.return_value = mock_msg
-
-        with patch("knowledge.classify_worker.anthropic") as mock_anthropic:
-            mock_anthropic.Anthropic.return_value = mock_client
-            # Force import to succeed
-            import builtins
-            real_import = builtins.__import__
-
-            def mock_import(name, *args, **kwargs):
-                if name == "anthropic":
-                    return mock_anthropic
-                return real_import(name, *args, **kwargs)
-
-            monkeypatch.setattr(builtins, "__import__", mock_import)
-
-            import json
+        with patch("shutil.which", return_value="/usr/local/bin/claude"), \
+             patch("subprocess.run", return_value=mock_result):
             result = cw._classify_document("test content")
-            # Even if the parse fails (due to mock), None is acceptable
-            assert result is None or isinstance(result, dict)
+
+        assert result is not None
+        assert result["content_type"] == "tutorial"
+        assert result["difficulty_level"] == "beginner"
+
+    def test_returns_none_when_cli_exits_nonzero(self, monkeypatch):
+        """Non-zero exit code → None."""
+        _add_backend()
+        import knowledge.classify_worker as cw
+
+        mock_result = MagicMock()
+        mock_result.returncode = 1
+        mock_result.stdout = ""
+        mock_result.stderr = "error"
+
+        with patch("shutil.which", return_value="/usr/local/bin/claude"), \
+             patch("subprocess.run", return_value=mock_result):
+            result = cw._classify_document("test content")
+
+        assert result is None
 
 
 # ---------------------------------------------------------------------------

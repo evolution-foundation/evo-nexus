@@ -92,7 +92,7 @@ Download takes a few minutes. Idempotent — re-running is a no-op.
 - **local** (default, 768 dim): `sentence-transformers/paraphrase-multilingual-mpnet-base-v2`. Free, offline, pt-BR native.
 - **openai** (opt-in, 1536 dim): `text-embedding-3-small`. Costs ~$0.02 / 1M tokens. Requires `OPENAI_API_KEY`.
 
-**Embedder is GLOBAL per EvoNexus instance.** Changing it after you have data = reindex all chunks (`knowledge-reindex` with bulk mode).
+**Embedder is GLOBAL per EvoNexus instance.** Changing it after you have data requires removing all connections and recreating them (reindex skill planned for v0.25.1).
 
 ## Search: hybrid + metadata boost
 
@@ -122,7 +122,7 @@ Override boosts per space via `content_type_boosts` JSONB column.
 | [knowledge-query](../../.claude/skills/knowledge-query/SKILL.md) | Consumo | Hybrid search + optional RAG answer |
 | [knowledge-summarize](../../.claude/skills/knowledge-summarize/SKILL.md) | Consumo | TL;DR of document or unit |
 | [knowledge-ingest](../../.claude/skills/knowledge-ingest/SKILL.md) | Ingestão | Upload file or URL |
-| [knowledge-reindex](../../.claude/skills/knowledge-reindex/SKILL.md) | Ingestão | Re-parse/re-embed (single or bulk) |
+| knowledge-reindex | Ingestão | Re-parse/re-embed (single or bulk) — deferred to v0.25.1 |
 | [knowledge-browse](../../.claude/skills/knowledge-browse/SKILL.md) | Curadoria | List/filter docs + units |
 | [knowledge-organize](../../.claude/skills/knowledge-organize/SKILL.md) | Curadoria | Units: create/move/reorder/link |
 | [knowledge-admin](../../.claude/skills/knowledge-admin/SKILL.md) | Admin | Connections, health, stats, export, parser install |
@@ -187,4 +187,4 @@ curl -H "Authorization: Bearer evo_k_abc.xyz..." \
 
 **Classify queue stuck** — check if `ANTHROPIC_API_KEY` or `GEMINI_API_KEY` is set. Without either, classification is skipped (not fatal).
 
-**Embedder provider locked** — you have data using current dim. Reindex via `knowledge-reindex space_id=<> confirm=true` or accept the lock.
+**Embedder provider locked** — you have data using current dim. To change the provider, remove all connections and recreate them. Reindex skill is planned for v0.25.1.

@@ -56,6 +56,7 @@ class TestUnitsUnit:
             result = units.create_unit("conn-1", {
                 "space_id": unit_data["space_id"],
                 "name": "Chapter 1",
+                "slug": "chapter-1",
             })
 
         assert result["name"] == "Chapter 1"
