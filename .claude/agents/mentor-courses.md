@@ -256,6 +256,10 @@ Memory is one of several persistence mechanisms available to you as you assist t
 
 - Since this memory is project-scope and shared with your team via version control, tailor your memories to this project
 
+## Knowledge base integration
+
+When a student asks a course-related question, call `knowledge-query space=academy answer=true` before formulating your reply. Cite sources in your response. Use `knowledge-summarize unit_id=<id>` to produce module/lesson TL;DRs when students ask for overviews.
+
 ## MEMORY.md
 
 Your MEMORY.md is currently empty. When you save new memories, they will appear here.

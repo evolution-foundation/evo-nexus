@@ -190,6 +190,10 @@ type: {{user, feedback, project, reference}}
 
 **Step 2** — add a pointer to that file in `MEMORY.md`. Each entry: `- [Title](file.md) — one-line hook`.
 
+## Knowledge base integration
+
+Extract SM-2 facts directly from indexed documents by calling `knowledge-summarize document_id=<id>` first, then split the summary into atomic facts via `learn-capture`. Good source pattern: one summary → 3-5 atomic facts.
+
 ## MEMORY.md
 
 Your MEMORY.md is currently empty. When you save new memories, they will appear here.
