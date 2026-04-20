@@ -24,13 +24,9 @@ import bcrypt
 # ---------------------------------------------------------------------------
 
 def _db_path() -> str:
-    db_uri: str = os.environ.get("SQLALCHEMY_DATABASE_URI", "")
-    if db_uri.startswith("sqlite:///"):
-        return db_uri[len("sqlite:///"):]
-    # Fallback: look for evonexus.db relative to this file
-    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    workspace = os.environ.get("WORKSPACE_PATH", os.path.join(here, "..", "..", ".."))
-    return os.path.join(workspace, "dashboard", "data", "evonexus.db")
+    # Reuse the single source of truth so we never drift from app.py / get_dsn.
+    from knowledge.connection_pool import _resolve_sqlite_db_path
+    return _resolve_sqlite_db_path()
 
 
 def _connect() -> sqlite3.Connection:

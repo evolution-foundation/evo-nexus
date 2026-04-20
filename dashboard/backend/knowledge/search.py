@@ -116,7 +116,7 @@ WITH vec AS (
         c.metadata,
         row_number() OVER (ORDER BY c.embedding <=> CAST(:query_vec AS vector)) AS vec_rank
     FROM knowledge_chunks c
-    WHERE c.space_id = :space_id
+    WHERE (:space_id IS NULL OR c.space_id = :space_id)
       AND c.embedding IS NOT NULL
     ORDER BY c.embedding <=> CAST(:query_vec AS vector)
     LIMIT 100
@@ -126,7 +126,7 @@ fts AS (
         c.id             AS chunk_id,
         row_number() OVER (ORDER BY ts_rank_cd(c.content_tsv, plainto_tsquery('portuguese', :query_text)) DESC) AS fts_rank
     FROM knowledge_chunks c
-    WHERE c.space_id = :space_id
+    WHERE (:space_id IS NULL OR c.space_id = :space_id)
       AND c.content_tsv @@ plainto_tsquery('portuguese', :query_text)
     ORDER BY ts_rank_cd(c.content_tsv, plainto_tsquery('portuguese', :query_text)) DESC
     LIMIT 100
@@ -170,7 +170,7 @@ LIMIT :fetch_limit
 
 def hybrid_search(
     connection_id: str,
-    space_id: str,
+    space_id: Optional[str],
     query: str,
     top_k: int = 10,
     filters: Optional[Dict[str, Any]] = None,
@@ -179,7 +179,8 @@ def hybrid_search(
 
     Args:
         connection_id: Knowledge connection slug/id.
-        space_id: Target space UUID.
+        space_id: Target space UUID, or None to search across all spaces
+                  in the connection.
         query: Natural language query.
         top_k: Number of results to return.
         filters: Optional dict with keys:
