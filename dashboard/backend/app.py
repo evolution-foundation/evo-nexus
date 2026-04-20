@@ -300,6 +300,41 @@ with app.app_context():
 
     # --- End tickets migration ---
 
+    # --- Knowledge connections migration (pgvector-knowledge feature) ---
+    _existing_tables3 = {row[0] for row in _cur.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    if "knowledge_connections" not in _existing_tables3:
+        _cur.executescript("""
+            CREATE TABLE IF NOT EXISTS knowledge_connections (
+                id TEXT PRIMARY KEY,
+                slug TEXT UNIQUE NOT NULL,
+                name TEXT NOT NULL,
+                connection_string_encrypted BLOB,
+                host TEXT,
+                port INTEGER,
+                database_name TEXT,
+                username TEXT,
+                ssl_mode TEXT,
+                status TEXT DEFAULT 'disconnected',
+                schema_version TEXT,
+                pgvector_version TEXT,
+                postgres_version TEXT,
+                last_health_check TIMESTAMP,
+                last_error TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS knowledge_connection_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                connection_id TEXT REFERENCES knowledge_connections(id) ON DELETE CASCADE,
+                event_type TEXT,
+                details TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_kconn_status ON knowledge_connections(status);
+            CREATE INDEX IF NOT EXISTS idx_kconn_events_conn ON knowledge_connection_events(connection_id, created_at);
+        """)
+        _conn.commit()
+    # --- End knowledge connections migration ---
+
     # Fix corrupted datetime columns (NULL or non-string values crash SQLAlchemy)
     for _tbl, _col in [("roles", "created_at"), ("users", "created_at"), ("users", "last_login")]:
         try:
