@@ -1,8 +1,10 @@
 """Asynchronous document classification worker (ADR-008).
 
 Runs as a background daemon thread. Polls knowledge_classify_queue on each
-Knowledge connection and classifies documents using a cheap LLM (Claude Haiku
-via ANTHROPIC_API_KEY, or Gemini Flash via GEMINI_API_KEY).
+Knowledge connection and classifies documents via the Claude Code CLI
+(subprocess) — same runner pattern used by heartbeats. No direct Anthropic /
+Gemini / OpenAI API calls are made; the user's already-authenticated Claude
+Code installation handles all LLM usage.
 
 Classification populates:
     knowledge_documents.content_type, difficulty_level, topics[]
@@ -14,8 +16,9 @@ Checkout protocol (mirrors ticket_janitor pattern, Postgres edition):
 Janitor: every 5 min, release stale locks
     (locked_at + lock_timeout_seconds < now())
 
-If no LLM API key is set: worker logs a one-time warning and exits gracefully.
-Documents remain without classification — acceptable for v1.
+If the `claude` CLI is not on PATH, the worker logs a one-time warning and
+continues to poll but skips classification — documents remain without
+content_type / difficulty / topics, which is acceptable (they stay searchable).
 
 Integration:
     app.py calls start_classify_worker() inside an app context after other
@@ -27,15 +30,12 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
+import subprocess
 import threading
 import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
-
-try:
-    import anthropic  # type: ignore[import]
-except ImportError:
-    anthropic = None  # type: ignore[assignment]
 
 log = logging.getLogger("classify_worker")
 
@@ -43,81 +43,116 @@ _POLL_INTERVAL = int(os.environ.get("KNOWLEDGE_CLASSIFY_POLL_INTERVAL", "10"))
 _JANITOR_INTERVAL = int(os.environ.get("KNOWLEDGE_CLASSIFY_JANITOR_INTERVAL", "300"))
 _LOCK_TIMEOUT_SECONDS = 600
 _MAX_ATTEMPTS = 3
+_CLAUDE_TIMEOUT_SECONDS = int(os.environ.get("KNOWLEDGE_CLASSIFY_TIMEOUT", "60"))
 
 _worker_started = False
 _worker_lock = threading.Lock()
 
-# Suppress duplicate "no LLM key" log
-_warned_no_llm = False
+# Suppress duplicate "claude CLI not found" log
+_warned_no_claude = False
 
 
 # ---------------------------------------------------------------------------
 # LLM classification
 # ---------------------------------------------------------------------------
 
-def _classify_document(content_sample: str) -> Optional[Dict[str, Any]]:
-    """Call a cheap LLM to classify a document chunk sample.
+_CLASSIFY_PROMPT = (
+    "You are a document classifier. Given a sample of document content, "
+    "return a JSON object with exactly these fields:\n"
+    '  "content_type": one of ["tutorial", "reference", "case_study", '
+    '"whitepaper", "transcript", "article", "book_chapter", "other"]\n'
+    '  "difficulty_level": one of ["beginner", "intermediate", "advanced"]\n'
+    '  "topics": list of 1-5 short topic strings (e.g. ["machine learning", '
+    '"python"])\n\n'
+    "Respond with ONLY the JSON object, no markdown fences, no commentary.\n\n"
+    "Document sample:\n{sample}"
+)
 
-    Returns dict with content_type, difficulty_level, topics[],
-    or None if no LLM is configured.
-    """
-    global _warned_no_llm
 
-    anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
-    gemini_key = os.environ.get("GEMINI_API_KEY")
-
-    if not anthropic_key and not gemini_key:
-        if not _warned_no_llm:
-            log.warning(
-                "No LLM API key found (ANTHROPIC_API_KEY or GEMINI_API_KEY). "
-                "Document classification is disabled. "
-                "Set one of these keys to enable automatic content classification."
-            )
-            _warned_no_llm = True
+def _extract_json(raw: str) -> Optional[Dict[str, Any]]:
+    """Robustly extract a JSON object from a (possibly fenced) LLM response."""
+    text = raw.strip()
+    if text.startswith("```"):
+        # Strip ```json ... ``` or ``` ... ```
+        text = text.strip("`")
+        if text.lower().startswith("json"):
+            text = text[4:].lstrip()
+        if text.endswith("```"):
+            text = text[:-3].rstrip()
+    start = text.find("{")
+    end = text.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        return None
+    try:
+        return json.loads(text[start : end + 1])
+    except (json.JSONDecodeError, ValueError):
         return None
 
-    prompt = (
-        "You are a document classifier. Given a sample of document content, "
-        "return a JSON object with exactly these fields:\n"
-        '  "content_type": one of ["tutorial", "reference", "case_study", "whitepaper", '
-        '"transcript", "article", "book_chapter", "other"]\n'
-        '  "difficulty_level": one of ["beginner", "intermediate", "advanced"]\n'
-        '  "topics": list of 1-5 short topic strings (e.g. ["machine learning", "python"])\n\n'
-        "Respond with ONLY the JSON object, no markdown fences.\n\n"
-        f"Document sample:\n{content_sample[:3000]}"
-    )
 
-    if anthropic_key:
-        try:
-            if anthropic is None:
-                raise ImportError("anthropic not installed")
-            client = anthropic.Anthropic(api_key=anthropic_key)
-            message = client.messages.create(
-                model="claude-haiku-4-5",
-                max_tokens=256,
-                messages=[{"role": "user", "content": prompt}],
+def _classify_document(content_sample: str) -> Optional[Dict[str, Any]]:
+    """Classify a document via the Claude Code CLI subprocess.
+
+    Returns dict with ``content_type``, ``difficulty_level``, ``topics``
+    on success, or ``None`` if the CLI is unavailable or the output cannot
+    be parsed. Documents without classification remain searchable.
+    """
+    global _warned_no_claude
+
+    claude_bin = shutil.which("claude")
+    if claude_bin is None:
+        if not _warned_no_claude:
+            log.warning(
+                "`claude` CLI not found on PATH. Document classification is disabled. "
+                "Install Claude Code (https://claude.com/claude-code) to enable "
+                "automatic content classification."
             )
-            raw = message.content[0].text.strip()
-            return json.loads(raw)
-        except Exception as exc:
-            log.warning(f"Anthropic classify error: {exc}")
-            return None
+            _warned_no_claude = True
+        return None
 
-    if gemini_key:
-        try:
-            import google.generativeai as genai  # type: ignore[import]
-            genai.configure(api_key=gemini_key)
-            model = genai.GenerativeModel("gemini-1.5-flash")
-            response = model.generate_content(prompt)
-            raw = response.text.strip()
-            if raw.startswith("```"):
-                raw = raw.strip("`").lstrip("json").strip()
-            return json.loads(raw)
-        except Exception as exc:
-            log.warning(f"Gemini classify error: {exc}")
-            return None
+    prompt = _CLASSIFY_PROMPT.format(sample=content_sample[:3000])
 
-    return None
+    try:
+        result = subprocess.run(
+            [
+                claude_bin,
+                "--print",
+                "--permission-mode", "bypassPermissions",
+                "--model", "haiku",
+                "--output-format", "text",
+            ],
+            input=prompt,
+            capture_output=True,
+            text=True,
+            timeout=_CLAUDE_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        log.warning("classify_worker: claude CLI timed out after %ss", _CLAUDE_TIMEOUT_SECONDS)
+        return None
+    except Exception as exc:
+        log.warning("classify_worker: claude CLI invocation failed: %s", exc)
+        return None
+
+    if result.returncode != 0:
+        log.warning(
+            "classify_worker: claude CLI exit=%s stderr=%s",
+            result.returncode,
+            (result.stderr or "").strip()[:200],
+        )
+        return None
+
+    parsed = _extract_json(result.stdout or "")
+    if parsed is None:
+        log.warning(
+            "classify_worker: could not parse JSON from claude stdout (%d chars)",
+            len(result.stdout or ""),
+        )
+        return None
+
+    # Validate required fields before returning (defensive against a chatty LLM).
+    if not isinstance(parsed.get("content_type"), str):
+        return None
+    return parsed
 
 
 # ---------------------------------------------------------------------------
@@ -185,6 +220,7 @@ def _process_queue_for_connection(connection_id: str, dsn: str, worker_id: str) 
                 return 0
 
             doc_id = str(row[0])
+            doc_title = row[1] or "(untitled)"
             content_sample = row[2] or ""
 
             # Lock the row
@@ -201,11 +237,14 @@ def _process_queue_for_connection(connection_id: str, dsn: str, worker_id: str) 
                 {"worker_id": worker_id, "timeout": _LOCK_TIMEOUT_SECONDS, "doc_id": doc_id},
             )
 
+        print(f"[classify_worker] classifying doc_id={doc_id} title={doc_title!r} ({len(content_sample)} chars)", flush=True)
+
         # Classify outside the lock transaction (can take a few seconds)
         classification = _classify_document(content_sample)
 
         with engine.begin() as pg:
             if classification:
+                print(f"[classify_worker] OK doc_id={doc_id} → {classification}", flush=True)
                 topics = classification.get("topics") or []
                 pg.execute(
                     text(
@@ -231,6 +270,7 @@ def _process_queue_for_connection(connection_id: str, dsn: str, worker_id: str) 
                 )
                 processed = 1
             else:
+                print(f"[classify_worker] FAIL doc_id={doc_id} (will retry)", flush=True)
                 # No classification available — release lock, increment attempts
                 pg.execute(
                     text(
@@ -246,7 +286,9 @@ def _process_queue_for_connection(connection_id: str, dsn: str, worker_id: str) 
                 )
 
     except Exception as exc:
-        log.warning(f"classify_worker: error processing connection {connection_id}: {exc}")
+        msg = f"[classify_worker] error processing connection {connection_id}: {exc}"
+        log.warning(msg)
+        print(msg, flush=True)
     finally:
         try:
             engine.dispose()
@@ -360,4 +402,11 @@ def start_classify_worker(sqlite_db_path: str) -> None:
         name="knowledge-classify-worker",
     )
     t.start()
-    log.info(f"classify_worker thread started (poll={_POLL_INTERVAL}s, janitor={_JANITOR_INTERVAL}s)")
+    # Use print() alongside log.info() because the root logger in dev mode
+    # may suppress named-logger output. This makes start/stop visible.
+    msg = (
+        f"[classify_worker] started (poll={_POLL_INTERVAL}s, "
+        f"janitor={_JANITOR_INTERVAL}s, claude_timeout={_CLAUDE_TIMEOUT_SECONDS}s)"
+    )
+    log.info(msg)
+    print(msg, flush=True)
