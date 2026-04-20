@@ -57,7 +57,9 @@ export default function KnowledgeApiKeys() {
     setLoading(true)
     try {
       const data = await api.get(`/knowledge/connections/${activeConnectionId}/api-keys`)
-      setKeys(data.keys || data || [])
+      // Backend returns {api_keys: [...]}; tolerate legacy {keys} and bare array.
+      const list = data.api_keys || data.keys || (Array.isArray(data) ? data : [])
+      setKeys(Array.isArray(list) ? list : [])
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load API keys')
     }
