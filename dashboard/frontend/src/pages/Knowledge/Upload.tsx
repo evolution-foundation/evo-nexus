@@ -230,12 +230,12 @@ export default function KnowledgeUpload() {
       >
         <UploadIcon size={28} className={`mx-auto mb-3 ${dragging ? 'text-[#00FFA7]' : 'text-[#667085]'}`} />
         <p className="text-sm font-medium text-[#D0D5DD]">Drag files here or click to browse</p>
-        <p className="text-xs text-[#667085] mt-1">PDF, DOCX, PPTX, XLSX, HTML, EPUB, images · Max 100 MB per file</p>
+        <p className="text-xs text-[#667085] mt-1">PDF, DOCX, PPTX, XLSX, HTML, EPUB, TXT, MD, CSV, JSON, images · Max 100 MB per file</p>
         <input
           ref={fileInputRef}
           type="file"
           multiple
-          accept=".pdf,.docx,.pptx,.xlsx,.html,.epub,.png,.jpg,.jpeg"
+          accept=".pdf,.docx,.pptx,.xlsx,.html,.htm,.epub,.txt,.md,.markdown,.csv,.json,.png,.jpg,.jpeg,.gif,.webp,.tiff,.tif"
           className="hidden"
           onChange={(e) => {
             if (e.target.files) {
