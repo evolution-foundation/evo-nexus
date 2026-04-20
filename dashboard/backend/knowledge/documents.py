@@ -99,7 +99,7 @@ def upload_document(
                      error_message, created_at)
                 VALUES
                     (:id, :space_id, :unit_id, :title, :description, :tags, :owner_id,
-                     :source_uri, :mime_type, :size_bytes, :metadata::jsonb, :status,
+                     :source_uri, :mime_type, :size_bytes, CAST(:metadata AS jsonb), :status,
                      NULL, :created_at)
                 """
             ),
@@ -109,7 +109,7 @@ def upload_document(
                 "unit_id": unit_id,
                 "title": doc_title,
                 "description": metadata.get("description"),
-                "tags": json.dumps(metadata.get("tags") or []),
+                "tags": metadata.get("tags") or [],
                 "owner_id": metadata.get("owner_id"),
                 "source_uri": str(file_path),
                 "mime_type": metadata.get("mime_type"),
@@ -223,8 +223,11 @@ def update_document(
             continue
         value = data[key]
         if key == "tags":
-            updates.append("tags = :tags::jsonb")
-            params["tags"] = json.dumps(value if value is not None else [])
+            updates.append("tags = :tags")
+            params["tags"] = value if value is not None else []
+        elif key == "metadata":
+            updates.append("metadata = CAST(:metadata AS jsonb)")
+            params["metadata"] = json.dumps(value if value is not None else {})
         else:
             updates.append(f"{key} = :{key}")
             params[key] = value

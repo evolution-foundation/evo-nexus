@@ -282,7 +282,7 @@ def _insert_chunks_batch(
                      content, metadata, embedding)
                 VALUES
                     (:document_id, :space_id, :unit_id, :chunk_idx, :chunk_type,
-                     :content, :metadata, :embedding::vector)
+                     :content, CAST(:metadata AS jsonb), CAST(:embedding AS vector))
                 """
             ),
             {

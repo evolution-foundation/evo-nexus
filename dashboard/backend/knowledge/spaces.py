@@ -156,7 +156,7 @@ def update_space(
             continue
         value = data[key]
         if key in ("access_rules", "content_type_boosts"):
-            updates.append(f"{key} = :{key}::jsonb")
+            updates.append(f"{key} = CAST(:{key} AS jsonb)")
             params[key] = json.dumps(value if value is not None else {})
         else:
             updates.append(f"{key} = :{key}")

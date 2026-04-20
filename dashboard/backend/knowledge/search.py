@@ -114,11 +114,11 @@ WITH vec AS (
         c.chunk_type,
         c.content,
         c.metadata,
-        row_number() OVER (ORDER BY c.embedding <=> :query_vec::vector) AS vec_rank
+        row_number() OVER (ORDER BY c.embedding <=> CAST(:query_vec AS vector)) AS vec_rank
     FROM knowledge_chunks c
     WHERE c.space_id = :space_id
       AND c.embedding IS NOT NULL
-    ORDER BY c.embedding <=> :query_vec::vector
+    ORDER BY c.embedding <=> CAST(:query_vec AS vector)
     LIMIT 100
 ),
 fts AS (
