@@ -15,6 +15,7 @@ functions that knowledge_v1 uses — zero logic duplication.
 from flask import Blueprint, jsonify, request
 
 from routes.auth_routes import require_permission
+from routes.knowledge import _require_xhr
 
 from knowledge import spaces as spaces_mod
 from knowledge import units as units_mod
@@ -47,6 +48,7 @@ def list_spaces(cid: str):
 @bp.route("/api/knowledge/connections/<cid>/spaces", methods=["POST"])
 @require_permission("knowledge", "manage")
 def create_space(cid: str):
+    _require_xhr()
     data = request.get_json(silent=True) or {}
     try:
         space = spaces_mod.create_space(cid, data)
@@ -70,6 +72,7 @@ def get_space(cid: str, sid: str):
 @bp.route("/api/knowledge/connections/<cid>/spaces/<sid>", methods=["PATCH"])
 @require_permission("knowledge", "manage")
 def update_space(cid: str, sid: str):
+    _require_xhr()
     data = request.get_json(silent=True) or {}
     try:
         space = spaces_mod.update_space(cid, sid, data)
@@ -83,6 +86,7 @@ def update_space(cid: str, sid: str):
 @bp.route("/api/knowledge/connections/<cid>/spaces/<sid>", methods=["DELETE"])
 @require_permission("knowledge", "manage")
 def delete_space(cid: str, sid: str):
+    _require_xhr()
     try:
         ok = spaces_mod.delete_space(cid, sid)
         if not ok:
@@ -109,6 +113,7 @@ def list_units(cid: str, sid: str):
 @bp.route("/api/knowledge/connections/<cid>/spaces/<sid>/units", methods=["POST"])
 @require_permission("knowledge", "manage")
 def create_unit(cid: str, sid: str):
+    _require_xhr()
     data = request.get_json(silent=True) or {}
     data["space_id"] = sid
     try:
@@ -121,6 +126,7 @@ def create_unit(cid: str, sid: str):
 @bp.route("/api/knowledge/connections/<cid>/spaces/<sid>/units/<uid>", methods=["PATCH"])
 @require_permission("knowledge", "manage")
 def update_unit(cid: str, sid: str, uid: str):
+    _require_xhr()
     data = request.get_json(silent=True) or {}
     try:
         unit = units_mod.update_unit(cid, uid, data)
@@ -134,6 +140,7 @@ def update_unit(cid: str, sid: str, uid: str):
 @bp.route("/api/knowledge/connections/<cid>/spaces/<sid>/units/<uid>", methods=["DELETE"])
 @require_permission("knowledge", "manage")
 def delete_unit(cid: str, sid: str, uid: str):
+    _require_xhr()
     try:
         ok = units_mod.delete_unit(cid, uid)
         if not ok:
@@ -146,6 +153,7 @@ def delete_unit(cid: str, sid: str, uid: str):
 @bp.route("/api/knowledge/connections/<cid>/spaces/<sid>/units/reorder", methods=["POST"])
 @require_permission("knowledge", "manage")
 def reorder_units(cid: str, sid: str):
+    _require_xhr()
     data = request.get_json(silent=True) or {}
     ordered = data.get("ordered_ids") or []
     try:
@@ -182,6 +190,7 @@ def list_documents(cid: str):
 @bp.route("/api/knowledge/connections/<cid>/documents", methods=["POST"])
 @require_permission("knowledge", "manage")
 def upload_document(cid: str):
+    _require_xhr()
     if "file" not in request.files:
         return _error("bad_request", "Missing 'file' multipart field", 400)
     f = request.files["file"]
@@ -227,6 +236,7 @@ def get_document(cid: str, did: str):
 @bp.route("/api/knowledge/connections/<cid>/documents/<did>", methods=["DELETE"])
 @require_permission("knowledge", "manage")
 def delete_document(cid: str, did: str):
+    _require_xhr()
     try:
         ok = documents_mod.delete_document(cid, did)
         if not ok:
@@ -297,6 +307,7 @@ def list_api_keys(cid: str):
 @bp.route("/api/knowledge/connections/<cid>/api-keys", methods=["POST"])
 @require_permission("knowledge", "manage")
 def create_api_key(cid: str):
+    _require_xhr()
     data = request.get_json(silent=True) or {}
     try:
         from knowledge import api_keys as api_keys_mod
@@ -321,6 +332,7 @@ def create_api_key(cid: str):
 @bp.route("/api/knowledge/connections/<cid>/api-keys/<kid>", methods=["DELETE"])
 @require_permission("knowledge", "manage")
 def delete_api_key(cid: str, kid: str):
+    _require_xhr()
     try:
         from knowledge import api_keys as api_keys_mod
         ok = api_keys_mod.revoke_api_key(kid)
