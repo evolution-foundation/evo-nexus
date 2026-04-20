@@ -12,6 +12,10 @@ log = logging.getLogger(__name__)
 
 import requests as http
 from flask import Blueprint, jsonify, request
+from flask_login import current_user
+
+from models import audit
+from routes.knowledge import _require_xhr
 
 bp = Blueprint("integrations", __name__)
 
@@ -194,6 +198,7 @@ def list_integrations():
 
 @bp.route("/api/integrations/custom", methods=["POST"])
 def create_custom_integration():
+    _require_xhr()
     data = request.get_json(silent=True) or {}
     slug = (data.get("slug") or "").strip().lower()
     display_name = (data.get("displayName") or "").strip()
@@ -250,6 +255,16 @@ Document the public endpoints, auth method, and example calls here.
         env_path = WORKSPACE / ".env"
         _upsert_env_vars(env_path, env_values, section_comment=f"custom-int-{slug}")
 
+    try:
+        audit(
+            current_user,
+            "create_custom_integration",
+            "integrations",
+            f"slug={slug} keys={sorted(env_values.keys()) if env_values else []}",
+        )
+    except Exception:
+        log.warning("integrations.create_custom_integration: audit() failed (non-fatal)", exc_info=True)
+
     entry = {
         "slug": slug,
         "name": display_name,
@@ -266,6 +281,7 @@ Document the public endpoints, auth method, and example calls here.
 
 @bp.route("/api/integrations/custom/<slug>", methods=["PATCH"])
 def update_custom_integration(slug: str):
+    _require_xhr()
     target_dir = SKILLS_DIR / f"custom-int-{slug}"
     if not target_dir.exists():
         return jsonify({"error": "Not found"}), 404
@@ -326,6 +342,16 @@ envKeys: {env_keys!r}
         env_path = WORKSPACE / ".env"
         _upsert_env_vars(env_path, env_values, section_comment=f"custom-int-{slug}")
 
+    try:
+        audit(
+            current_user,
+            "update_custom_integration",
+            "integrations",
+            f"slug={slug} keys={sorted(env_values.keys()) if env_values else []}",
+        )
+    except Exception:
+        log.warning("integrations.update_custom_integration: audit() failed (non-fatal)", exc_info=True)
+
     configured = any(bool(os.environ.get(k)) for k in env_keys) if env_keys else False
     entry = {
         "slug": slug,
@@ -343,10 +369,15 @@ envKeys: {env_keys!r}
 
 @bp.route("/api/integrations/custom/<slug>", methods=["DELETE"])
 def delete_custom_integration(slug: str):
+    _require_xhr()
     target_dir = SKILLS_DIR / f"custom-int-{slug}"
     if not target_dir.exists():
         return jsonify({"error": "Not found"}), 404
     shutil.rmtree(target_dir)
+    try:
+        audit(current_user, "delete_custom_integration", "integrations", f"slug={slug}")
+    except Exception:
+        log.warning("integrations.delete_custom_integration: audit() failed (non-fatal)", exc_info=True)
     return jsonify({"ok": True}), 200
 
 
