@@ -547,6 +547,7 @@ from routes.goals import bp as goals_bp
 from routes.tickets import bp as tickets_bp
 from routes.knowledge import bp as knowledge_bp
 from routes.knowledge_public import bp as knowledge_public_bp
+from routes.knowledge_proxy import bp as knowledge_proxy_bp
 from routes.knowledge_v1 import bp as knowledge_v1_bp
 
 app.register_blueprint(overview_bp)
@@ -576,6 +577,7 @@ app.register_blueprint(goals_bp)
 app.register_blueprint(tickets_bp)
 app.register_blueprint(knowledge_bp)
 app.register_blueprint(knowledge_public_bp)
+app.register_blueprint(knowledge_proxy_bp)
 app.register_blueprint(knowledge_v1_bp)
 
 # --------------- Social Auth blueprints ---------------
