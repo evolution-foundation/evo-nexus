@@ -175,8 +175,8 @@ def get_dsn(connection_id: str) -> str:
     conn = sqlite3.connect(db_path)
     try:
         row = conn.execute(
-            "SELECT connection_string_encrypted FROM knowledge_connections WHERE id = ?",
-            (connection_id,),
+            "SELECT connection_string_encrypted FROM knowledge_connections WHERE id = ? OR slug = ?",
+            (connection_id, connection_id),
         ).fetchone()
     finally:
         conn.close()

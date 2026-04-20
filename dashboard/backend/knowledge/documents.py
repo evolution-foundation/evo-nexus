@@ -189,14 +189,25 @@ def list_documents(
         filters.append("title ILIKE :q")
         params["q"] = f"%{q}%"
 
-    where = ("WHERE " + " AND ".join(filters)) if filters else ""
+    where = ("WHERE " + " AND ".join([f"d.{f}" for f in filters])) if filters else ""
     with engine.connect() as pg:
         rows = pg.execute(
             _sql(
                 f"""
-                SELECT * FROM knowledge_documents
+                SELECT
+                    d.*,
+                    COALESCE(c.chunks_count, 0) AS chunks_count,
+                    c.pages_count               AS pages_count
+                FROM knowledge_documents d
+                LEFT JOIN LATERAL (
+                    SELECT
+                        COUNT(*) AS chunks_count,
+                        COUNT(DISTINCT NULLIF(metadata->>'page', '')) AS pages_count
+                    FROM knowledge_chunks
+                    WHERE document_id = d.id
+                ) c ON TRUE
                 {where}
-                ORDER BY created_at DESC
+                ORDER BY d.created_at DESC
                 LIMIT :limit OFFSET :offset
                 """
             ),
