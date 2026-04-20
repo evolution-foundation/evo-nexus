@@ -195,6 +195,47 @@ const INTEGRATION_META: IntegrationMeta[] = [
       { envKey: 'AI_IMG_CREATOR_GEMINI_KEY', label: 'Google AI Studio Key', hint: 'Chave AI... do Google AI Studio (alternativa)', required: false },
     ],
   },
+  // --- LLM providers (used by agents, Knowledge classifier, RAG synthesis) ---
+  {
+    id: 'openai',
+    description: 'GPT models + text-embedding-3 (embeddings Knowledge, opt-in)',
+    docsUrl: 'https://platform.openai.com/api-keys',
+    fields: [
+      { envKey: 'OPENAI_API_KEY', label: 'API Key', hint: 'Chave pessoal da OpenAI — começa com `sk-...`', required: true },
+    ],
+  },
+  {
+    id: 'anthropic',
+    description: 'Claude Haiku/Sonnet/Opus — classificador automático Knowledge + skills de RAG',
+    docsUrl: 'https://console.anthropic.com/settings/keys',
+    fields: [
+      { envKey: 'ANTHROPIC_API_KEY', label: 'API Key', hint: 'Chave da Anthropic — começa com `sk-ant-...`', required: true },
+    ],
+  },
+  {
+    id: 'gemini',
+    description: 'Google Gemini — fallback do classificador Knowledge quando Anthropic não está configurada',
+    docsUrl: 'https://aistudio.google.com/apikey',
+    fields: [
+      { envKey: 'GEMINI_API_KEY', label: 'API Key', hint: 'Chave do Google AI Studio', required: true },
+    ],
+  },
+  {
+    id: 'voyage ai',
+    description: 'Voyage Embeddings (voyage-3-large, 1024 dim) — embedder opt-in v1.1 do Knowledge',
+    docsUrl: 'https://docs.voyageai.com/',
+    fields: [
+      { envKey: 'VOYAGE_API_KEY', label: 'API Key', hint: 'Chave da Voyage AI', required: true },
+    ],
+  },
+  {
+    id: 'llamaparse',
+    description: 'Parser premium de PDFs visualmente complexos — opt-in do Knowledge',
+    docsUrl: 'https://cloud.llamaindex.ai/parse',
+    fields: [
+      { envKey: 'LLAMAPARSE_API_KEY', label: 'API Key', hint: 'Chave da LlamaIndex Cloud', required: true },
+    ],
+  },
 ]
 
 /**
