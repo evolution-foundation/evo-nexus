@@ -18,7 +18,13 @@ dependencies = [
     "flask-sock>=0.7",
     "boto3>=1.35",
     "pywinpty>=3.0.3; sys_platform == 'win32'",
+    "cryptography>=42",
+    "psycopg2-binary",
+    "alembic>=1.13",
 ]
+
+[project.scripts]
+evonexus = "dashboard.backend.knowledge.cli:main"
 
 [tool.uv]
 dev-dependencies = [
