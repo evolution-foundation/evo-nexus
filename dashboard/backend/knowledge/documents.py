@@ -159,7 +159,7 @@ def upload_document(
 
 def list_documents(
     connection_id: str,
-    space_id: str,
+    space_id: Optional[str] = None,
     unit_id: Optional[str] = None,
     status: Optional[str] = None,
     content_type: Optional[str] = None,
@@ -167,11 +167,15 @@ def list_documents(
     limit: int = 50,
     offset: int = 0,
 ) -> List[Dict[str, Any]]:
-    """Return documents, filtered and paginated."""
+    """Return documents, filtered and paginated. space_id is optional —
+    omit to list all documents in the connection."""
     engine = _get_engine(connection_id)
-    filters = ["space_id = :space_id"]
-    params: Dict[str, Any] = {"space_id": space_id, "limit": limit, "offset": offset}
+    filters: List[str] = []
+    params: Dict[str, Any] = {"limit": limit, "offset": offset}
 
+    if space_id is not None:
+        filters.append("space_id = :space_id")
+        params["space_id"] = space_id
     if unit_id is not None:
         filters.append("unit_id = :unit_id")
         params["unit_id"] = unit_id
@@ -185,7 +189,7 @@ def list_documents(
         filters.append("title ILIKE :q")
         params["q"] = f"%{q}%"
 
-    where = "WHERE " + " AND ".join(filters)
+    where = ("WHERE " + " AND ".join(filters)) if filters else ""
     with engine.connect() as pg:
         rows = pg.execute(
             _sql(

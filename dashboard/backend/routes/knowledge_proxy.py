@@ -163,16 +163,17 @@ def reorder_units(cid: str, sid: str):
 @require_permission("knowledge", "view")
 def list_documents(cid: str):
     try:
-        filters = {
+        kwargs = {
             "space_id": request.args.get("space_id") or None,
             "unit_id": request.args.get("unit_id") or None,
             "content_type": request.args.get("content_type") or None,
             "status": request.args.get("status") or None,
             "q": request.args.get("q") or None,
+            "limit": int(request.args.get("limit", 50)),
         }
-        filters = {k: v for k, v in filters.items() if v is not None}
-        limit = int(request.args.get("limit", 50))
-        items = documents_mod.list_documents(cid, filters=filters, limit=limit)
+        # Drop None values so documents_mod.list_documents uses its own defaults.
+        kwargs = {k: v for k, v in kwargs.items() if v is not None}
+        items = documents_mod.list_documents(cid, **kwargs)
         return jsonify({"documents": items})
     except Exception as exc:
         return _error("list_failed", str(exc), 500)
@@ -239,7 +240,7 @@ def delete_document(cid: str, did: str):
 @require_permission("knowledge", "view")
 def document_status(cid: str, did: str):
     try:
-        status = documents_mod.get_ingestion_status(cid, did)
+        status = documents_mod.get_ingestion_status(did)
         return jsonify(status)
     except Exception as exc:
         return _error("status_failed", str(exc), 500)

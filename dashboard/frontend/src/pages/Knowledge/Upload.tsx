@@ -116,7 +116,7 @@ export default function KnowledgeUpload() {
   function pollStatus(uploadId: string, docId: string) {
     const interval = setInterval(async () => {
       try {
-        const res = await fetch(`${API}/api/knowledge/documents/${docId}/status`, { credentials: 'include' })
+        const res = await fetch(`${API}/api/knowledge/connections/${activeConnectionId}/documents/${docId}/status`, { credentials: 'include' })
         if (!res.ok) { clearInterval(interval); return }
         const data = await res.json()
         const status = data.status as string
