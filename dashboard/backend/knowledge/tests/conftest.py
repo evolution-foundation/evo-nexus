@@ -66,6 +66,7 @@ _TEARDOWN_TABLES = [
     "knowledge_spaces",
     "knowledge_events",
     "knowledge_api_usage",
+    "knowledge_api_keys",
     "knowledge_config",
     "alembic_version",
 ]
@@ -82,14 +83,37 @@ def pg_dsn():
 
 @pytest.fixture(scope="session")
 def pg_full_schema(pg_dsn):
-    """Session-scoped: run Alembic upgrade head to create the full Knowledge schema."""
+    """Session-scoped: run Alembic upgrade head to create the full Knowledge schema.
+
+    Drops any pre-existing knowledge tables before running Alembic so the
+    migration is idempotent when tests are re-run without a clean DB.
+    """
     _add_backend()
     from knowledge.auto_migrator import _run_alembic_upgrade
+
+    # Pre-clean: drop tables that may have been left by a previous test run
+    # (e.g., knowledge_api_usage created by pg_conn before pg_full_schema).
+    _pre_conn = psycopg2.connect(pg_dsn)
+    _pre_conn.autocommit = True
+    with _pre_conn.cursor() as cur:
+        for table in _TEARDOWN_TABLES:
+            cur.execute(f"DROP TABLE IF EXISTS {table} CASCADE")
+    _pre_conn.close()
 
     _run_alembic_upgrade(pg_dsn)
 
     conn = psycopg2.connect(pg_dsn)
     conn.autocommit = True
+
+    # Drop the FK constraint on knowledge_api_usage so rate_limiter tests can
+    # use arbitrary UUIDs without inserting into knowledge_api_keys first.
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            ALTER TABLE knowledge_api_usage
+            DROP CONSTRAINT IF EXISTS knowledge_api_usage_api_key_id_fkey
+            """
+        )
 
     yield conn
 
@@ -101,15 +125,18 @@ def pg_full_schema(pg_dsn):
 
 
 @pytest.fixture(scope="session")
-def pg_conn(pg_dsn):
-    """Session-scoped Postgres connection with the usage table created (legacy fixture)."""
+def pg_conn(pg_dsn, pg_full_schema):
+    """Session-scoped Postgres connection with the usage table available.
+
+    Depends on pg_full_schema so the Alembic migration (which creates
+    knowledge_api_usage WITH the FK constraint) runs first.
+    The legacy _USAGE_SCHEMA_SQL uses IF NOT EXISTS so it is a no-op.
+    """
     conn = psycopg2.connect(pg_dsn)
     conn.autocommit = True
     with conn.cursor() as cur:
-        cur.execute(_USAGE_SCHEMA_SQL)
+        cur.execute(_USAGE_SCHEMA_SQL)  # idempotent — IF NOT EXISTS
     yield conn
-    with conn.cursor() as cur:
-        cur.execute("DROP TABLE IF EXISTS knowledge_api_usage")
     conn.close()
 
 

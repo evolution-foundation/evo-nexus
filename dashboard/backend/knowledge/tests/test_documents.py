@@ -175,7 +175,7 @@ class TestDocumentsIntegration:
                 "name": "Doc Test Space",
             })
 
-            doc = documents.upload_document("test", space["id"], test_file)
+            doc = documents.upload_document("test", str(space["id"]), test_file)
             assert doc["status"] == "pending"
             assert doc["space_id"] == space["id"]
 

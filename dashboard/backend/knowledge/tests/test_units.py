@@ -147,10 +147,11 @@ class TestUnitsIntegration:
 
             unit = units.create_unit("test", {
                 "space_id": space["id"],
-                "name": "Module 1",
+                "title": "Module 1",
+                "slug": f"module-{uuid.uuid4().hex[:8]}",
                 "sort_order": 0,
             })
-            assert unit["name"] == "Module 1"
+            assert unit["title"] == "Module 1"
 
             listed = units.list_units("test", space["id"])
             assert any(u["id"] == unit["id"] for u in listed)
