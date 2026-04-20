@@ -22,6 +22,59 @@ FLASK_PORT="${EVONEXUS_PORT:-8080}"
 
 echo "[start-dashboard] terminal-server on :${TERMINAL_PORT}, Flask on :${FLASK_PORT}"
 
+# ----------------------------------------------------------------------------
+# Pre-seed Claude Code global settings so the first-run theme/onboarding
+# prompts are skipped on every new agent terminal. Each agent runs in its
+# own working directory, which Claude Code treats as a separate project —
+# without this, the user has to pick a theme on every single agent.
+# Only writes the file if it doesn't already exist (preserves user choices).
+# ----------------------------------------------------------------------------
+mkdir -p /root/.claude
+if [ ! -f /root/.claude/settings.json ]; then
+    echo "[start-dashboard] seeding /root/.claude/settings.json with default theme"
+    cat > /root/.claude/settings.json <<'EOF'
+{
+  "theme": "dark",
+  "hasCompletedOnboarding": true,
+  "hasSeenWelcome": true,
+  "telemetry": false
+}
+EOF
+fi
+
+# ----------------------------------------------------------------------------
+# Restore /root/.claude.json from the most recent backup when missing.
+#
+# Claude Code's main config (theme, OAuth tokens, per-project state) lives
+# at /root/.claude.json — a SIBLING of the /root/.claude/ directory, NOT
+# inside it. The Swarm volume mounts /root/.claude/, so /root/.claude.json
+# sits in the container's writable layer and is wiped on every redeploy.
+# Result: theme picker and onboarding reappear on every release.
+#
+# Claude Code itself writes timestamped backups into /root/.claude/backups/
+# (which IS in the volume). We just need to restore the latest on startup
+# if the main file is missing. If no backup exists either, seed a minimal
+# config so the first-run prompts are skipped.
+# ----------------------------------------------------------------------------
+if [ ! -f /root/.claude.json ]; then
+    latest_backup=$(ls -t /root/.claude/backups/.claude.json.backup.* 2>/dev/null | head -n1 || true)
+    if [ -n "${latest_backup:-}" ] && [ -f "${latest_backup}" ]; then
+        echo "[start-dashboard] restoring /root/.claude.json from ${latest_backup}"
+        cp "${latest_backup}" /root/.claude.json
+    else
+        echo "[start-dashboard] seeding minimal /root/.claude.json (no backup found)"
+        cat > /root/.claude.json <<'EOF'
+{
+  "theme": "dark",
+  "hasCompletedOnboarding": true,
+  "hasSeenWelcome": true,
+  "bypassPermissionsModeAccepted": true,
+  "telemetry": false
+}
+EOF
+    fi
+fi
+
 # Start terminal-server in the background
 node /workspace/dashboard/terminal-server/bin/server.js --port "${TERMINAL_PORT}" &
 TERMINAL_PID=$!

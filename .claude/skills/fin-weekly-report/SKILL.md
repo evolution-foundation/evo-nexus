@@ -1,11 +1,11 @@
 ---
 name: fin-weekly-report
-description: "Weekly financial report — consolidates Stripe and Omie data for the week: revenue, expenses, cash flow projection, overdue accounts, and variance analysis. Trigger when user says 'financial weekly', 'weekly financial report', or 'financial summary of the week'."
+description: "Weekly financial report — consolidates Stripe, Omie and Evo Academy data for the week: revenue (courses, subscriptions, tickets), expenses, cash flow projection, overdue accounts, and variance analysis. Trigger when user says 'financial weekly', 'weekly financial report', or 'financial summary of the week'."
 ---
 
 # Financial Weekly — Weekly Financial Report
 
-Weekly routine that consolidates the week's financial data: revenue, expenses, Stripe, Omie, projected cash flow, and analysis.
+Weekly routine that consolidates the week's financial data: revenue, expenses, Stripe, Omie, Evo Academy, projected cash flow, and analysis.
 
 **Always respond in English.**
 
@@ -24,8 +24,25 @@ Use `/int-omie` to fetch:
 - Confirmed receipts for the week
 - Invoices issued during the week
 
+
+### 1c. Evo Academy — revenue
+Call `GET /api/v1/analytics/summary?period=7d` (env: `$EVO_ACADEMY_BASE_URL`, auth: `Bearer $EVO_ACADEMY_API_KEY`):
+- `revenue.total` → receita bruta da semana
+- `orders.completed` → número de vendas
+- `subscriptions.active` / `subscriptions.cancelled` → net change
+
+Fetch orders da semana: `GET /api/v1/analytics/orders?status=completed&created_after=YYYY-MM-DD&per_page=100`
+- Itere por cursor até `has_more=false`
+- Some `amount` → receita total Evo Academy na semana
+- Separe: renovações vs novos, one-time vs assinatura
+
+Fetch assinaturas novas na semana: `GET /api/v1/analytics/subscriptions?status=active&created_after=YYYY-MM-DD&per_page=100`
+- MRR adicionado = soma dos `plan.price` de assinaturas criadas na semana
+
 Group revenue by category:
 - Stripe Subscriptions
+- Evo Academy — Courses & Subscriptions
+- Evo Academy — One-time (tickets, packs)
 - Services / Consulting
 - Partnerships
 - Other
@@ -59,10 +76,19 @@ Consolidate the week's Omie metrics:
 - Invoices issued during the week
 - Confirmed receipts
 
+## Step 4.5 — Detailed Evo Academy metrics
+
+Consolidate Evo Academy's week metrics:
+- MRR (sum of all active subscription `plan.price`) and variance vs prior week
+- New subscriptions vs cancellations
+- One-time revenue (tickets, packs, live events)
+- Top-selling products of the week
+- Students enrolled (`students.new_in_period`)
+
 ## Step 5 — Cash flow projection (4 weeks)
 
 Based on collected data, project:
-- Expected inflows (Stripe recurring + receivables)
+- Expected inflows (Stripe recurring + Evo Academy subscriptions + receivables)
 - Expected outflows (payables + recurring expenses)
 - Balance and cumulative by week
 
@@ -135,7 +161,7 @@ Create the directory `workspace/finance/reports/weekly/` if it does not exist.
 
 **File:** workspace/finance/reports/weekly/[C] YYYY-WXX-financial-weekly.html
 **Revenue:** R$ X,XXX ({var}%) | **Expenses:** R$ X,XXX ({var}%)
-**MRR:** R$ X,XXX | **Projected 30d balance:** R$ XX,XXX
+**MRR total:** R$ X,XXX (Stripe: R$ X,XXX | Evo Academy: R$ X,XXX) | **Projected 30d balance:** R$ XX,XXX
 **Alerts:** {N} overdue accounts | {N} pending invoices
 ```
 

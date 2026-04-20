@@ -32,6 +32,7 @@ services:
       - evonexus_memory:/workspace/memory
       - evonexus_adw_logs:/workspace/ADWs/logs
       - evonexus_agent_memory:/workspace/.claude/agent-memory
+      - evonexus_claude_auth:/root/.claude
       - evonexus_codex_auth:/root/.codex
 
     networks:
@@ -96,6 +97,7 @@ services:
       - evonexus_memory:/workspace/memory
       - evonexus_adw_logs:/workspace/ADWs/logs
       - evonexus_agent_memory:/workspace/.claude/agent-memory
+      - evonexus_claude_auth:/root/.claude
       - evonexus_codex_auth:/root/.codex
 
     networks:
@@ -155,6 +157,7 @@ volumes:
   evonexus_memory:
   evonexus_adw_logs:
   evonexus_agent_memory:
+  evonexus_claude_auth:
   evonexus_codex_auth:
 
 networks:

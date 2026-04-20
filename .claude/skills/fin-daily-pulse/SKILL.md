@@ -1,11 +1,11 @@
 ---
 name: fin-daily-pulse
-description: "Daily financial pulse — queries Stripe (MRR, charges, churn, failures) and Omie (accounts payable/receivable, invoices) to generate an HTML snapshot of the company's financial health. Trigger when user says 'financial pulse', 'financial snapshot', or 'financial metrics'."
+description: "Daily financial pulse — queries Stripe (MRR, charges, churn, failures), Omie (accounts payable/receivable, invoices) and Evo Academy (courses, subscriptions, Summit tickets) to generate an HTML snapshot of the company's financial health. Trigger when user says 'financial pulse', 'financial snapshot', or 'financial metrics'."
 ---
 
 # Financial Pulse — Daily Financial Snapshot
 
-Daily routine that pulls data from Stripe and Omie to generate an HTML snapshot of financial health.
+Daily routine that pulls data from Stripe, Omie and Evo Academy to generate an HTML snapshot of financial health.
 
 **Always respond in English.**
 
@@ -47,14 +47,48 @@ Use the `/int-omie` skill to fetch:
 - Fetch invoices pending issuance
 - Count invoices issued in the current month
 
+
+## Step 2.5 — Collect Evo Academy data (silently)
+
+Call the Evo Academy Analytics API directly:
+- **Base URL:** `$EVO_ACADEMY_BASE_URL` (env var)
+- **Auth:** `Authorization: Bearer $EVO_ACADEMY_API_KEY`
+
+### 2.5a. Summary do dia
+```
+GET /api/v1/analytics/summary?period=today
+```
+Captura: `revenue.total`, `orders.completed`, `orders.pending`, `orders.failed`, `subscriptions.active`, `students.new_in_period`
+
+### 2.5b. Orders completados hoje
+```
+GET /api/v1/analytics/orders?status=completed&created_after=YYYY-MM-DD&per_page=100
+```
+(hoje em BRT; converter para UTC → `created_after = date.today().isoformat()`)
+- Itere paginação por cursor até `meta.has_more = false`
+- Some `amount` de todos os orders → receita bruta Evo Academy do dia
+- Separe por tipo: renovações (`is_renewal=true`) vs novos (`is_renewal=false`)
+- Agrupe por produto: cursos, assinaturas, ingressos, outros
+
+### 2.5c. MRR de assinaturas ativas (Evo Academy)
+```
+GET /api/v1/analytics/subscriptions?status=active&per_page=100
+```
+- Itere até `meta.has_more = false`
+- Some `plan.price` de cada assinatura ativa → MRR Evo Academy
+
 ## Step 3 — Day's transactions
 
 Consolidate all financial transactions for the day:
 - Stripe charges (revenue)
+- Evo Academy orders (revenue — courses / subscriptions / tickets)
 - Payments recorded in Omie (expenses)
 - Refunds
 
 Format each transaction with: type (Revenue/Expense/Refund), description, amount, status.
+
+**Total revenue = Stripe today + Evo Academy today**
+**Total MRR = Stripe MRR + Evo Academy MRR**
 
 ## Step 4 — Classify financial health
 
@@ -105,7 +139,8 @@ Create the directory `workspace/finance/reports/daily/` if it does not exist.
 ## Financial Pulse generated
 
 **File:** workspace/finance/reports/daily/[C] YYYY-MM-DD-financial-pulse.html
-**MRR:** R$ X,XXX | **Subscriptions:** N | **Churn:** X%
+**MRR total:** R$ X,XXX (Stripe: R$ X,XXX | Evo Academy: R$ X,XXX)
+**Receita hoje:** R$ X,XXX | **Subscriptions:** N | **Churn:** X%
 **Alerts:** {N} attention points
 ```
 

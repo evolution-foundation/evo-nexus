@@ -40,6 +40,14 @@ COPY dashboard/backend/ dashboard/backend/
 COPY social-auth/ social-auth/
 COPY scheduler.py ./
 
+# Copy workspace assets the backend reads at runtime.
+# Without these, /api/agents, /api/skills, /api/commands etc. all return empty
+# and the UI shows "No agents found" / "No skills found" on a fresh deploy.
+# .claude/agent-memory and .claude/.env are excluded by .dockerignore so user
+# data and secrets stay out of the image.
+COPY .claude/ .claude/
+COPY docs/ docs/
+
 # Copy built frontend from stage 1
 COPY --from=frontend-build /frontend/dist dashboard/frontend/dist
 

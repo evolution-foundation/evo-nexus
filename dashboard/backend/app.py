@@ -724,13 +724,16 @@ if __name__ == "__main__":
                 port = int(cfg["port"])
     except Exception:
         pass
-    # Start scheduler in background thread
+    # Scheduler runs as a standalone process (scheduler.py) started by start-services.sh.
+    # A thread here would create a duplicate instance — all routines would fire 2-3x.
+    # One-off scheduled tasks (ScheduledTask model) are checked by the standalone scheduler
+    # via _run_pending_tasks, which is called from its own loop.
     import threading
+
     def _run_pending_tasks():
         """Check for pending scheduled tasks and execute them."""
         from datetime import datetime as _dt, timezone as _tz
         from models import ScheduledTask
-        from routes.tasks import _execute_task
 
         try:
             now = _dt.now(_tz.utc)
@@ -746,45 +749,23 @@ if __name__ == "__main__":
 
                 t = threading.Thread(target=_execute_task_with_context, args=(task.id,), daemon=True)
                 t.start()
-        except Exception as e:
-            pass  # Don't crash scheduler loop on task errors
+        except Exception:
+            pass
 
     def _execute_task_with_context(task_id):
         with app.app_context():
             from routes.tasks import _execute_task
             _execute_task(task_id)
 
-    def _run_scheduler():
-        log_path = WORKSPACE / "ADWs" / "logs" / "scheduler.log"
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            import importlib.util
-            spec = importlib.util.spec_from_file_location("scheduler", WORKSPACE / "scheduler.py")
-            sched_module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(sched_module)
-            sched_module.setup_schedule()
+    def _poll_scheduled_tasks():
+        """Lightweight thread that only polls ScheduledTask — no routine scheduling."""
+        import time as _time
+        while True:
+            with app.app_context():
+                _run_pending_tasks()
+            _time.sleep(30)
 
-            import schedule as sched_lib
-            import time as _time
-            from datetime import datetime as _dt
-
-            with open(log_path, "a") as log:
-                log.write(f"\n[{_dt.now().strftime('%Y-%m-%d %H:%M:%S')}] Scheduler started ({len(sched_lib.get_jobs())} routines)\n")
-                log.flush()
-
-                while True:
-                    sched_lib.run_pending()
-                    # Check for one-off scheduled tasks
-                    with app.app_context():
-                        _run_pending_tasks()
-                    _time.sleep(30)
-        except Exception as e:
-            with open(log_path, "a") as log:
-                log.write(f"Scheduler error: {e}\n")
-            print(f"Scheduler failed to start: {e}")
-
-    sched_thread = threading.Thread(target=_run_scheduler, daemon=True, name="scheduler")
-    sched_thread.start()
-    print(f"  Scheduler started in background")
+    task_thread = threading.Thread(target=_poll_scheduled_tasks, daemon=True, name="task-poller")
+    task_thread.start()
 
     app.run(host="0.0.0.0", port=port, debug=False)
