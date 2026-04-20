@@ -18,14 +18,69 @@ All endpoints call assert_master_key() before any action so that missing
 KNOWLEDGE_MASTER_KEY produces a clear 500 rather than a cryptic error.
 """
 
+import logging
+import os
 import sqlite3
 from pathlib import Path
 
-from flask import Blueprint, current_app, jsonify, request
+from flask import Blueprint, abort, current_app, jsonify, request
+from flask_login import current_user
 
+from models import audit
 from routes.auth_routes import require_permission
 
+log = logging.getLogger(__name__)
+
 bp = Blueprint("knowledge", __name__)
+
+_WORKSPACE_ROOT = Path(__file__).resolve().parent.parent.parent.parent
+
+
+# ---------------------------------------------------------------------------
+# CSRF guard (defense layer 2 — pairs with SESSION_COOKIE_SAMESITE=Strict)
+# ---------------------------------------------------------------------------
+
+def _require_xhr() -> None:
+    """Abort with 403 if the request lacks the X-Requested-With: XMLHttpRequest header.
+
+    This is a lightweight CSRF mitigation: browsers cannot send custom headers
+    cross-origin without triggering a CORS preflight (which our CORS config
+    rejects for non-allowlisted origins). Combined with SESSION_COOKIE_SAMESITE=Strict
+    this makes session-rider attacks impractical without requiring token plumbing.
+
+    Exempted: requests carrying a Bearer token (DASHBOARD_API_TOKEN path) because
+    those are already pre-shared-secret auth, not session-cookie auth.
+    """
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        return  # Bearer-authenticated calls are not session-rider candidates
+    if request.headers.get("X-Requested-With") != "XMLHttpRequest":
+        abort(403, description="CSRF check failed: X-Requested-With header missing.")
+
+_EMBEDDER_DEFAULTS = {
+    "local": {
+        "model": "paraphrase-multilingual-mpnet-base-v2",
+        "vector_dim": 768,
+    },
+    "openai": {
+        "model": "text-embedding-3-small",
+        "vector_dim": 1536,
+    },
+}
+
+_ALLOWED_EMBEDDERS = set(_EMBEDDER_DEFAULTS.keys())
+_ALLOWED_PARSERS = {"marker"}
+
+_EMBEDDER_MODELS = {
+    "local": [
+        {"id": "paraphrase-multilingual-mpnet-base-v2", "dim": 768, "recommended": True},
+    ],
+    "openai": [
+        {"id": "text-embedding-3-small", "dim": 1536, "recommended": True},
+        {"id": "text-embedding-3-large", "dim": 3072},
+        {"id": "text-embedding-ada-002", "dim": 1536, "legacy": True},
+    ],
+}
 
 
 # ---------------------------------------------------------------------------
@@ -71,6 +126,7 @@ def list_connections():
 @bp.route("/api/knowledge/connections", methods=["POST"])
 @require_permission("knowledge", "manage")
 def create_connection():
+    _require_xhr()
     _assert_key()
     from knowledge.connections import create_connection as _create
     from knowledge.crypto import encrypt_secret, mask_connection_string
@@ -141,6 +197,7 @@ def get_connection(connection_id: str):
 @bp.route("/api/knowledge/connections/<connection_id>", methods=["DELETE"])
 @require_permission("knowledge", "manage")
 def delete_connection(connection_id: str):
+    _require_xhr()
     _assert_key()
     from knowledge.connections import delete_connection as _delete
     from knowledge.connection_pool import dispose_engine
@@ -206,6 +263,7 @@ def test_connection(connection_id: str):
 @require_permission("knowledge", "manage")
 def configure_connection(connection_id: str):
     """Full 'Connect & Configure' — validates Postgres + pgvector + runs Alembic."""
+    _require_xhr()
     _assert_key()
     from knowledge.auto_migrator import configure_connection as _configure
     from knowledge.crypto import decrypt_secret
@@ -341,3 +399,174 @@ def parser_install():
         return jsonify({"error": str(exc)}), 422
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
+
+
+# ---------------------------------------------------------------------------
+# GET /api/knowledge/settings
+# ---------------------------------------------------------------------------
+
+def _read_env_clean(name: str, default: str = "") -> str:
+    raw = os.environ.get(name, default)
+    return raw.strip().strip('"').strip("'")
+
+
+def _current_settings() -> dict:
+    provider = (_read_env_clean("KNOWLEDGE_EMBEDDER_PROVIDER") or "local").lower()
+    if provider not in _ALLOWED_EMBEDDERS:
+        provider = "local"
+
+    defaults = _EMBEDDER_DEFAULTS[provider]
+    if provider == "openai":
+        model = _read_env_clean("KNOWLEDGE_OPENAI_MODEL") or defaults["model"]
+    else:
+        model = defaults["model"]
+
+    parser = (_read_env_clean("KNOWLEDGE_DEFAULT_PARSER") or "marker").lower()
+    if parser not in _ALLOWED_PARSERS:
+        parser = "marker"
+
+    # Detect if any connection exists — if so, embedder is locked.
+    locked = False
+    try:
+        conn = _get_sqlite()
+        try:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM knowledge_connections"
+            ).fetchone()
+            locked = bool(row and row[0] > 0)
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        locked = False
+
+    openai_key_set = bool(_read_env_clean("OPENAI_API_KEY"))
+
+    return {
+        "embedder_provider": provider,
+        "embedder_model": model,
+        "vector_dim": defaults["vector_dim"],
+        "parser_default": parser,
+        "locked": locked,
+        "openai_api_key_set": openai_key_set,
+    }
+
+
+@bp.route("/api/knowledge/settings", methods=["GET"])
+@require_permission("knowledge", "view")
+def get_settings():
+    _assert_key()
+    return jsonify(_current_settings())
+
+
+# ---------------------------------------------------------------------------
+# GET /api/knowledge/embedders/models
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/knowledge/embedders/models", methods=["GET"])
+@require_permission("knowledge", "view")
+def list_embedder_models():
+    """Return available models per provider for UI selection."""
+    _assert_key()
+    provider = (request.args.get("provider") or "").lower()
+    if provider:
+        if provider not in _ALLOWED_EMBEDDERS:
+            return jsonify({"error": f"Invalid provider. Must be one of: {sorted(_ALLOWED_EMBEDDERS)}"}), 400
+        return jsonify({"provider": provider, "models": _EMBEDDER_MODELS[provider]})
+    return jsonify({"providers": _EMBEDDER_MODELS})
+
+
+# ---------------------------------------------------------------------------
+# PUT /api/knowledge/settings
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/knowledge/settings", methods=["PUT"])
+@require_permission("knowledge", "manage")
+def update_settings():
+    """Persist embedder provider / model / default parser to .env.
+
+    Embedder provider can only change while there are no connections — otherwise
+    returns 409. Parser default is always mutable.
+    """
+    _require_xhr()
+    _assert_key()
+    from routes.integrations import _upsert_env_vars
+
+    data = request.get_json(silent=True) or {}
+    current = _current_settings()
+
+    kvs: dict[str, str] = {}
+
+    # --- Embedder provider ---
+    provider = data.get("embedder_provider")
+    if provider is not None:
+        provider = str(provider).lower()
+        if provider not in _ALLOWED_EMBEDDERS:
+            return jsonify({"error": f"Invalid embedder_provider. Must be one of: {sorted(_ALLOWED_EMBEDDERS)}"}), 400
+        if provider != current["embedder_provider"] and current["locked"]:
+            return jsonify({
+                "error": "Embedder provider is locked because connections already exist. Run the knowledge-reindex skill first.",
+                "code": "embedder_locked",
+            }), 409
+        kvs["KNOWLEDGE_EMBEDDER_PROVIDER"] = provider
+    else:
+        provider = current["embedder_provider"]
+
+    # --- Embedder model (only meaningful for openai/voyage) ---
+    model = data.get("embedder_model")
+    if model is not None:
+        model = str(model).strip()
+        if model:
+            allowed_ids = {m["id"] for m in _EMBEDDER_MODELS.get(provider, [])}
+            if allowed_ids and model not in allowed_ids:
+                return jsonify({
+                    "error": f"Invalid model '{model}' for provider '{provider}'. Allowed: {sorted(allowed_ids)}",
+                }), 400
+            if provider == "openai":
+                kvs["KNOWLEDGE_OPENAI_MODEL"] = model
+
+    # --- Parser default ---
+    parser = data.get("parser_default")
+    if parser is not None:
+        parser = str(parser).lower()
+        if parser not in _ALLOWED_PARSERS:
+            return jsonify({"error": f"Invalid parser_default. Must be one of: {sorted(_ALLOWED_PARSERS)}"}), 400
+        kvs["KNOWLEDGE_DEFAULT_PARSER"] = parser
+
+    # --- OpenAI API key (only accepted when provider is openai) ---
+    openai_key = data.get("openai_api_key")
+    if openai_key is not None:
+        openai_key = str(openai_key).strip()
+        if openai_key:
+            if provider != "openai":
+                return jsonify({
+                    "error": "openai_api_key can only be set when embedder_provider is 'openai'.",
+                }), 400
+            if not openai_key.startswith("sk-"):
+                return jsonify({"error": "OpenAI API key must start with 'sk-'."}), 400
+            kvs["OPENAI_API_KEY"] = openai_key
+
+    if not kvs:
+        return jsonify(_current_settings())
+
+    env_path = _WORKSPACE_ROOT / ".env"
+    _upsert_env_vars(env_path, kvs, section_comment="knowledge-settings")
+
+    # Update in-process env so subsequent requests see the change without restart.
+    # NOTE: assumes single-process deployment (app.py app.run). Under gunicorn
+    # multi-worker mode, other workers keep stale env until restart.
+    for k, v in kvs.items():
+        os.environ[k] = v
+
+    # Audit: record who changed which keys (values are never logged).
+    try:
+        audit(
+            current_user,
+            "update_settings",
+            "knowledge",
+            f"keys={sorted(kvs.keys())}",
+        )
+    except Exception:
+        # Audit failure must never block the settings write.
+        log.warning("knowledge.update_settings: audit() failed (non-fatal)", exc_info=True)
+
+    return jsonify(_current_settings())

@@ -37,6 +37,8 @@ app.secret_key = _secret_key
 app.config["SQLALCHEMY_DATABASE_URI"] = f"sqlite:///{WORKSPACE / 'dashboard' / 'data' / 'evonexus.db'}"
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 app.config["REMEMBER_COOKIE_DURATION"] = timedelta(days=30)
+# SameSite=Strict prevents cross-origin cookie riding (CSRF defense layer 1).
+app.config["SESSION_COOKIE_SAMESITE"] = "Strict"
 CORS(app, origins=["http://localhost:5173"], supports_credentials=True)
 
 # --------------- Database ---------------
