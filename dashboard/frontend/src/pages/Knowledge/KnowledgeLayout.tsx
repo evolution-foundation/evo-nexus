@@ -2,19 +2,12 @@ import { NavLink, Outlet } from 'react-router-dom'
 import { Database } from 'lucide-react'
 import { useAuth } from '../../context/AuthContext'
 import { KnowledgeProvider } from '../../context/KnowledgeContext'
-import ConnectionSwitcher from './ConnectionSwitcher'
 
 type Tab = { to: string; label: string; exact?: boolean }
 
 const tabs: Tab[] = [
   { to: '/knowledge', label: 'Connections', exact: true },
   { to: '/knowledge/settings', label: 'Settings' },
-  { to: '/knowledge/spaces', label: 'Spaces' },
-  { to: '/knowledge/units', label: 'Units' },
-  { to: '/knowledge/upload', label: 'Upload' },
-  { to: '/knowledge/browse', label: 'Browse' },
-  { to: '/knowledge/search', label: 'Search' },
-  { to: '/knowledge/api-keys', label: 'API Keys' },
 ]
 
 export default function KnowledgeLayout() {
@@ -33,19 +26,16 @@ export default function KnowledgeLayout() {
       <div>
         {/* Header */}
         <div className="mb-6">
-          <div className="flex items-center justify-between flex-wrap gap-4">
-            <div>
-              <h1 className="text-2xl font-bold text-[#F9FAFB] flex items-center gap-2">
-                <Database size={22} className="text-[#00FFA7]" />
-                Knowledge
-              </h1>
-              <p className="text-[#667085] mt-1 text-sm">Multi-connection pgvector knowledge base</p>
-            </div>
-            <ConnectionSwitcher />
-          </div>
+          <h1 className="text-2xl font-bold text-[#F9FAFB] flex items-center gap-2">
+            <Database size={22} className="text-[#00FFA7]" />
+            Knowledge
+          </h1>
+          <p className="text-[#667085] mt-1 text-sm">
+            Multi-connection pgvector knowledge base — select a connection to manage spaces, documents, and search.
+          </p>
         </div>
 
-        {/* Tabs */}
+        {/* Global tabs (connection-agnostic) */}
         <div className="flex gap-1 mb-6 border-b border-[#344054] overflow-x-auto">
           {tabs.map((t) => (
             <NavLink
