@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useCallback, type ReactNode } from 'react'
+import { createContext, useContext, useState, useCallback, useEffect, type ReactNode } from 'react'
 
 export interface KnowledgeConnection {
   id: string
@@ -26,6 +26,7 @@ interface KnowledgeContextType {
   connections: KnowledgeConnection[]
   setConnections: (connections: KnowledgeConnection[]) => void
   refreshConnections: () => Promise<void>
+  loading: boolean
 }
 
 const KnowledgeContext = createContext<KnowledgeContextType | null>(null)
@@ -47,6 +48,7 @@ export function KnowledgeProvider({ children }: { children: ReactNode }) {
     }
   })
   const [connections, setConnections] = useState<KnowledgeConnection[]>([])
+  const [loading, setLoading] = useState<boolean>(true)
 
   const setActiveConnectionId = useCallback((id: string | null) => {
     setActiveConnectionIdState(id)
@@ -77,12 +79,22 @@ export function KnowledgeProvider({ children }: { children: ReactNode }) {
         const firstReady = list.find((c) => c.status === 'ready')
         if (firstReady) setActiveConnectionId(firstReady.id)
       }
-    } catch {}
+    } catch {} finally {
+      setLoading(false)
+    }
   }, [activeConnectionId, setActiveConnectionId])
+
+  // Auto-load on mount so ConnectionLayout (and other consumers) don't have
+  // to duplicate the fetch logic and can rely on `loading` to defer rendering.
+  useEffect(() => {
+    refreshConnections()
+    // Only on mount — refreshConnections already captures latest state via deps.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   return (
     <KnowledgeContext.Provider
-      value={{ activeConnectionId, setActiveConnectionId, connections, setConnections, refreshConnections }}
+      value={{ activeConnectionId, setActiveConnectionId, connections, setConnections, refreshConnections, loading }}
     >
       {children}
     </KnowledgeContext.Provider>

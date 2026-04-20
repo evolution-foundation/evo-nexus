@@ -19,7 +19,7 @@ const tabs: Tab[] = [
 function ConnectionLayoutInner() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
-  const { connections, activeConnectionId, setActiveConnectionId } = useKnowledge()
+  const { connections, activeConnectionId, setActiveConnectionId, loading } = useKnowledge()
 
   // Sync URL param → active connection context.
   useEffect(() => {
@@ -29,6 +29,17 @@ function ConnectionLayoutInner() {
   }, [id, activeConnectionId, setActiveConnectionId])
 
   const connection = connections.find((c) => c.id === id)
+
+  // Initial load: defer "not found" verdict until the context has actually
+  // fetched the connections list. Otherwise we flash the error on every
+  // page refresh that lands directly on /knowledge/connections/:id.
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-16 text-[#667085] text-sm">
+        Loading connection…
+      </div>
+    )
+  }
 
   if (!connection) {
     return (
