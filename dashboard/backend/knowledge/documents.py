@@ -138,13 +138,17 @@ def upload_document(
             "metadata": metadata,
         }
     )
-    subprocess.Popen(
+    # Popen doesn't accept `input=` (that's subprocess.run only).
+    # Write payload into stdin and close to signal EOF to the worker.
+    process = subprocess.Popen(
         [sys.executable, worker_script],
         stdin=subprocess.PIPE,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-        input=payload.encode(),
     )
+    assert process.stdin is not None
+    process.stdin.write(payload.encode("utf-8"))
+    process.stdin.close()
 
     return doc
 
