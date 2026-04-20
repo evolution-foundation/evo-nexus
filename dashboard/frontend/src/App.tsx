@@ -33,6 +33,16 @@ import HeartbeatsList, { HeartbeatDetail } from './pages/Heartbeats'
 import Goals from './pages/Goals'
 import Issues from './pages/Issues'
 import TicketDetail from './pages/TicketDetail'
+import KnowledgeLayout from './pages/Knowledge/KnowledgeLayout'
+import KnowledgeConnections from './pages/Knowledge/Connections/List'
+import ConnectionDetail from './pages/Knowledge/Connections/Detail'
+import KnowledgeSettings from './pages/Knowledge/Settings'
+import KnowledgeSpaces from './pages/Knowledge/Spaces'
+import KnowledgeUnits from './pages/Knowledge/Units'
+import KnowledgeUpload from './pages/Knowledge/Upload'
+import KnowledgeBrowse from './pages/Knowledge/Browse'
+import KnowledgeSearch from './pages/Knowledge/Search'
+import KnowledgeApiKeys from './pages/Knowledge/ApiKeys'
 
 function AppContent() {
   const location = useLocation()
@@ -121,6 +131,19 @@ function AppContent() {
           <Route path="/goals" element={<Goals />} />
           {hasPermission('tickets', 'view') && <Route path="/issues" element={<Issues />} />}
           {hasPermission('tickets', 'view') && <Route path="/tickets/:id" element={<TicketDetail />} />}
+          {hasPermission('knowledge', 'view') && (
+            <Route path="/knowledge" element={<KnowledgeLayout />}>
+              <Route index element={<KnowledgeConnections />} />
+              <Route path="connections/:id" element={<ConnectionDetail />} />
+              <Route path="settings" element={<KnowledgeSettings />} />
+              <Route path="spaces" element={<KnowledgeSpaces />} />
+              <Route path="units" element={<KnowledgeUnits />} />
+              <Route path="upload" element={<KnowledgeUpload />} />
+              <Route path="browse" element={<KnowledgeBrowse />} />
+              <Route path="search" element={<KnowledgeSearch />} />
+              <Route path="api-keys" element={<KnowledgeApiKeys />} />
+            </Route>
+          )}
         </Routes>
       </main>
     </div>
