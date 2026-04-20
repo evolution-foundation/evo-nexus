@@ -1,0 +1,98 @@
+"""Pytest configuration for knowledge tests.
+
+Real-Postgres tests are gated behind the ``requires_postgres`` marker.
+Set ``KNOWLEDGE_TEST_DATABASE_URL`` to a valid psycopg2 DSN to enable them.
+
+Example (local):
+    KNOWLEDGE_TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/knowledge_test pytest
+
+Tables are created in a fresh schema per test session and dropped on teardown.
+"""
+
+from __future__ import annotations
+
+import os
+
+import psycopg2
+import pytest
+
+
+# ---------------------------------------------------------------------------
+# Markers
+# ---------------------------------------------------------------------------
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers",
+        "requires_postgres: skip unless KNOWLEDGE_TEST_DATABASE_URL is set",
+    )
+
+
+def pytest_collection_modifyitems(config, items):
+    skip_pg = pytest.mark.skip(reason="KNOWLEDGE_TEST_DATABASE_URL not set")
+    for item in items:
+        if "requires_postgres" in item.keywords:
+            if not os.environ.get("KNOWLEDGE_TEST_DATABASE_URL"):
+                item.add_marker(skip_pg)
+
+
+# ---------------------------------------------------------------------------
+# Postgres fixtures
+# ---------------------------------------------------------------------------
+
+_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS knowledge_api_usage (
+    api_key_id  UUID        NOT NULL,
+    window_start TIMESTAMPTZ NOT NULL,
+    request_count INT       NOT NULL DEFAULT 0,
+    PRIMARY KEY (api_key_id, window_start)
+);
+CREATE INDEX IF NOT EXISTS idx_usage_window ON knowledge_api_usage(window_start);
+"""
+
+_TEARDOWN_SQL = """
+DROP TABLE IF EXISTS knowledge_api_usage;
+"""
+
+
+@pytest.fixture(scope="session")
+def pg_dsn():
+    """Return the test DSN or skip if not configured."""
+    dsn = os.environ.get("KNOWLEDGE_TEST_DATABASE_URL")
+    if not dsn:
+        pytest.skip("KNOWLEDGE_TEST_DATABASE_URL not set")
+    return dsn
+
+
+@pytest.fixture(scope="session")
+def pg_conn(pg_dsn):
+    """Session-scoped Postgres connection with the usage table created."""
+    conn = psycopg2.connect(pg_dsn)
+    conn.autocommit = True
+    with conn.cursor() as cur:
+        cur.execute(_SCHEMA_SQL)
+    yield conn
+    with conn.cursor() as cur:
+        cur.execute(_TEARDOWN_SQL)
+    conn.close()
+
+
+@pytest.fixture()
+def clean_usage(pg_conn):
+    """Truncate the usage table before each test that needs a clean slate."""
+    with pg_conn.cursor() as cur:
+        cur.execute("TRUNCATE TABLE knowledge_api_usage")
+    yield
+    # No teardown needed — next test calls this fixture again
+
+
+# ---------------------------------------------------------------------------
+# SQLite api_keys fixtures
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope="session", autouse=True)
+def in_memory_db(tmp_path_factory):
+    """Point api_keys module at a temp SQLite file for the whole session."""
+    db_file = tmp_path_factory.mktemp("db") / "test_evonexus.db"
+    os.environ["SQLALCHEMY_DATABASE_URI"] = f"sqlite:///{db_file}"
+    yield str(db_file)
