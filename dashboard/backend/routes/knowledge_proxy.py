@@ -250,10 +250,19 @@ def document_status(cid: str, did: str):
 # Search
 # ---------------------------------------------------------------------------
 
-@bp.route("/api/knowledge/connections/<cid>/search", methods=["POST"])
+@bp.route("/api/knowledge/connections/<cid>/search", methods=["GET", "POST"])
 @require_permission("knowledge", "view")
 def search(cid: str):
-    data = request.get_json(silent=True) or {}
+    # Accept both JSON body (POST) and query string (GET — used by UI).
+    if request.method == "POST":
+        data = request.get_json(silent=True) or {}
+    else:
+        data = {
+            "query": request.args.get("q") or request.args.get("query"),
+            "space_id": request.args.get("space_id"),
+            "top_k": request.args.get("top_k", 10),
+            "filters": {},
+        }
     query = (data.get("query") or "").strip()
     if not query:
         return _error("bad_request", "query is required", 400)
@@ -268,3 +277,55 @@ def search(cid: str):
         return jsonify({"results": results})
     except Exception as exc:
         return _error("search_failed", str(exc), 500)
+
+
+# ---------------------------------------------------------------------------
+# API keys (scoped to connection — session-authed for the UI)
+# ---------------------------------------------------------------------------
+
+@bp.route("/api/knowledge/connections/<cid>/api-keys", methods=["GET"])
+@require_permission("knowledge", "view")
+def list_api_keys(cid: str):
+    try:
+        from knowledge import api_keys as api_keys_mod
+        items = api_keys_mod.list_api_keys(connection_id=cid)
+        return jsonify({"api_keys": items})
+    except Exception as exc:
+        return _error("list_failed", str(exc), 500)
+
+
+@bp.route("/api/knowledge/connections/<cid>/api-keys", methods=["POST"])
+@require_permission("knowledge", "manage")
+def create_api_key(cid: str):
+    data = request.get_json(silent=True) or {}
+    try:
+        from knowledge import api_keys as api_keys_mod
+        # Accept a limited, named kwargs set so we don't forward unknown fields.
+        row, plain_token = api_keys_mod.create_api_key(
+            name=data.get("name"),
+            connection_id=cid,
+            space_ids=data.get("space_ids") or [],
+            scopes=data.get("scopes") or ["read"],
+            rate_limit_per_min=int(data.get("rate_limit_per_min", 60)),
+            rate_limit_per_day=int(data.get("rate_limit_per_day", 10000)),
+            expires_at=data.get("expires_at"),
+        )
+        # Plain token is shown ONCE. Frontend must surface + warn the user.
+        return jsonify({**row, "token": plain_token}), 201
+    except TypeError as exc:
+        return _error("bad_request", str(exc), 400)
+    except Exception as exc:
+        return _error("create_failed", str(exc), 500)
+
+
+@bp.route("/api/knowledge/connections/<cid>/api-keys/<kid>", methods=["DELETE"])
+@require_permission("knowledge", "manage")
+def delete_api_key(cid: str, kid: str):
+    try:
+        from knowledge import api_keys as api_keys_mod
+        ok = api_keys_mod.revoke_api_key(kid)
+        if not ok:
+            return _error("not_found", f"API key {kid} not found", 404)
+        return jsonify({"status": "revoked"})
+    except Exception as exc:
+        return _error("delete_failed", str(exc), 500)
