@@ -25,22 +25,26 @@ except ImportError:
     OpenAI = None  # type: ignore[assignment,misc]
 
 _DEFAULT_MODEL = "text-embedding-3-small"
-_OPENAI_DIM = 1536
+
+# Model → embedding dimension (see https://platform.openai.com/docs/guides/embeddings)
+_MODEL_DIMS = {
+    "text-embedding-3-small": 1536,
+    "text-embedding-3-large": 3072,
+    "text-embedding-ada-002": 1536,
+}
 
 
 class OpenAIEmbedder(BaseEmbedder):
-    """OpenAI text-embedding-3-small embedder (1536-dim).
-
-    Requires: OPENAI_API_KEY env var.
-    Override model via KNOWLEDGE_OPENAI_MODEL env var.
-    """
+    """OpenAI embedder. Model is selected via KNOWLEDGE_OPENAI_MODEL env var."""
 
     def __init__(self) -> None:
-        self._model = os.environ.get("KNOWLEDGE_OPENAI_MODEL", _DEFAULT_MODEL)
+        raw = os.environ.get("KNOWLEDGE_OPENAI_MODEL", _DEFAULT_MODEL)
+        self._model = raw.strip().strip('"').strip("'") or _DEFAULT_MODEL
+        self._dim = _MODEL_DIMS.get(self._model, 1536)
 
     @property
     def dim(self) -> int:
-        return _OPENAI_DIM
+        return self._dim
 
     def embed(self, texts: List[str]) -> List[List[float]]:
         """Embed *texts* via OpenAI Embeddings API.

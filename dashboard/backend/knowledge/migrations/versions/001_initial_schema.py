@@ -10,6 +10,7 @@ Revises:
 Create Date: 2026-04-20
 """
 
+import os
 from typing import Sequence, Union
 
 from alembic import op
@@ -23,8 +24,46 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
+# Provider → (default model, vector dim) — must match routes/knowledge.py
+_PROVIDER_DEFAULTS = {
+    "local": ("sentence-transformers/paraphrase-multilingual-mpnet-base-v2", 768),
+    "openai": ("text-embedding-3-small", 1536),
+}
+
+_OPENAI_MODEL_DIMS = {
+    "text-embedding-3-small": 1536,
+    "text-embedding-3-large": 3072,
+    "text-embedding-ada-002": 1536,
+}
+
+
+def _clean_env(name: str, default: str = "") -> str:
+    """Read env var stripped of whitespace and surrounding quotes."""
+    raw = os.environ.get(name, default)
+    return raw.strip().strip('"').strip("'")
+
+
+def _resolve_embedder_config() -> tuple[str, str, int]:
+    """Return (provider, model, dim) from env vars, falling back to local."""
+    provider = (_clean_env("KNOWLEDGE_EMBEDDER_PROVIDER") or "local").lower()
+    if provider not in _PROVIDER_DEFAULTS:
+        provider = "local"
+
+    default_model, default_dim = _PROVIDER_DEFAULTS[provider]
+
+    if provider == "openai":
+        model = _clean_env("KNOWLEDGE_OPENAI_MODEL") or default_model
+        dim = _OPENAI_MODEL_DIMS.get(model, default_dim)
+    else:
+        model = default_model
+        dim = default_dim
+
+    return provider, model, dim
+
+
 def upgrade() -> None:
     conn = op.get_bind()
+    provider, model, vector_dim = _resolve_embedder_config()
 
     # ------------------------------------------------------------------
     # pgvector extension — must exist before creating vector columns
@@ -162,13 +201,13 @@ def upgrade() -> None:
     )
 
     # ------------------------------------------------------------------
-    # knowledge_chunks — vector column dimension is set at migration time
-    # using the vector_dim from knowledge_config. The migration seeded below
-    # uses 768 (local provider default). A future migration handles dim changes.
+    # knowledge_chunks — vector column dimension comes from the active
+    # embedder provider at migration time (resolved from env vars). A
+    # future migration handles dim changes when switching providers.
     # ------------------------------------------------------------------
     conn.execute(
         sa.text(
-            """
+            f"""
             CREATE TABLE knowledge_chunks (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 document_id UUID REFERENCES knowledge_documents(id) ON DELETE CASCADE NOT NULL,
@@ -178,7 +217,7 @@ def upgrade() -> None:
                 chunk_type TEXT,
                 content TEXT NOT NULL,
                 metadata JSONB,
-                embedding vector(768),
+                embedding vector({vector_dim}),
                 content_tsv tsvector GENERATED ALWAYS AS (to_tsvector('portuguese', content)) STORED,
                 created_at TIMESTAMPTZ DEFAULT now()
             )
@@ -286,16 +325,17 @@ def upgrade() -> None:
     )
 
     # ------------------------------------------------------------------
-    # Seed knowledge_config with local provider defaults
+    # Seed knowledge_config with the active provider/model/dim
     # ------------------------------------------------------------------
     conn.execute(
         sa.text(
             """
             INSERT INTO knowledge_config (id, embedder_provider, embedder_model, vector_dim)
-            VALUES (1, 'local', 'sentence-transformers/paraphrase-multilingual-mpnet-base-v2', 768)
+            VALUES (1, :provider, :model, :vector_dim)
             ON CONFLICT (id) DO NOTHING
             """
-        )
+        ),
+        {"provider": provider, "model": model, "vector_dim": vector_dim},
     )
 
 

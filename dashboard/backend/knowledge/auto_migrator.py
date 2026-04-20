@@ -326,12 +326,26 @@ def configure_connection(
         return {"status": "error", "error": error_msg, "code": "configure_failed"}
 
 
+_OPENAI_MODEL_DIMS = {
+    "text-embedding-3-small": 1536,
+    "text-embedding-3-large": 3072,
+    "text-embedding-ada-002": 1536,
+}
+_PROVIDER_DEFAULT_DIMS = {"local": 768, "openai": 1536}
+
+
+def _clean(name: str) -> str:
+    raw = os.environ.get(name, "")
+    return raw.strip().strip('"').strip("'")
+
+
 def _get_evonexus_dim(conn) -> int:
-    """Read the globally configured vector_dim. Default 768 if not set."""
-    # In v1, the dim comes from knowledge_config on the SAME remote DB
-    # (chicken-and-egg on first configure) — use the EvoNexus default.
-    # The row is seeded to 768 by the migration.
-    return 768
+    """Resolve expected vector dim from the active embedder provider/model."""
+    provider = (_clean("KNOWLEDGE_EMBEDDER_PROVIDER") or "local").lower()
+    if provider == "openai":
+        model = _clean("KNOWLEDGE_OPENAI_MODEL") or "text-embedding-3-small"
+        return _OPENAI_MODEL_DIMS.get(model, 1536)
+    return _PROVIDER_DEFAULT_DIMS.get(provider, 768)
 
 
 def _run_alembic_upgrade(connection_string: str) -> None:

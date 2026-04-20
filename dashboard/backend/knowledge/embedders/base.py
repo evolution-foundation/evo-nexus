@@ -55,7 +55,10 @@ def get_embedder(
         ValueError: unknown provider name
     """
     if provider == "auto":
-        provider = os.environ.get("KNOWLEDGE_EMBEDDER_PROVIDER", "local")  # type: ignore[assignment]
+        raw = os.environ.get("KNOWLEDGE_EMBEDDER_PROVIDER", "local")
+        # Strip surrounding quotes that may leak from naive .env parsers
+        raw = raw.strip().strip('"').strip("'").lower()
+        provider = raw  # type: ignore[assignment]
 
     if provider == "local":
         from knowledge.embedders.local_embedder import LocalEmbedder
