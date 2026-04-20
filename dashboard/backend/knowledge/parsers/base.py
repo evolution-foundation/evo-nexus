@@ -82,13 +82,20 @@ def _llamaparse_api_key() -> Optional[str]:
     return os.environ.get("LLAMAPARSE_API_KEY") or None
 
 
-def get_parser(name: str = "auto") -> BaseParser:
-    """Return an instantiated parser for *name*.
+def get_parser(
+    name: str = "auto",
+    file_path: Optional[Path] = None,
+) -> BaseParser:
+    """Return an instantiated parser for *name*, optionally scoped to *file_path*.
 
     name:
-        "auto"       — use Marker if available, else LlamaParse if key set
+        "auto"       — plaintext for .md/.txt/etc, else Marker, else LlamaParse
+        "plaintext"  — force PlainTextParser (text-native formats only)
         "marker"     — force Marker (raises MarkerNotInstalledError if missing)
         "llamaparse" — force LlamaParse (raises if LLAMAPARSE_API_KEY not set)
+
+    When name == "auto" and file_path is given, .md/.txt/.csv/.json/.html/etc.
+    always use PlainTextParser — skipping Marker's heavy ML path entirely.
 
     Raises:
         ValueError: unknown name
@@ -96,8 +103,12 @@ def get_parser(name: str = "auto") -> BaseParser:
     """
     from knowledge.parsers.marker_parser import MarkerParser
     from knowledge.parsers.llamaparse_parser import LlamaParseParser
+    from knowledge.parsers.plaintext_parser import PlainTextParser, is_plain_text_file
 
     if name == "auto":
+        # Route text-native formats to the cheap parser.
+        if file_path is not None and is_plain_text_file(file_path):
+            return PlainTextParser()
         if _marker_available():
             return MarkerParser()
         if _llamaparse_api_key():
@@ -107,10 +118,13 @@ def get_parser(name: str = "auto") -> BaseParser:
             "Install marker-pdf: `pip install marker-pdf` (or `uv add marker-pdf`), "
             "or set LLAMAPARSE_API_KEY to use LlamaParse."
         )
+    if name == "plaintext":
+        return PlainTextParser()
     if name == "marker":
         return MarkerParser()
     if name == "llamaparse":
         return LlamaParseParser()
     raise ValueError(
-        f"Unknown parser name '{name}'. Valid options: 'auto', 'marker', 'llamaparse'."
+        f"Unknown parser name '{name}'. "
+        "Valid options: 'auto', 'plaintext', 'marker', 'llamaparse'."
     )

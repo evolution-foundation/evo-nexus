@@ -114,7 +114,7 @@ def ingest_document(
     # ------------------------------------------------------------------
     _emit("parsing")
     try:
-        parser = get_parser()
+        parser = get_parser(file_path=file_path)
         parse_result = parser.parse(file_path)
         markdown = parse_result["markdown"]
         parse_metadata = parse_result["metadata"]

@@ -116,9 +116,9 @@ def main() -> None:
 
     # ------------------------------------------------------------------
     # KNOWLEDGE_MASTER_KEY must be available
+    # connection_pool._resolve_sqlite_db_path() handles DB location via
+    # a __file__-relative fallback — don't set a relative env override here.
     # ------------------------------------------------------------------
-    os.environ.setdefault("SQLALCHEMY_DATABASE_URI", "sqlite:///evonexus.db")
-
     from knowledge.ingestion import ingest_document
 
     try:
