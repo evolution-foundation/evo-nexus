@@ -151,22 +151,42 @@ class TestOpenAIEmbedder:
         with pytest.raises(ValueError, match="empty texts list"):
             e.embed([])
 
+    def test_dim_by_model_matrix(self):
+        """Each known model returns the correct dimension — no env override needed."""
+        _add_backend()
+        from knowledge.embedders.openai_embedder import OpenAIEmbedder, _MODEL_DIMS
+
+        expected = {
+            "text-embedding-3-small": 1536,
+            "text-embedding-3-large": 3072,
+            "text-embedding-ada-002": 1536,
+        }
+        for model, expected_dim in expected.items():
+            os.environ["KNOWLEDGE_OPENAI_MODEL"] = model
+            e = OpenAIEmbedder()
+            assert e.dim == expected_dim, f"{model}: expected {expected_dim}, got {e.dim}"
+
+        # Unknown model falls back to 1536 default
+        os.environ["KNOWLEDGE_OPENAI_MODEL"] = "text-embedding-unknown-zzz"
+        e_unknown = OpenAIEmbedder()
+        assert e_unknown.dim == 1536, "Unknown model should default to 1536"
+
     def test_embed_with_mock(self, monkeypatch):
         _add_backend()
-        from knowledge.embedders.openai_embedder import OpenAIEmbedder, _OPENAI_DIM
+        from knowledge.embedders.openai_embedder import OpenAIEmbedder
 
         os.environ["OPENAI_API_KEY"] = "sk-test-key"
+        os.environ.pop("KNOWLEDGE_OPENAI_MODEL", None)  # default → 3-small → 1536
+
+        _MOCK_DIM = 1536  # default model dim
 
         # Build mock embedding response
-        mock_vector = [0.1] * _OPENAI_DIM
+        mock_vector = [0.1] * _MOCK_DIM
 
         class MockEmbeddingItem:
             def __init__(self, idx):
                 self.index = idx
                 self.embedding = mock_vector
-
-        class MockResponse:
-            data = [MockEmbeddingItem(0), MockEmbeddingItem(1)]
 
         class MockEmbeddings:
             def create(self, **kwargs):
@@ -187,4 +207,4 @@ class TestOpenAIEmbedder:
         e = OpenAIEmbedder()
         result = e.embed(["hello", "world"])
         assert len(result) == 2
-        assert all(len(v) == _OPENAI_DIM for v in result)
+        assert all(len(v) == _MOCK_DIM for v in result)
