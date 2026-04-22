@@ -72,7 +72,10 @@ The log should include:
 
 ## Step 5 — Organize tasks
 
-Run `/prod-review-todoist` to ensure tasks created during the day are categorized and translated.
+Review Todoist tasks directly (do NOT invoke `/prod-review-todoist` as a sub-skill — it sends a duplicate Telegram notification):
+- Run `todoist today` to list today's tasks
+- For each uncategorized or non-PT-BR task: rename/recategorize via `todoist update`
+- Report how many were organized
 
 ## Step 6 — Confirm
 

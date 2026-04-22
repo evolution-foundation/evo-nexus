@@ -206,7 +206,8 @@ The "Skipped" block is mandatory — it gives visibility on questions the commun
 
 ### Notify via Telegram
 
-Upon completion, send a short summary via Telegram to the user:
+Upon completion, send **exactly ONE** Telegram message with the full summary:
 - Use the Telegram MCP: `reply(chat_id="YOUR_CHAT_ID", text="...")`
-- Format: emoji + routine name + main result (1-3 lines)
+- Format: emoji + routine name + main result (totals + alerts combined in one message)
+- Do NOT split into multiple messages — combine summary and alerts into a single call
 - If the routine had no updates, send anyway with "no updates"
