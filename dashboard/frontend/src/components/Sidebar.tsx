@@ -216,7 +216,7 @@ export default function Sidebar() {
   const sidebarContent = (
     <>
       <div className="px-5 py-6 flex items-center justify-between">
-        <img src="/EVO_NEXUS.png" alt="EvoNexus" className="h-8 w-auto" />
+        <img src="/EVO_NEXUS.webp" alt="EvoNexus" className="h-8 w-auto" />
         <div className="flex items-center gap-1">
           <NotificationBell />
           <button onClick={() => setMobileOpen(false)} className="lg:hidden p-1 rounded hover:bg-white/10 text-[#667085]">
