@@ -37,6 +37,8 @@ app.secret_key = _secret_key
 app.config["SQLALCHEMY_DATABASE_URI"] = f"sqlite:///{WORKSPACE / 'dashboard' / 'data' / 'evonexus.db'}"
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 app.config["REMEMBER_COOKIE_DURATION"] = timedelta(days=30)
+# SameSite=Strict prevents cross-origin cookie riding (CSRF defense layer 1).
+app.config["SESSION_COOKIE_SAMESITE"] = "Strict"
 CORS(app, origins=["http://localhost:5173"], supports_credentials=True)
 
 # --------------- Database ---------------
@@ -300,6 +302,64 @@ with app.app_context():
 
     # --- End tickets migration ---
 
+    # --- Knowledge connections migration (pgvector-knowledge feature) ---
+    _existing_tables3 = {row[0] for row in _cur.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    if "knowledge_connections" not in _existing_tables3:
+        _cur.executescript("""
+            CREATE TABLE IF NOT EXISTS knowledge_connections (
+                id TEXT PRIMARY KEY,
+                slug TEXT UNIQUE NOT NULL,
+                name TEXT NOT NULL,
+                connection_string_encrypted BLOB,
+                host TEXT,
+                port INTEGER,
+                database_name TEXT,
+                username TEXT,
+                ssl_mode TEXT,
+                status TEXT DEFAULT 'disconnected',
+                schema_version TEXT,
+                pgvector_version TEXT,
+                postgres_version TEXT,
+                last_health_check TIMESTAMP,
+                last_error TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS knowledge_connection_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                connection_id TEXT REFERENCES knowledge_connections(id) ON DELETE CASCADE,
+                event_type TEXT,
+                details TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_kconn_status ON knowledge_connections(status);
+            CREATE INDEX IF NOT EXISTS idx_kconn_events_conn ON knowledge_connection_events(connection_id, created_at);
+        """)
+        _conn.commit()
+    # --- End knowledge connections migration ---
+
+    # --- Knowledge API keys migration (pgvector-knowledge Step 4) ---
+    _existing_tables4 = {row[0] for row in _cur.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    if "knowledge_api_keys" not in _existing_tables4:
+        _cur.executescript("""
+            CREATE TABLE IF NOT EXISTS knowledge_api_keys (
+                id TEXT PRIMARY KEY,
+                name TEXT,
+                prefix TEXT NOT NULL,
+                token_hash TEXT NOT NULL,
+                connection_id TEXT NOT NULL,
+                space_ids TEXT NOT NULL DEFAULT '[]',
+                scopes TEXT NOT NULL DEFAULT '["read"]',
+                rate_limit_per_min INTEGER NOT NULL DEFAULT 60,
+                rate_limit_per_day INTEGER NOT NULL DEFAULT 10000,
+                created_at TEXT NOT NULL,
+                last_used_at TEXT,
+                expires_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_kak_prefix ON knowledge_api_keys(prefix);
+        """)
+        _conn.commit()
+    # --- End knowledge API keys migration ---
+
     # Fix corrupted datetime columns (NULL or non-string values crash SQLAlchemy)
     for _tbl, _col in [("roles", "created_at"), ("users", "created_at"), ("users", "last_login")]:
         try:
@@ -333,6 +393,30 @@ with app.app_context():
         start_janitor_thread()
     except Exception as _tj_exc:
         print(f"WARNING: ticket janitor init failed: {_tj_exc}")
+
+    # Start Knowledge pool GC + health check threads
+    try:
+        from knowledge.connection_pool import start_gc_thread
+        from knowledge.health_check import start_health_check_thread
+        start_gc_thread()
+        start_health_check_thread(lambda: app)
+    except Exception as _kn_exc:
+        print(f"WARNING: knowledge background threads init failed: {_kn_exc}")
+
+    # Start knowledge usage janitor (delete usage rows > 7 days)
+    try:
+        from knowledge.usage_janitor import start_janitor_thread as start_usage_janitor
+        start_usage_janitor()
+    except Exception as _uj_exc:
+        print(f"WARNING: knowledge usage janitor init failed: {_uj_exc}")
+
+    # Start knowledge classify worker (async document classification — ADR-008)
+    try:
+        from knowledge.classify_worker import start_classify_worker
+        _sqlite_db_path = app.config["SQLALCHEMY_DATABASE_URI"].replace("sqlite:///", "")
+        start_classify_worker(_sqlite_db_path)
+    except Exception as _cw_exc:
+        print(f"WARNING: knowledge classify worker init failed: {_cw_exc}")
 
     # Cleanup: remove old disabled share records (expired + disabled + older than 30 days)
     from datetime import datetime as _dt, timezone as _tz, timedelta as _td
@@ -419,6 +503,7 @@ def auth_middleware():
         or path.startswith("/api/docs")
         or path.startswith("/api/triggers/webhook/")
         or (path.startswith("/api/shares/") and "/view" in path)
+        or path.startswith("/api/knowledge/v1/")
     ):
         return None
 
@@ -462,6 +547,10 @@ from routes.shares import bp as shares_bp
 from routes.heartbeats import bp as heartbeats_bp
 from routes.goals import bp as goals_bp
 from routes.tickets import bp as tickets_bp
+from routes.knowledge import bp as knowledge_bp
+from routes.knowledge_public import bp as knowledge_public_bp
+from routes.knowledge_proxy import bp as knowledge_proxy_bp
+from routes.knowledge_v1 import bp as knowledge_v1_bp
 
 app.register_blueprint(overview_bp)
 app.register_blueprint(workspace_bp)
@@ -488,6 +577,10 @@ app.register_blueprint(shares_bp)
 app.register_blueprint(heartbeats_bp)
 app.register_blueprint(goals_bp)
 app.register_blueprint(tickets_bp)
+app.register_blueprint(knowledge_bp)
+app.register_blueprint(knowledge_public_bp)
+app.register_blueprint(knowledge_proxy_bp)
+app.register_blueprint(knowledge_v1_bp)
 
 # --------------- Social Auth blueprints ---------------
 from auth.youtube import bp as youtube_auth_bp

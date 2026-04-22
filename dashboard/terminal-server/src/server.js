@@ -778,7 +778,11 @@ class TerminalServer {
     if (!session) return;
 
     if (session.active) {
-      this.sendToWebSocket(wsInfo.ws, { type: 'error', message: 'An agent is already running in this session' });
+      // Frontend may re-send start_claude on WebSocket reconnect (common
+      // through reverse proxies like Traefik). The session is already
+      // running — replay the buffer and tell the client it's attached
+      // instead of surfacing a misleading error toast.
+      this.sendToWebSocket(wsInfo.ws, { type: 'claude_started', sessionId: wsInfo.claudeSessionId });
       return;
     }
 

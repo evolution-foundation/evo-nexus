@@ -5,6 +5,65 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.25.0] - 2026-04-20
+
+### Added — Knowledge Base (pgvector, multi-connection)
+
+- **Knowledge Base feature** — full multi-tenant vector knowledge system on Postgres + pgvector. Users bring their own Postgres (Supabase, Neon, RDS, on-prem); EvoNexus is client-only, no Docker or infra provisioning.
+- **1-click "Connect & Configure" wizard** (`/knowledge/connections`) — validates Postgres ≥14, pgvector ≥0.5, detects pgbouncer transaction pooling (blocks with HTTP 422 + actionable message), runs Alembic migrations, applies schema (8 tables including `knowledge_classify_queue`).
+- **Fernet-encrypted credential storage** — DSN ciphertext at rest via `KNOWLEDGE_MASTER_KEY` (bootstrap: `evonexus init-key`). API responses mask passwords as `***`. Audit trail on settings mutations (who changed which keys, IP, timestamp — values never logged).
+- **Hybrid search** — dense (pgvector HNSW) + sparse (Postgres FTS `plainto_tsquery('portuguese')`) fused via Reciprocal Rank Fusion, with metadata boost per `content_type` (faq=1.20, lesson=1.10, reference=1.00). Shipped as default, not opt-in.
+- **Two embedders** — local (multilingual MPNet, 768 dim) and OpenAI (1536 / 3072 dim depending on model — `text-embedding-3-small`, `text-embedding-3-large`, `text-embedding-ada-002`). Provider locked once first connection is configured; changing requires full reindex (reindex endpoint deferred to v0.25.1).
+- **Document intelligence async** — upload returns `status=ready` immediately after parse+chunk+embed; classification (`content_type`, `difficulty_level`, `topics`) runs in a separate worker fed by `knowledge_classify_queue` with `FOR UPDATE SKIP LOCKED`. Classification uses the `claude` CLI subprocess (same runner pattern as heartbeats) — no direct LLM API keys required. Disabled path logs warning once (UI badge deferred to v0.25.1).
+- **Marker parser** — PDF, DOCX, PPTX, XLSX, HTML, EPUB with OCR. Lazy-loaded (~500 MB model download on first install via `POST /api/knowledge/parsers/install`). PlainText parser covers `.md`, `.txt`, `.csv`, `.json`.
+- **Public API `/api/knowledge/v1/*`** — Bearer-token auth via `knowledge_api_keys` scoped by `connection_id` + `space_ids`; plus internal path via `DASHBOARD_API_TOKEN` which bypasses rate limit.
+- **Rate limiter** — fixed-window UPSERT (`date_trunc('minute', now())`). Trade-off accepted: boundary burst can reach 2× limit across adjacent windows. Returns HTTP 429 with `Retry-After` header.
+- **6 `knowledge-*` skills** — `knowledge-query`, `knowledge-summarize`, `knowledge-ingest`, `knowledge-browse`, `knowledge-organize`, `knowledge-admin`. Integrated in 7 agents (mentor, zara, nex, mako, flux, lumen, clawdia). Note: `knowledge-reindex` deferred to v0.25.1 — manual workflow today is TRUNCATE chunks + re-upload.
+- **UI** — full Knowledge section in dashboard (`/knowledge/*`): connection switcher in top-bar, Connections list + wizard + detail, Spaces, Units (reorder), Browse, Search, Upload, API Keys, Settings (embedder + OpenAI key + parser).
+
+### Changed
+
+- **LLM providers removed from `/integrations`** — Anthropic, Gemini, Voyage, LlamaParse, OpenAI cards were cut. Agents and classifiers now use the `claude` CLI as the unified runner (subprocess), so users no longer configure provider API keys at the workspace level. OpenAI remains available, but scoped to the Knowledge embedder and configured inline at `/knowledge/settings`.
+- **Dynamic embedder dimension** — migration 001 resolves `vector(N)` size from `KNOWLEDGE_EMBEDDER_PROVIDER` + `KNOWLEDGE_OPENAI_MODEL` at runtime instead of hardcoding 768. Fixes dimension-mismatch errors when switching to OpenAI (1536/3072) on a new connection.
+
+### Security
+
+- **CSRF protection** added to all session-authenticated write endpoints (POST/PUT/PATCH/DELETE) on Knowledge, Knowledge-proxy, and Integrations blueprints — requires `X-Requested-With: XMLHttpRequest` header. Pairs with `SESSION_COOKIE_SAMESITE=Strict` and restricted CORS allowlist (`localhost:5173`). Bearer-auth requests are exempt. **Breaking change for API clients:** curl or SDK scripts hitting session-authed endpoints must now send `X-Requested-With: XMLHttpRequest`.
+- **Audit log** on credential mutations — `update_settings` and `create/update/delete_custom_integration` write to `AuditLog` with user/action/resource/IP/timestamp. Secret *values* are never logged; only the set of keys that changed.
+
+### Fixed
+
+- `Popen()` doesn't accept `input=` kwarg — stdin write/close pattern.
+- Units schema alignment; `CAST(:x AS jsonb)` instead of `:x::jsonb` shortcut; tags array type.
+- Connection-scoped navigation; connection switcher filtering all pages.
+- `get_dsn()` now accepts either `id` or `slug` — public `/v1/*` endpoints that receive the slug as connection id no longer raise `KeyError`.
+- `list_documents` aggregates `chunks_count` and `pages_count` via `LATERAL JOIN` — Browse UI no longer shows `—` for every row.
+
+### Known Limitations (shipped as-is; tracked for v0.25.1)
+
+- Embedder provider change requires manual reindex (TRUNCATE chunks + re-upload). Automated reindex endpoint + `knowledge-reindex` skill deferred.
+- Classify worker silently disabled when no `claude` CLI present — logs warning once; UI badge deferred.
+- `pages_count` in `list_documents` returns `0` (not `null`) for documents without page metadata (markdown, txt).
+- Model→dim mapping is duplicated across 4 modules — tech debt to consolidate.
+- Test suite requires cwd=`dashboard/backend/` or `PYTHONPATH=.` to run end-to-end.
+- Search p95 at 10k+ chunks not load-verified in this release; target 500ms is architectural.
+- `routes/providers.py` write endpoints (pre-existing since v0.24) lack CSRF/audit — flagged in release critique, addressed globally in v0.25.1 via `before_app_request`.
+
+### Deferred to v0.26.0
+
+- **Knowledge v2 (Smart Ingest + Agentic RAG)** — LLM-enhanced pre-parse classification, normalization, per-chunk enrichment (summary, questions_answered, entities, topics), semantic chunking, and an agentic retrieval loop (query rewrite + coverage evaluation + re-retrieval with max 1 retry). Separate feature folder: `workspace/development/features/knowledge-v2/` (Discovery complete).
+
+### Not Included (v1.1+)
+
+- Voyage embedder (hidden from UI; not implemented).
+- LlamaParse image parser routing in upload pipeline (module exists, not wired).
+- Per-space chunking config override.
+- Re-ranker (Cohere / Voyage Rerank).
+- `@librarian` agent.
+- URL crawl ingestion.
+- Document versioning.
+- Access rules enforcement (stored but not applied).
+
 ## [0.24.0] - 2026-04-17
 
 ### Added

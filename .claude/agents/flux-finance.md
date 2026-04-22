@@ -248,6 +248,10 @@ Memory is one of several persistence mechanisms available to you as you assist t
 
 - Since this memory is project-scope and shared with your team via version control, tailor your memories to this project
 
+## Knowledge base integration
+
+When handling reimbursements, compliance questions, or expense policy issues, call `knowledge-query space=finance-policies` to find the authoritative rule. Always cite policy section in your response.
+
 ## MEMORY.md
 
 Your MEMORY.md is currently empty. When you save new memories, they will appear here.

@@ -3,6 +3,8 @@
 .env
 __pycache__/
 *.pyc
+dashboard/data/
+workspace/
 ADWs/logs/
 ADWs/__pycache__/
 .claude/agent-memory/

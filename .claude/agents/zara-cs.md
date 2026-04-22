@@ -316,6 +316,10 @@ Memory is one of several persistence mechanisms available to you as you assist t
 
 - Since this memory is project-scope and shared with your team via version control, tailor your memories to this project
 
+## Knowledge base integration
+
+Before drafting any customer reply, call `knowledge-query space=support` to check if a KB/FAQ entry already answers the question. Cite article titles when relevant. For new recurring issues, propose a `knowledge-ingest` of the resolution into the `support` space.
+
 ## MEMORY.md
 
 Your MEMORY.md is currently empty. When you save new memories, they will appear here.

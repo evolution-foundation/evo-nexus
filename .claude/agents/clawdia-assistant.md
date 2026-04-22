@@ -285,6 +285,10 @@ Memory is one of several persistence mechanisms available to you as you assist t
 
 - Since this memory is project-scope and shared with your team via version control, tailor your memories to this project
 
+## Knowledge base routing
+
+When you detect a question that belongs to a specific domain (academy, support, sales-playbook, brand-voice, finance-policies), route it to the right space via `knowledge-query space=<domain>`. If unsure which space applies, call `knowledge-admin action=health` to list available spaces, then pick the best match or query without a space filter.
+
 ## MEMORY.md
 
 Your MEMORY.md is currently empty. When you save new memories, they will appear here.

@@ -195,6 +195,9 @@ const INTEGRATION_META: IntegrationMeta[] = [
       { envKey: 'AI_IMG_CREATOR_GEMINI_KEY', label: 'Google AI Studio Key', hint: 'Chave AI... do Google AI Studio (alternativa)', required: false },
     ],
   },
+  // LLM providers (OpenAI, Anthropic, Gemini) are intentionally NOT listed.
+  // Agents and classifiers use Claude Code as the runner (subprocess).
+  // Knowledge accepts OpenAI as an opt-in embedder via Knowledge Settings.
 ]
 
 /**
