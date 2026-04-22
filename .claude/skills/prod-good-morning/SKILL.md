@@ -22,7 +22,7 @@ If any of these files don't exist yet (the user might be very new), that's fine 
 Before building the recap, gather live data silently (don't narrate each step):
 
 1. **Agenda do dia** — use `/gog-calendar` to list today's events. Note meetings, times, people, and free blocks.
-2. **Emails importantes** — use `/gog-email-triage` to check unread emails. Filter only those needing action or attention.
+2. **Emails importantes** — use the Gmail MCP directly (`list_emails` then `get_email` for each relevant one) to check unread emails needing action or attention. Do NOT invoke `/gog-email-triage` as a sub-skill — it sends its own Telegram notification and would cause a duplicate.
 3. **Tarefas de hoje** — run `todoist today` to list today's and overdue tasks from Todoist.
 
 ## Step 3 — Brief recap

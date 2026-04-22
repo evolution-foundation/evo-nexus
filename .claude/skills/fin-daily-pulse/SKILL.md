@@ -9,29 +9,52 @@ Daily routine that pulls data from Stripe, Omie and Evo Academy to generate an H
 
 **Always respond in English.**
 
+## Currency Conversion Rule (apply to every Stripe value)
+
+**All monetary values MUST be converted to BRL before summing or displaying as R$.**
+
+1. Fetch the USD-to-BRL exchange rate from `https://api.exchangerate-api.com/v4/latest/USD` (field `rates.BRL`).
+   - If the API call fails, use fallback rate **5.75**.
+   - Log the rate used in the report (e.g., "USD/BRL: 5.7832" or "USD/BRL: 5.75 (fallback)").
+2. For each Stripe item, read the `currency` field (lowercase ISO-4217, e.g. `"usd"`, `"brl"`, `"idr"`).
+   - `brl`: amount is in centavos — divide by 100, use as-is.
+   - `usd`: divide by 100, then multiply by the USD-to-BRL rate.
+   - Any other currency (e.g. `idr`, `mxn`, `eur`): **exclude from BRL totals**. Append a warning: `WARNING: Skipped {currency} {amount/100} (customer {id}) — unsupported currency, manual review required.`
+3. **Never add raw amounts of different currencies together.** Convert first, then sum.
+
 ## Step 1 — Collect Stripe data (silently)
 
 Use the `/int-stripe` skill to fetch:
 
 ### 1a. MRR and Subscriptions
-- List active subscriptions (`status=active`) → count and sum values to calculate MRR
-- Compare with previous data if available in `workspace/finance/`
+- List active subscriptions (`status=active`).
+- For each subscription, read `currency` and `plan.amount` (centavos).
+- Apply the Currency Conversion Rule above to convert each amount to BRL.
+- Sum all converted amounts — Stripe MRR in BRL.
+- Log currency breakdown (e.g., "195 subs: 116 BRL, 78 USD, 1 excluded IDR").
+- Compare with previous data if available in `workspace/finance/`.
 
 ### 1b. Today's Charges
-- List charges created today (`created` >= start of day UTC-3)
-- Sum total charged amount
-- Count charges with `status=succeeded` vs `status=failed`
+- List charges created today (`created` >= start of day UTC-3).
+- For each charge, read `currency` and `amount` (centavos).
+- Apply the Currency Conversion Rule to convert each charge to BRL.
+- Sum converted succeeded amounts — today's revenue in BRL.
+- Count charges with `status=succeeded` vs `status=failed`.
+- Flag any single converted charge exceeding R$ 10,000 as potentially anomalous.
 
 ### 1c. Churn (last 30 days)
-- List subscriptions canceled in the last 30 days
-- Calculate churn rate vs total subscriptions
+- Fetch Stripe events with `type=customer.subscription.deleted`, paginating ALL pages until `has_more=false` — never stop at the first page.
+- Count unique canceled subscription IDs — churn count.
+- Churn rate = canceled / (total active + canceled) * 100.
+- Use this event-based method consistently every run.
 
 ### 1d. Refunds (last 7 days)
-- List refunds from the last 7 days
-- Sum total refunded amount
+- List refunds from the last 7 days.
+- Apply the Currency Conversion Rule to each refund before summing.
+- Report total refunded in BRL.
 
 ### 1e. New customers (last 7 days)
-- List customers created in the last 7 days
+- List customers created in the last 7 days.
 
 ## Step 2 — Collect Omie data (silently)
 
@@ -64,31 +87,31 @@ Captura: `revenue.total`, `orders.completed`, `orders.pending`, `orders.failed`,
 ```
 GET /api/v1/analytics/orders?status=completed&created_after=YYYY-MM-DD&per_page=100
 ```
-(hoje em BRT; converter para UTC → `created_after = date.today().isoformat()`)
-- Itere paginação por cursor até `meta.has_more = false`
-- Some `amount` de todos os orders → receita bruta Evo Academy do dia
-- Separe por tipo: renovações (`is_renewal=true`) vs novos (`is_renewal=false`)
-- Agrupe por produto: cursos, assinaturas, ingressos, outros
+(hoje em BRT; converter para UTC: `created_after = date.today().isoformat()`)
+- Paginate until `meta.has_more = false`
+- Sum `amount` of all orders — Evo Academy daily revenue
+- Split by type: renewals (`is_renewal=true`) vs new (`is_renewal=false`)
+- Group by product: courses, subscriptions, tickets, others
 
 ### 2.5c. MRR de assinaturas ativas (Evo Academy)
 ```
 GET /api/v1/analytics/subscriptions?status=active&per_page=100
 ```
-- Itere até `meta.has_more = false`
-- Some `plan.price` de cada assinatura ativa → MRR Evo Academy
+- Paginate until `meta.has_more = false`
+- Sum `plan.price` of each active subscription — Evo Academy MRR
 
 ## Step 3 — Day's transactions
 
 Consolidate all financial transactions for the day:
-- Stripe charges (revenue)
+- Stripe charges (revenue, already converted to BRL per the Currency Conversion Rule)
 - Evo Academy orders (revenue — courses / subscriptions / tickets)
 - Payments recorded in Omie (expenses)
-- Refunds
+- Refunds (converted to BRL)
 
-Format each transaction with: type (Revenue/Expense/Refund), description, amount, status.
+Format each transaction with: type (Revenue/Expense/Refund), description, amount in BRL, status.
 
-**Total revenue = Stripe today + Evo Academy today**
-**Total MRR = Stripe MRR + Evo Academy MRR**
+**Total revenue = Stripe today (BRL) + Evo Academy today**
+**Total MRR = Stripe MRR (BRL) + Evo Academy MRR**
 
 ## Step 4 — Classify financial health
 
@@ -105,6 +128,7 @@ Generate list of financial alerts:
 - Invoices that should have been issued
 - Churn above normal levels
 - Any anomalies in amounts
+- Currencies excluded from totals (currency conversion warnings from Step 1)
 
 If there are no alerts: "No financial alerts at this time."
 
@@ -133,7 +157,9 @@ workspace/finance/reports/daily/[C] YYYY-MM-DD-financial-pulse.html
 
 Create the directory `workspace/finance/reports/daily/` if it does not exist.
 
-## Step 8 — Confirm
+## Step 8 — Confirm and notify (ONE Telegram message only)
+
+Output the completion summary, then send **exactly one** Telegram message. Do NOT call `reply` more than once per run.
 
 ```
 ## Financial Pulse generated
@@ -141,11 +167,10 @@ Create the directory `workspace/finance/reports/daily/` if it does not exist.
 **File:** workspace/finance/reports/daily/[C] YYYY-MM-DD-financial-pulse.html
 **MRR total:** R$ X,XXX (Stripe: R$ X,XXX | Evo Academy: R$ X,XXX)
 **Receita hoje:** R$ X,XXX | **Subscriptions:** N | **Churn:** X%
+**USD/BRL rate:** X.XXXX (live) or 5.75 (fallback)
 **Alerts:** {N} attention points
 ```
 
-### Notify via Telegram
+Call `reply` **once** with a short summary (do not send the full markdown above — send a compact version):
 
-Upon completion, send a short summary via Telegram to the user:
-- Use the Telegram MCP: `reply(chat_id="YOUR_CHAT_ID", text="...")`
-- Format: emoji + "Financial Pulse" + MRR + alerts (1-3 lines)
+- Format: `[emoji] Financial Pulse [date] | MRR: R$ X,XXX | Receita: R$ X,XXX | Churn: X% | [N] alertas`
