@@ -140,7 +140,6 @@ export default function KnowledgeSettings() {
 
   const providerLocked = Boolean(settings?.locked)
   const modelEditable = embedder === 'openai' || embedder === 'gemini'
-  const providerNeedsKey = embedder === 'openai' || embedder === 'gemini'
 
   const dirty = Boolean(
     settings && (

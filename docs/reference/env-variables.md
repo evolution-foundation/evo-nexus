@@ -171,6 +171,26 @@ These are populated automatically when you connect accounts through the dashboar
 
 Google Calendar and Gmail are connected via MCP servers configured in Claude Code settings, not through `.env` variables.
 
+## Knowledge Base (pgvector)
+
+| Variable | Required For | Description |
+|----------|-------------|-------------|
+| `KNOWLEDGE_MASTER_KEY` | Knowledge Base | Fernet key used to encrypt connection credentials. **Auto-generated on first setup / Docker first boot** (v0.26.0+) — you don't set it manually. Back up your `.env`, losing this key loses access to all connections. |
+| `KNOWLEDGE_EMBEDDER_PROVIDER` | Optional | `local` (default), `openai`, or `gemini` |
+| `KNOWLEDGE_DEFAULT_PARSER` | Optional | `marker` (default) or `llamaparse` |
+| `OPENAI_API_KEY` | `openai` embedder | OpenAI key (starts with `sk-...`) |
+| `KNOWLEDGE_OPENAI_MODEL` | Optional | `text-embedding-3-small` (default) / `-3-large` / `ada-002` |
+| `GEMINI_API_KEY` | `gemini` embedder | Google AI Studio key (starts with `AIzaSy...`) |
+| `KNOWLEDGE_GEMINI_MODEL` | Optional | `gemini-embedding-001` (default) or `gemini-embedding-2-preview` |
+| `KNOWLEDGE_GEMINI_DIM` | Optional | MRL output dim: `768` (default, aligns with local), `1536`, or `3072` |
+| `LLAMAPARSE_API_KEY` | `llamaparse` parser | LlamaParse cloud API key |
+
+**How to get**:
+- **OpenAI**: [platform.openai.com](https://platform.openai.com) > API Keys.
+- **Gemini**: [aistudio.google.com/apikey](https://aistudio.google.com/apikey) (generous free tier).
+
+Configure via the dashboard at `/knowledge/settings` — the provider is locked once the first connection is created (changing it after ingestion requires removing and recreating all connections).
+
 ## AI Image Creator
 
 | Variable | Required For | Description |

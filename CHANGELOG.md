@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.26.0] - 2026-04-22
+
+### Added
+
+- **Gemini embedder for Knowledge Base** (#22) — third embedder provider alongside `local` (MPNet) and `openai`. Supports two models: `gemini-embedding-001` (stable, text-only, 2048-token input, accepts `task_type`) and `gemini-embedding-2-preview` (multimodal, 8192-token input). Uses Matryoshka Representation Learning (MRL) with selectable output dim: 768 (default, aligns with local storage cost), 1536, or 3072. L2-normalizes client-side for dim < 3072 per Google's embedding docs. Lazy SDK import — no cost when the provider is inactive. Free tier available at [aistudio.google.com/apikey](https://aistudio.google.com/apikey).
+- **Auto-generated `KNOWLEDGE_MASTER_KEY`** (#23) — the Fernet key required by the Knowledge Base is now generated automatically during `make setup` (interactive wizard) and on Docker first boot (`entrypoint.sh`), matching the UI-first philosophy already used for `EVONEXUS_SECRET_KEY`. Fresh installs get Knowledge working out of the box, no manual `make init-key` required. Idempotent — existing keys are preserved. The CLI `evonexus init-key` is still available for legacy/rotation flows.
+
+### Changed
+
+- **`BaseEmbedder.embed()` accepts optional `task_type`** — providers that support task hints (Gemini `gemini-embedding-001`) use `RETRIEVAL_DOCUMENT` during ingestion and `RETRIEVAL_QUERY` at search time. Local (MPNet) and OpenAI ignore the parameter silently for API parity. Backward-compatible via default `task_type=None`.
+- **Knowledge settings endpoint** (`PUT /api/knowledge/settings`) — now validates Gemini keys against Google AI Studio's `AIzaSy...` pattern, enforces MRL dim allowlist (`{768, 1536, 3072}`), and model allowlist for both Gemini models. Inherits CSRF guard + audit log from v0.25.0 hardening.
+- **`.gitignore`** — cover runtime databases at repo root (`*.db`, `*.db-shm`, `*.db-wal`) and the full `dashboard/data/` directory (previously only `dashboard/data/*.db` literal files were ignored, missing subdirs like `mempalace/`, `knowledge/`, `openclaude.db`).
+
+### Fixed
+
+- **`Settings.tsx`** — removed unused `providerNeedsKey` variable that was breaking `tsc --noEmit` since the Gemini PR landed.
+
+### Documentation
+
+- **`docs/dashboard/knowledge.md`** — first-time setup now reflects auto-generated master key; embedder section lists all three providers (local, openai, gemini) with their dims and use cases.
+- **`docs/reference/env-variables.md`** — new "Knowledge Base (pgvector)" section documenting `KNOWLEDGE_MASTER_KEY`, `KNOWLEDGE_EMBEDDER_PROVIDER`, OpenAI/Gemini keys, MRL dim selection, and parser choice.
+
 ## [0.25.0] - 2026-04-20
 
 ### Added — Knowledge Base (pgvector, multi-connection)
