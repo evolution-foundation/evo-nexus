@@ -162,6 +162,13 @@ MESSAGES = {
         "nginx_config_failed": "Failed to configure nginx",
         "configuring_firewall": "Configuring firewall...",
         "firewall_ports_opened": "Firewall ports opened (80, 443)",
+        "firewall_using_ufw": "Using ufw",
+        "firewall_using_iptables": "Using iptables (ufw not installed)",
+        "firewall_persisted": "Rules persisted via {tool} (will survive reboot)",
+        "firewall_persistence_missing": "Rules opened in memory only — install netfilter-persistent OR ufw to persist across reboots",
+        "firewall_install_persistence": "Installing netfilter-persistent so rules survive reboot...",
+        "firewall_failed": "Firewall step failed: {err}",
+        "firewall_cloud_provider_hint": "Cloud provider firewall: if 80/443 still appear blocked from outside, also open them in your provider's Security List/Group ({provider}).",
         # Workspace file creation
         "generated_workspace_yaml": "Generated config/workspace.yaml",
         "env_created_from_example": "Created .env from .env.example",
@@ -324,6 +331,13 @@ MESSAGES = {
         "nginx_config_failed": "Falha ao configurar o nginx",
         "configuring_firewall": "Configurando firewall...",
         "firewall_ports_opened": "Portas do firewall abertas (80, 443)",
+        "firewall_using_ufw": "Usando ufw",
+        "firewall_using_iptables": "Usando iptables (ufw não instalado)",
+        "firewall_persisted": "Regras persistidas via {tool} (vão sobreviver ao reboot)",
+        "firewall_persistence_missing": "Regras abertas só na memória — instale netfilter-persistent OU ufw para persistir entre reboots",
+        "firewall_install_persistence": "Instalando netfilter-persistent para persistir regras no reboot...",
+        "firewall_failed": "Etapa do firewall falhou: {err}",
+        "firewall_cloud_provider_hint": "Firewall do provedor: se 80/443 ainda aparecerem bloqueados de fora, abra também na Security List/Group do seu provedor ({provider}).",
         # Workspace file creation
         "generated_workspace_yaml": "Gerado config/workspace.yaml",
         "env_created_from_example": "Criado .env a partir do .env.example",
@@ -486,6 +500,13 @@ MESSAGES = {
         "nginx_config_failed": "Error al configurar nginx",
         "configuring_firewall": "Configurando firewall...",
         "firewall_ports_opened": "Puertos del firewall abiertos (80, 443)",
+        "firewall_using_ufw": "Usando ufw",
+        "firewall_using_iptables": "Usando iptables (ufw no está instalado)",
+        "firewall_persisted": "Reglas persistidas vía {tool} (sobrevivirán al reinicio)",
+        "firewall_persistence_missing": "Reglas abiertas solo en memoria — instala netfilter-persistent O ufw para persistir entre reinicios",
+        "firewall_install_persistence": "Instalando netfilter-persistent para que las reglas sobrevivan al reinicio...",
+        "firewall_failed": "El paso del firewall falló: {err}",
+        "firewall_cloud_provider_hint": "Firewall del proveedor: si 80/443 siguen bloqueados desde fuera, ábrelos también en la Security List/Group de tu proveedor ({provider}).",
         # Workspace file creation
         "generated_workspace_yaml": "Generado config/workspace.yaml",
         "env_created_from_example": "Creado .env desde .env.example",
@@ -831,6 +852,130 @@ def check_prerequisites():
     return True
 
 
+def _detect_cloud_provider() -> str | None:
+    """Best-effort cloud-provider detection for the firewall hint message.
+
+    Looks at /sys/class/dmi/id/* (set by the BIOS/hypervisor) — non-fatal
+    if unreadable. Returns a short human-readable label or None.
+    """
+    sources = [
+        ("/sys/class/dmi/id/sys_vendor", {"oraclecloud": "Oracle Cloud (OCI)", "amazon ec2": "AWS EC2",
+                                          "google": "Google Cloud", "microsoft": "Azure", "digitalocean": "DigitalOcean",
+                                          "hetzner": "Hetzner Cloud"}),
+        ("/sys/class/dmi/id/chassis_asset_tag", {"oraclecloud": "Oracle Cloud (OCI)",
+                                                  "amazon": "AWS EC2", "google": "Google Cloud"}),
+    ]
+    for path, mapping in sources:
+        try:
+            with open(path) as f:
+                value = f.read().strip().lower()
+            for needle, label in mapping.items():
+                if needle in value:
+                    return label
+        except OSError:
+            continue
+    return None
+
+
+def _open_firewall_ports(ports: list[int]) -> None:
+    """Open inbound TCP ports robustly and PERSISTENTLY.
+
+    The previous one-liner used ``2>/dev/null`` everywhere, so any failure
+    (ufw missing, iptables-nft refusing the rule, no permission) was
+    silently swallowed and the wizard happily printed "Firewall ports
+    opened" while nothing actually changed. Worse, it never persisted
+    the rules, so on the first reboot the in-memory iptables additions
+    vanished and the dashboard was unreachable from outside.
+
+    Strategy:
+      1. Prefer ``ufw`` when present — handles persistence itself.
+      2. Otherwise use ``iptables -C`` to check before ``-I`` (idempotent
+         re-runs on the same machine don't pile up duplicate rules).
+      3. Persist via ``netfilter-persistent save`` if available; if not
+         and we're on a Debian/Ubuntu system, install
+         ``iptables-persistent`` non-interactively then save.
+      4. If everything we tried fails, surface the actual error rather
+         than reporting success.
+      5. Always emit a hint about cloud-provider security lists — Oracle
+         Cloud, AWS, GCP, etc. enforce a separate network firewall that
+         no host-level command can bypass.
+    """
+    print(f"  {DIM}{T('configuring_firewall')}{RESET}")
+    if os.getuid() != 0:
+        # Non-root: we can't open the firewall anyway. Just hint.
+        print(f"  {YELLOW}!{RESET} {T('firewall_persistence_missing')}")
+        return
+
+    backend_used = None
+    errors: list[str] = []
+
+    if shutil.which("ufw"):
+        backend_used = "ufw"
+        print(f"  {DIM}  {T('firewall_using_ufw')}{RESET}")
+        for p in ports:
+            rc = os.system(f"ufw allow {p}/tcp >/dev/null 2>&1")
+            if rc != 0:
+                errors.append(f"ufw allow {p}/tcp (rc={rc >> 8})")
+    elif shutil.which("iptables"):
+        backend_used = "iptables"
+        print(f"  {DIM}  {T('firewall_using_iptables')}{RESET}")
+        for p in ports:
+            # -C tests whether the rule already exists; -I inserts at
+            # the top of INPUT only when it doesn't (idempotent).
+            check = os.system(f"iptables -C INPUT -p tcp --dport {p} -j ACCEPT >/dev/null 2>&1")
+            if check != 0:
+                rc = os.system(f"iptables -I INPUT -p tcp --dport {p} -j ACCEPT 2>/dev/null")
+                if rc != 0:
+                    errors.append(f"iptables -I {p} (rc={rc >> 8})")
+    else:
+        errors.append("neither ufw nor iptables available")
+
+    # Persistence — the actual fix for "works after install, dies on reboot".
+    persistence_tool = None
+    if backend_used == "ufw":
+        # ufw persists by default
+        persistence_tool = "ufw"
+    elif backend_used == "iptables":
+        if shutil.which("netfilter-persistent"):
+            rc = os.system("netfilter-persistent save >/dev/null 2>&1")
+            if rc == 0:
+                persistence_tool = "netfilter-persistent"
+            else:
+                errors.append(f"netfilter-persistent save (rc={rc >> 8})")
+        elif shutil.which("apt-get"):
+            print(f"  {DIM}  {T('firewall_install_persistence')}{RESET}")
+            os.system(
+                "DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "
+                "iptables-persistent netfilter-persistent >/dev/null 2>&1"
+            )
+            if shutil.which("netfilter-persistent"):
+                rc = os.system("netfilter-persistent save >/dev/null 2>&1")
+                if rc == 0:
+                    persistence_tool = "netfilter-persistent"
+                else:
+                    errors.append(f"netfilter-persistent save (rc={rc >> 8})")
+            else:
+                # Last-resort manual save
+                os.makedirs("/etc/iptables", exist_ok=True)
+                rc = os.system("iptables-save > /etc/iptables/rules.v4 2>/dev/null")
+                if rc == 0:
+                    persistence_tool = "/etc/iptables/rules.v4"
+
+    # Result reporting — no more silent success.
+    if errors:
+        print(f"  {YELLOW}!{RESET} {T('firewall_failed', err='; '.join(errors))}")
+    else:
+        print(f"  {GREEN}✓{RESET} {T('firewall_ports_opened')}")
+    if persistence_tool:
+        print(f"  {GREEN}✓{RESET} {T('firewall_persisted', tool=persistence_tool)}")
+    else:
+        print(f"  {YELLOW}!{RESET} {T('firewall_persistence_missing')}")
+
+    cloud = _detect_cloud_provider()
+    if cloud:
+        print(f"  {DIM}  {T('firewall_cloud_provider_hint', provider=cloud)}{RESET}")
+
+
 def configure_access() -> dict:
     """Configure how the dashboard will be accessed (local or domain with SSL)."""
     print(f"\n  {BOLD}{T('dashboard_access')}{RESET}\n")
@@ -997,10 +1142,7 @@ server {{
         print(f"  {YELLOW}!{RESET} {T('nginx_no_permission')}")
 
     # Step 5: Open firewall ports
-    print(f"  {DIM}{T('configuring_firewall')}{RESET}")
-    os.system("ufw allow 80/tcp 2>/dev/null; ufw allow 443/tcp 2>/dev/null; ufw allow 8080/tcp 2>/dev/null; ufw allow 32352/tcp 2>/dev/null")
-    os.system("iptables -I INPUT -p tcp --dport 80 -j ACCEPT 2>/dev/null; iptables -I INPUT -p tcp --dport 443 -j ACCEPT 2>/dev/null")
-    print(f"  {GREEN}✓{RESET} {T('firewall_ports_opened')}")
+    _open_firewall_ports([80, 443, 8080, 32352])
 
     return {"mode": "domain", "url": f"https://{domain}"}
 
@@ -1808,28 +1950,23 @@ def main():
     os.system("pkill -f 'app.py' 2>/dev/null")
     os.system("sleep 1")
 
-    # Create start-services.sh
+    # The start-services.sh shipped in git (since #27) is
+    # self-discovering — resolves SCRIPT_DIR via
+    # $(dirname "${BASH_SOURCE[0]}") at runtime — and already includes
+    # the scheduler launch. So it works regardless of install path or
+    # service user. No regeneration needed; just ensure it's
+    # executable.
+    #
+    # Until this commit, the block here REWROTE the file with a
+    # hardcoded ``cd {install_dir}`` AND silently dropped the
+    # ``scheduler.py`` launch line entirely. Net effect: the scheduler
+    # never came up after a wizard install (cron-style routines,
+    # integration sync, briefings — all dead) and the
+    # self-discovering version from #27 was clobbered on every
+    # ``make setup`` run.
     startup_script = install_dir / "start-services.sh"
-    startup_script.write_text(f"""#!/bin/bash
-export PATH="/usr/local/bin:/usr/bin:/bin:$HOME/.local/bin"
-cd {install_dir}
-
-# Kill existing services
-pkill -f 'terminal-server/bin/server.js' 2>/dev/null
-pkill -f 'dashboard/backend.*app.py' 2>/dev/null
-sleep 1
-
-# Clean stale sessions — old sessions cause agent persona issues
-rm -f $HOME/.claude-code-web/sessions.json 2>/dev/null
-
-# Start terminal-server (must run FROM the project root for agent discovery)
-nohup node dashboard/terminal-server/bin/server.js > {logs_dir}/terminal-server.log 2>&1 &
-
-# Start Flask dashboard
-cd dashboard/backend
-nohup {install_dir}/.venv/bin/python app.py > {logs_dir}/dashboard.log 2>&1 &
-""", encoding="utf-8")
-    os.chmod(startup_script, 0o755)
+    if startup_script.exists():
+        os.chmod(startup_script, 0o755)
 
     # Create systemd service (remote/VPS only, when we have a service user)
     if is_remote and service_user and os.getuid() == 0:
