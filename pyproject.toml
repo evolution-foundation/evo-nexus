@@ -24,6 +24,7 @@ dependencies = [
     "tiktoken>=0.7",
     "sentence-transformers>=3.0",
     "openai>=1.0",
+    "google-genai>=0.3",
     "anthropic>=0.25",
     "marker-pdf>=1.6.1",
 ]

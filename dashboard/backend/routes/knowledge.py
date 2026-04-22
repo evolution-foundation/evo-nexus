@@ -20,6 +20,7 @@ KNOWLEDGE_MASTER_KEY produces a clear 500 rather than a cryptic error.
 
 import logging
 import os
+import re
 import sqlite3
 from pathlib import Path
 
@@ -66,10 +67,18 @@ _EMBEDDER_DEFAULTS = {
         "model": "text-embedding-3-small",
         "vector_dim": 1536,
     },
+    "gemini": {
+        "model": "gemini-embedding-001",
+        "vector_dim": 768,
+    },
 }
 
 _ALLOWED_EMBEDDERS = set(_EMBEDDER_DEFAULTS.keys())
 _ALLOWED_PARSERS = {"marker"}
+
+# Gemini dim is orthogonal to the model (MRL): any of the two models can emit
+# 768, 1536, or 3072-dim vectors. Dim is selected via KNOWLEDGE_GEMINI_DIM.
+_GEMINI_ALLOWED_DIMS = {768, 1536, 3072}
 
 _EMBEDDER_MODELS = {
     "local": [
@@ -80,7 +89,19 @@ _EMBEDDER_MODELS = {
         {"id": "text-embedding-3-large", "dim": 3072},
         {"id": "text-embedding-ada-002", "dim": 1536, "legacy": True},
     ],
+    "gemini": [
+        {"id": "gemini-embedding-001", "dim": 768, "recommended": True,
+         "supports_task_type": True,
+         "note": "Text-only. Supports task_type for retrieval optimization."},
+        {"id": "gemini-embedding-2-preview", "dim": 768,
+         "supports_task_type": False,
+         "preview": True,
+         "note": "Multimodal preview. Task hint must be inline in the prompt."},
+    ],
 }
+
+# Pattern for Google AI Studio API keys (AIzaSy + 33 chars).
+_GEMINI_API_KEY_PATTERN = r"^AIzaSy[A-Za-z0-9_-]{33}$"
 
 
 # ---------------------------------------------------------------------------
@@ -416,8 +437,20 @@ def _current_settings() -> dict:
         provider = "local"
 
     defaults = _EMBEDDER_DEFAULTS[provider]
+    vector_dim = defaults["vector_dim"]
+
     if provider == "openai":
         model = _read_env_clean("KNOWLEDGE_OPENAI_MODEL") or defaults["model"]
+    elif provider == "gemini":
+        model = _read_env_clean("KNOWLEDGE_GEMINI_MODEL") or defaults["model"]
+        raw_dim = _read_env_clean("KNOWLEDGE_GEMINI_DIM")
+        if raw_dim:
+            try:
+                d = int(raw_dim)
+                if d in _GEMINI_ALLOWED_DIMS:
+                    vector_dim = d
+            except ValueError:
+                pass
     else:
         model = defaults["model"]
 
@@ -440,14 +473,20 @@ def _current_settings() -> dict:
         locked = False
 
     openai_key_set = bool(_read_env_clean("OPENAI_API_KEY"))
+    # Gemini accepts either GEMINI_API_KEY (explicit) or GOOGLE_API_KEY
+    # (the google-genai SDK default). Either one counts as "set".
+    gemini_key_set = bool(
+        _read_env_clean("GEMINI_API_KEY") or _read_env_clean("GOOGLE_API_KEY")
+    )
 
     return {
         "embedder_provider": provider,
         "embedder_model": model,
-        "vector_dim": defaults["vector_dim"],
+        "vector_dim": vector_dim,
         "parser_default": parser,
         "locked": locked,
         "openai_api_key_set": openai_key_set,
+        "gemini_api_key_set": gemini_key_set,
     }
 
 
@@ -511,7 +550,7 @@ def update_settings():
     else:
         provider = current["embedder_provider"]
 
-    # --- Embedder model (only meaningful for openai/voyage) ---
+    # --- Embedder model (only meaningful for openai/gemini) ---
     model = data.get("embedder_model")
     if model is not None:
         model = str(model).strip()
@@ -523,6 +562,8 @@ def update_settings():
                 }), 400
             if provider == "openai":
                 kvs["KNOWLEDGE_OPENAI_MODEL"] = model
+            elif provider == "gemini":
+                kvs["KNOWLEDGE_GEMINI_MODEL"] = model
 
     # --- Parser default ---
     parser = data.get("parser_default")
@@ -544,6 +585,39 @@ def update_settings():
             if not openai_key.startswith("sk-"):
                 return jsonify({"error": "OpenAI API key must start with 'sk-'."}), 400
             kvs["OPENAI_API_KEY"] = openai_key
+
+    # --- Gemini API key (only accepted when provider is gemini) ---
+    gemini_key = data.get("gemini_api_key")
+    if gemini_key is not None:
+        gemini_key = str(gemini_key).strip()
+        if gemini_key:
+            if provider != "gemini":
+                return jsonify({
+                    "error": "gemini_api_key can only be set when embedder_provider is 'gemini'.",
+                }), 400
+            if not re.match(_GEMINI_API_KEY_PATTERN, gemini_key):
+                return jsonify({
+                    "error": "Gemini API key must match the Google AI Studio "
+                             "pattern 'AIzaSy...' (39 chars total).",
+                }), 400
+            kvs["GEMINI_API_KEY"] = gemini_key
+
+    # --- Gemini dim (MRL: 768, 1536, or 3072; only for provider=gemini) ---
+    gemini_dim = data.get("gemini_dim")
+    if gemini_dim is not None:
+        try:
+            d = int(gemini_dim)
+        except (TypeError, ValueError):
+            return jsonify({"error": "gemini_dim must be an integer."}), 400
+        if d not in _GEMINI_ALLOWED_DIMS:
+            return jsonify({
+                "error": f"gemini_dim must be one of {sorted(_GEMINI_ALLOWED_DIMS)}.",
+            }), 400
+        if provider != "gemini":
+            return jsonify({
+                "error": "gemini_dim can only be set when embedder_provider is 'gemini'.",
+            }), 400
+        kvs["KNOWLEDGE_GEMINI_DIM"] = str(d)
 
     if not kvs:
         return jsonify(_current_settings())

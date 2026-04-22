@@ -3,13 +3,16 @@ import { RefreshCw, CheckCircle, Download, Info } from 'lucide-react'
 import { api } from '../../lib/api'
 import { useAuth } from '../../context/AuthContext'
 
+type EmbedderProvider = 'local' | 'openai' | 'gemini'
+
 interface KnowledgeSettings {
-  embedder_provider: 'local' | 'openai'
+  embedder_provider: EmbedderProvider
   embedder_model: string
   vector_dim: number
   parser_default: 'marker'
   locked: boolean
   openai_api_key_set: boolean
+  gemini_api_key_set: boolean
 }
 
 interface ParserStatus {
@@ -23,23 +26,50 @@ interface EmbedderModel {
   dim: number
   recommended?: boolean
   legacy?: boolean
+  preview?: boolean
+  supports_task_type?: boolean
+  note?: string
 }
 
-type ModelsByProvider = Record<'local' | 'openai', EmbedderModel[]>
+type ModelsByProvider = Record<EmbedderProvider, EmbedderModel[]>
 
 const EMBEDDER_OPTIONS: Array<{
-  value: 'local' | 'openai'
+  value: EmbedderProvider
   label: string
   desc: string
   defaultModel?: string
 }> = [
-  { value: 'local', label: 'Local (offline)', desc: 'paraphrase-multilingual-mpnet-base-v2 · 768 dims · No API key required' },
-  { value: 'openai', label: 'OpenAI', desc: '1536 dims · Requires an OpenAI API key', defaultModel: 'text-embedding-3-small' },
+  {
+    value: 'local',
+    label: 'Local (offline)',
+    desc: 'paraphrase-multilingual-mpnet-base-v2 · 768 dims · No API key required',
+  },
+  {
+    value: 'openai',
+    label: 'OpenAI',
+    desc: '1536 dims · Requires an OpenAI API key',
+    defaultModel: 'text-embedding-3-small',
+  },
+  {
+    value: 'gemini',
+    label: 'Google Gemini',
+    desc: '768 / 1536 / 3072 dims (MRL) · Requires a Gemini API key · generous free tier',
+    defaultModel: 'gemini-embedding-001',
+  },
 ]
 
+const GEMINI_DIM_CHOICES = [768, 1536, 3072] as const
+
 const PARSER_OPTIONS: Array<{ value: 'marker'; label: string; desc: string }> = [
-  { value: 'marker', label: 'Marker (default)', desc: 'PDF, DOCX, PPTX, XLSX, HTML, EPUB, images with OCR · Offline · ~500 MB download' },
+  {
+    value: 'marker',
+    label: 'Marker (default)',
+    desc: 'PDF, DOCX, PPTX, XLSX, HTML, EPUB, images with OCR · Offline · ~500 MB download',
+  },
 ]
+
+// Gemini API key pattern (Google AI Studio): AIzaSy + 33 chars
+const GEMINI_KEY_PATTERN = /^AIzaSy[A-Za-z0-9_-]{33}$/
 
 export default function KnowledgeSettings() {
   const { hasPermission } = useAuth()
@@ -55,11 +85,14 @@ export default function KnowledgeSettings() {
   const [error, setError] = useState<string | null>(null)
   const [saved, setSaved] = useState(false)
 
-  const [embedder, setEmbedder] = useState<'local' | 'openai'>('local')
+  const [embedder, setEmbedder] = useState<EmbedderProvider>('local')
   const [embedderModel, setEmbedderModel] = useState<string>('')
   const [parser, setParser] = useState<'marker'>('marker')
   const [openaiKey, setOpenaiKey] = useState<string>('')
   const [openaiKeySet, setOpenaiKeySet] = useState<boolean>(false)
+  const [geminiKey, setGeminiKey] = useState<string>('')
+  const [geminiKeySet, setGeminiKeySet] = useState<boolean>(false)
+  const [geminiDim, setGeminiDim] = useState<number>(768)
 
   const load = useCallback(async () => {
     try {
@@ -85,6 +118,11 @@ export default function KnowledgeSettings() {
       setEmbedder(settings.embedder_provider)
       setParser(settings.parser_default)
       setOpenaiKeySet(Boolean(settings.openai_api_key_set))
+      setGeminiKeySet(Boolean(settings.gemini_api_key_set))
+      // vector_dim reflects the active Gemini dim when provider is gemini
+      if (settings.embedder_provider === 'gemini') {
+        setGeminiDim(settings.vector_dim || 768)
+      }
     }
   }, [settings])
 
@@ -101,22 +139,30 @@ export default function KnowledgeSettings() {
   }, [settings, models, embedder])
 
   const providerLocked = Boolean(settings?.locked)
-  const modelEditable = embedder === 'openai'
+  const modelEditable = embedder === 'openai' || embedder === 'gemini'
+  const providerNeedsKey = embedder === 'openai' || embedder === 'gemini'
+
   const dirty = Boolean(
     settings && (
       embedder !== settings.embedder_provider ||
       parser !== settings.parser_default ||
       (modelEditable && embedderModel !== settings.embedder_model) ||
-      (embedder === 'openai' && openaiKey.trim().length > 0)
+      (embedder === 'openai' && openaiKey.trim().length > 0) ||
+      (embedder === 'gemini' && geminiKey.trim().length > 0) ||
+      (embedder === 'gemini' && geminiDim !== (settings.vector_dim || 768))
     )
   )
+
+  // Key validation — same UX as OpenAI's sk- prefix check
+  const geminiKeyInvalid = geminiKey.trim().length > 0 && !GEMINI_KEY_PATTERN.test(geminiKey.trim())
+  const openaiKeyInvalid = openaiKey.trim().length > 0 && !openaiKey.trim().startsWith('sk-')
 
   const handleSave = async () => {
     setSaving(true)
     setError(null)
     setSaved(false)
     try {
-      const payload: Record<string, string> = {
+      const payload: Record<string, string | number> = {
         embedder_provider: embedder,
         parser_default: parser,
       }
@@ -126,9 +172,16 @@ export default function KnowledgeSettings() {
       if (embedder === 'openai' && openaiKey.trim()) {
         payload.openai_api_key = openaiKey.trim()
       }
+      if (embedder === 'gemini') {
+        if (geminiKey.trim()) {
+          payload.gemini_api_key = geminiKey.trim()
+        }
+        payload.gemini_dim = geminiDim
+      }
       const updated = await api.put('/knowledge/settings', payload)
       setSettings(updated)
       setOpenaiKey('')
+      setGeminiKey('')
       setSaved(true)
       setTimeout(() => setSaved(false), 2500)
     } catch (e) {
@@ -164,8 +217,6 @@ export default function KnowledgeSettings() {
       </div>
     )
   }
-
-  const providerNeedsKey = embedder === 'openai'
 
   return (
     <div className="space-y-6 max-w-2xl">
@@ -224,7 +275,7 @@ export default function KnowledgeSettings() {
           ))}
         </div>
 
-        {/* Model selector — only for openai/voyage */}
+        {/* Model selector — for openai and gemini */}
         {modelEditable && (
           <div className="mt-4 pt-4 border-t border-[#344054]">
             <label className="block text-xs font-medium text-[#D0D5DD] mb-1.5">
@@ -238,7 +289,10 @@ export default function KnowledgeSettings() {
             >
               {(models?.[embedder] || []).map((m) => (
                 <option key={m.id} value={m.id}>
-                  {m.id} · {m.dim} dims{m.recommended ? ' · recommended' : ''}{m.legacy ? ' · legacy' : ''}
+                  {m.id}
+                  {m.recommended ? ' · recommended' : ''}
+                  {m.legacy ? ' · legacy' : ''}
+                  {m.preview ? ' · preview' : ''}
                 </option>
               ))}
             </select>
@@ -246,16 +300,54 @@ export default function KnowledgeSettings() {
               const current = models?.[embedder]?.find((m) => m.id === embedderModel)
               if (!current) return null
               return (
-                <p className="text-xs text-[#667085] mt-1.5">
-                  Vector dimensions: <code className="text-[#98A2B3] bg-[#0C111D] px-1 py-0.5 rounded">{current.dim}</code>
-                </p>
+                <div className="mt-1.5 space-y-0.5">
+                  {embedder === 'openai' && (
+                    <p className="text-xs text-[#667085]">
+                      Vector dimensions: <code className="text-[#98A2B3] bg-[#0C111D] px-1 py-0.5 rounded">{current.dim}</code>
+                    </p>
+                  )}
+                  {current.note && (
+                    <p className="text-xs text-[#667085]">{current.note}</p>
+                  )}
+                </div>
               )
             })()}
           </div>
         )}
 
+        {/* Gemini dim selector — MRL allows 768 / 1536 / 3072 */}
+        {embedder === 'gemini' && (
+          <div className="mt-4 pt-4 border-t border-[#344054]">
+            <label className="block text-xs font-medium text-[#D0D5DD] mb-1.5">
+              Vector Dimensions
+            </label>
+            <div className="flex gap-2">
+              {GEMINI_DIM_CHOICES.map((d) => (
+                <button
+                  key={d}
+                  type="button"
+                  onClick={() => { if (!providerLocked && canManage) setGeminiDim(d) }}
+                  disabled={providerLocked || !canManage}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                    geminiDim === d
+                      ? 'bg-[#00FFA7]/15 text-[#00FFA7] border border-[#00FFA7]/40'
+                      : 'bg-[#0C111D] text-[#98A2B3] border border-[#344054] hover:border-[#344054]/80'
+                  } ${providerLocked || !canManage ? 'opacity-60 cursor-not-allowed' : ''}`}
+                >
+                  {d}
+                  {d === 768 ? ' · recommended' : ''}
+                </button>
+              ))}
+            </div>
+            <p className="text-xs text-[#667085] mt-1.5">
+              Matryoshka Representation Learning — same model, selectable output size.
+              768 aligns storage cost with the local provider. 3072 maximizes quality.
+            </p>
+          </div>
+        )}
+
         {/* OpenAI API key — inline input (never displayed back) */}
-        {providerNeedsKey && (
+        {embedder === 'openai' && (
           <div className="mt-4 pt-4 border-t border-[#344054]">
             <div className="flex items-center justify-between mb-1.5">
               <label className="block text-xs font-medium text-[#D0D5DD]">
@@ -275,10 +367,56 @@ export default function KnowledgeSettings() {
               disabled={!canManage}
               autoComplete="off"
               spellCheck={false}
-              className="w-full px-3 py-2 bg-[#0C111D] border border-[#344054] rounded-lg text-sm text-[#F9FAFB] placeholder-[#667085] focus:outline-none focus:border-[#00FFA7]/60 disabled:opacity-60 font-mono"
+              className={`w-full px-3 py-2 bg-[#0C111D] border rounded-lg text-sm text-[#F9FAFB] placeholder-[#667085] focus:outline-none disabled:opacity-60 font-mono ${
+                openaiKeyInvalid
+                  ? 'border-red-500/60 focus:border-red-500'
+                  : 'border-[#344054] focus:border-[#00FFA7]/60'
+              }`}
             />
+            {openaiKeyInvalid && (
+              <p className="text-xs text-red-400 mt-1.5">Key must start with <code>sk-</code>.</p>
+            )}
             <p className="text-xs text-[#667085] mt-1.5">
               Stored in <code className="text-[#98A2B3] bg-[#0C111D] px-1 py-0.5 rounded">.env</code> as <code className="text-[#98A2B3] bg-[#0C111D] px-1 py-0.5 rounded">OPENAI_API_KEY</code>. Only used by the Knowledge embedder.
+            </p>
+          </div>
+        )}
+
+        {/* Gemini API key — inline input (never displayed back) */}
+        {embedder === 'gemini' && (
+          <div className="mt-4 pt-4 border-t border-[#344054]">
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="block text-xs font-medium text-[#D0D5DD]">
+                Gemini API Key
+              </label>
+              {geminiKeySet && (
+                <span className="flex items-center gap-1 text-xs text-[#00FFA7]">
+                  <CheckCircle size={12} /> Configured
+                </span>
+              )}
+            </div>
+            <input
+              type="password"
+              value={geminiKey}
+              onChange={(e) => setGeminiKey(e.target.value)}
+              placeholder={geminiKeySet ? '•••••••• · paste a new key to rotate' : 'AIzaSy...'}
+              disabled={!canManage}
+              autoComplete="off"
+              spellCheck={false}
+              className={`w-full px-3 py-2 bg-[#0C111D] border rounded-lg text-sm text-[#F9FAFB] placeholder-[#667085] focus:outline-none disabled:opacity-60 font-mono ${
+                geminiKeyInvalid
+                  ? 'border-red-500/60 focus:border-red-500'
+                  : 'border-[#344054] focus:border-[#00FFA7]/60'
+              }`}
+            />
+            {geminiKeyInvalid && (
+              <p className="text-xs text-red-400 mt-1.5">
+                Key must match the Google AI Studio pattern <code>AIzaSy...</code> (39 chars total).
+              </p>
+            )}
+            <p className="text-xs text-[#667085] mt-1.5">
+              Get one at <a href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer" className="text-[#00FFA7]/80 hover:text-[#00FFA7] underline">aistudio.google.com/apikey</a>.
+              Stored in <code className="text-[#98A2B3] bg-[#0C111D] px-1 py-0.5 rounded">.env</code> as <code className="text-[#98A2B3] bg-[#0C111D] px-1 py-0.5 rounded">GEMINI_API_KEY</code>. Only used by the Knowledge embedder.
             </p>
           </div>
         )}
@@ -368,7 +506,7 @@ export default function KnowledgeSettings() {
         <div className="flex items-center gap-3">
           <button
             onClick={handleSave}
-            disabled={saving || !dirty}
+            disabled={saving || !dirty || geminiKeyInvalid || openaiKeyInvalid}
             className="flex items-center gap-2 px-4 py-2 bg-[#00FFA7] text-[#0C111D] rounded-lg text-sm font-medium hover:bg-[#00FFA7]/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {saving ? <RefreshCw size={14} className="animate-spin" /> : null}

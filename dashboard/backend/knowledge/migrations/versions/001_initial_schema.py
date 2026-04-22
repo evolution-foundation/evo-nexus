@@ -28,6 +28,7 @@ depends_on: Union[str, Sequence[str], None] = None
 _PROVIDER_DEFAULTS = {
     "local": ("sentence-transformers/paraphrase-multilingual-mpnet-base-v2", 768),
     "openai": ("text-embedding-3-small", 1536),
+    "gemini": ("gemini-embedding-001", 768),
 }
 
 _OPENAI_MODEL_DIMS = {
@@ -35,6 +36,15 @@ _OPENAI_MODEL_DIMS = {
     "text-embedding-3-large": 3072,
     "text-embedding-ada-002": 1536,
 }
+
+# Gemini uses Matryoshka Representation Learning — the same model can emit
+# 768, 1536, or 3072-dim vectors. Dim is controlled by KNOWLEDGE_GEMINI_DIM
+# (default 768 to align storage/index cost with the local provider).
+_GEMINI_MODEL_NATIVE_DIMS = {
+    "gemini-embedding-001": 768,
+    "gemini-embedding-2-preview": 768,
+}
+_GEMINI_ALLOWED_DIMS = {768, 1536, 3072}
 
 
 def _clean_env(name: str, default: str = "") -> str:
@@ -54,6 +64,19 @@ def _resolve_embedder_config() -> tuple[str, str, int]:
     if provider == "openai":
         model = _clean_env("KNOWLEDGE_OPENAI_MODEL") or default_model
         dim = _OPENAI_MODEL_DIMS.get(model, default_dim)
+    elif provider == "gemini":
+        model = _clean_env("KNOWLEDGE_GEMINI_MODEL") or default_model
+        raw_dim = _clean_env("KNOWLEDGE_GEMINI_DIM")
+        native = _GEMINI_MODEL_NATIVE_DIMS.get(model, default_dim)
+        if raw_dim:
+            try:
+                dim = int(raw_dim)
+                if dim not in _GEMINI_ALLOWED_DIMS:
+                    dim = native
+            except ValueError:
+                dim = native
+        else:
+            dim = native
     else:
         model = default_model
         dim = default_dim

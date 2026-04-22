@@ -20,7 +20,9 @@ def _add_backend():
 def _make_mock_embedder(dim: int = 768):
     mock = MagicMock()
     mock.dim = dim
-    mock.embed.side_effect = lambda texts: [[0.1] * dim for _ in texts]
+    # Accept optional task_type for API parity with real embedders
+    # (Gemini uses it; local/OpenAI ignore it silently).
+    mock.embed.side_effect = lambda texts, task_type=None: [[0.1] * dim for _ in texts]
     return mock
 
 
