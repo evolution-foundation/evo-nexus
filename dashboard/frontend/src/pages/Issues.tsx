@@ -6,6 +6,7 @@ import {
   Lock, Clock, CheckCircle, XCircle, Eye,
 } from 'lucide-react'
 import { api } from '../lib/api'
+import { useTranslation } from 'react-i18next'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -260,6 +261,7 @@ function CreateModal({ onClose, onCreated }: CreateModalProps) {
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export default function Issues() {
+  const { t } = useTranslation()
   const navigate = useNavigate()
   const [tickets, setTickets] = useState<TicketItem[]>([])
   const [total, setTotal] = useState(0)
@@ -388,7 +390,7 @@ export default function Issues() {
             <Ticket size={20} className="text-[#00FFA7]" />
           </div>
           <div>
-            <h1 className="text-2xl font-bold text-[#e6edf3]">Issues</h1>
+            <h1 className="text-2xl font-bold text-[#e6edf3]">{t('issues.title')}</h1>
             <p className="text-sm text-[#667085]">{total} ticket{total !== 1 ? 's' : ''} · work queue</p>
           </div>
         </div>

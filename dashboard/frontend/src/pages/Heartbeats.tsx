@@ -5,6 +5,7 @@ import {
   ChevronRight, Clock, CheckCircle, XCircle, AlertTriangle, Info,
 } from 'lucide-react'
 import { api } from '../lib/api'
+import { useTranslation } from 'react-i18next'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -84,6 +85,7 @@ function StatusBadge({ status }: { status: string }) {
 // ── Heartbeat List ────────────────────────────────────────────────────────────
 
 export function HeartbeatsList() {
+  const { t } = useTranslation()
   const [heartbeats, setHeartbeats] = useState<Heartbeat[]>([])
   const [loading, setLoading] = useState(true)
   const [running, setRunning] = useState<string | null>(null)
@@ -146,7 +148,7 @@ export function HeartbeatsList() {
     return (
       <div>
         <div className="mb-8">
-          <h1 className="text-2xl font-bold text-[#e6edf3]">Heartbeats</h1>
+          <h1 className="text-2xl font-bold text-[#e6edf3]">{t('heartbeats.title')}</h1>
         </div>
         <div className="space-y-3">
           {[...Array(3)].map((_, i) => <div key={i} className="skeleton h-20 rounded-xl" />)}
@@ -164,7 +166,7 @@ export function HeartbeatsList() {
             <Heart size={20} className="text-[#00FFA7]" />
           </div>
           <div>
-            <h1 className="text-2xl font-bold text-[#e6edf3]">Heartbeats</h1>
+            <h1 className="text-2xl font-bold text-[#e6edf3]">{t('heartbeats.title')}</h1>
             <p className="text-[#667085] mt-0.5 text-sm">Proactive agents — wake on trigger, decide, act or sleep</p>
           </div>
         </div>
@@ -308,6 +310,7 @@ export function HeartbeatsList() {
 const WAKE_TRIGGER_OPTIONS = ['interval', 'new_task', 'mention', 'manual', 'approval_decision']
 
 function HeartbeatCreateModal({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
+  const { t } = useTranslation()
   const [form, setForm] = useState({
     id: '',
     agent: '',
@@ -380,7 +383,7 @@ function HeartbeatCreateModal({ onClose, onCreated }: { onClose: () => void; onC
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
       <div className="bg-[#161b22] border border-[#21262d] rounded-xl p-6 w-full max-w-lg max-h-[90vh] overflow-y-auto">
         <div className="flex items-center justify-between mb-6">
-          <h2 className="text-lg font-bold text-[#e6edf3]">New Heartbeat</h2>
+          <h2 className="text-lg font-bold text-[#e6edf3]">{t('heartbeats.createHeartbeat')}</h2>
           <button onClick={onClose} className="text-[#667085] hover:text-[#e6edf3] transition-colors">✕</button>
         </div>
 

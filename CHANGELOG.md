@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.27.0] - 2026-04-22
+
+### Added
+
+- **Frontend i18n — pt-BR, en-US, es** (#24) — `react-i18next` + three locale bundles with 539 structurally identical keys each (validated via AST walker). Sidebar, Setup wizard (every label + validation string, live-switches as the user picks a language on step 1), Login, Settings, and 25+ page headers (Overview, Agents, Skills, Memory, Heartbeats, Goals, Providers, Integrations, Backups, Issues, Audit, Costs, Roles, Reports, MemPalace, Systems, Templates, Scheduler, Routines, Tasks, Knowledge layout, Knowledge Settings, API Keys, Connections) now render in the workspace's chosen language. Resolution order: `workspace.language` (backend) → `localStorage.evo_lang` → `navigator.language` → `en-US` fallback. Legacy codes (`ptBR`, `pt_BR`, `pt`, `enUS`, `en_US`) normalize to canonical BCP-47 transparently on both frontend and backend.
+- **`dashboard/frontend/.npmrc`** — `legacy-peer-deps=true` so `make dashboard-app` installs cleanly despite `i18next@24`/`react-i18next@15` declaring `typescript@^5` as peer while the frontend is on TS 6.
+
+### Changed
+
+- **Backend UTF-8 everywhere** — every Python I/O path that persists or reads user-facing content now uses explicit `encoding="utf-8"`: `workspace.yaml` + `CLAUDE.md` (auth_routes), `.env` editor (config), `routines.yaml` (goals, scheduler), `triggers.yaml`, `heartbeats.yaml`, ADW script docstring parsing, secret key file, port read, and Knowledge CLI env round-trip. Flask JSON responses emit real UTF-8 (`ensure_ascii = False`, `Content-Type: application/json; charset=utf-8`) instead of `\uXXXX` escapes. Accented content (`João`, `Leilões`) now survives on Windows + Docker slim (locale=C) without mangling.
+- **`settings.py` — `_normalize_language`** — transparent BCP-47 normalization on `GET` and `PUT /api/settings/workspace` so legacy `ptBR` in existing `workspace.yaml` promotes to `pt-BR` on read and canonicalizes on write. Alias lookup is case-insensitive (matches frontend's `/^ptBR$/i`).
+- **`setup.py`** — default language is now `pt-BR` (BCP-47) instead of legacy `ptBR`. Matches the canonical form used by the UI.
+- **`auth_routes._save_workspace_config`** — default language fallback changed from `"en"` to `"pt-BR"`, aligned with setup.py and frontend `DEFAULT_LOCALE`.
+
+### Fixed
+
+- **i18n resolver chain empty at runtime** — `LanguageDetector` + `supportedLngs` + `nonExplicitSupportedLngs` + `load: 'currentOnly'` combination left `i18n.languages = []` even with resources and language correctly loaded, so `t()` and `exists()` returned raw keys. Resolve the locale synchronously inline (localStorage → navigator.language → default) and pass it to `init({ lng })`. Drop `i18next-browser-languagedetector` — its job is now done inline.
+- **Scheduler — duplicate firings** — removed the `_run_scheduler` thread embedded in `app.py` that was running alongside the standalone `scheduler.py` process, causing every routine to fire 2-3× per trigger. Kept a lightweight `_poll_scheduled_tasks` thread for one-off `ScheduledTask` DB entries only.
+- **Scheduler — atomic PID lock** — replaced TOCTOU-prone check-then-create with `O_CREAT|O_EXCL` atomic open. Prevents multiple schedulers from starting simultaneously during rapid restarts (was causing `review-todoist` / `git-sync` to fire multiple times and send duplicate Telegram messages).
+- **Dashboard `restart-all`** — `pkill` processes directly then re-run `start-services.sh` instead of `systemctl restart` (which on `Type=oneshot` + `KillMode=none` didn't reliably kill children). Works without sudo.
+- **Heartbeat prompt passing** — pass prompt as positional arg instead of `-p` flag. Claude CLI has no `-p` flag; the YAML frontmatter (`---`) was being interpreted as an unknown CLI option, failing all heartbeats with `unknown option '---\nname: "zara-cs"'`.
+- **`fin-daily-pulse`** — convert all Stripe amounts to BRL (USD/IDR→BRL via exchangerate-api with 5.75 fallback); fix churn to use `customer.subscription.deleted` events with full pagination; unify Telegram to a single `reply()` call per run.
+- **`prod-good-morning` / `prod-end-of-day`** — replace sub-skill calls (`/gog-email-triage`, `/prod-review-todoist`) with direct Gmail MCP / Todoist calls, eliminating 2× Telegram notifications per run.
+- **`pulse-faq-sync`** — explicit instruction to send exactly ONE Telegram per run.
+
 ## [0.26.0] - 2026-04-22
 
 ### Added

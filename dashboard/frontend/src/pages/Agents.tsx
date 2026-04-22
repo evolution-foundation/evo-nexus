@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
 import {
   Bot,
   Brain,
@@ -635,6 +636,7 @@ export function trackAgentVisit(agentName: string) {
 }
 
 export default function Agents() {
+  const { t } = useTranslation()
   const [agents, setAgents] = useState<Agent[]>([])
   const [loading, setLoading] = useState(true)
   const [runningAgents, setRunningAgents] = useState<string[]>([])
@@ -730,8 +732,8 @@ export default function Agents() {
     <div>
       {/* Header */}
       <div className="mb-6">
-        <h1 className="text-2xl font-bold text-[#e6edf3]">Agents</h1>
-        <p className="text-[#667085] mt-1">AI agents managing your workspace</p>
+        <h1 className="text-2xl font-bold text-[#e6edf3]">{t('agents.title')}</h1>
+        <p className="text-[#667085] mt-1">{t('agents.headerSubtitle')}</p>
 
         {/* Stats bar */}
         {!loading && agents.length > 0 && (

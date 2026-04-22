@@ -17,6 +17,7 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 import { api } from '../lib/api'
+import { useTranslation } from 'react-i18next'
 
 interface Skill {
   name: string
@@ -141,6 +142,7 @@ function SkillCard({ skill }: { skill: Skill }) {
 }
 
 export default function Skills() {
+  const { t } = useTranslation()
   const [skills, setSkills] = useState<Skill[]>([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
@@ -168,7 +170,7 @@ export default function Skills() {
     <div className="max-w-[1400px] mx-auto">
       {/* Header */}
       <div className="mb-8">
-        <h1 className="text-2xl font-bold text-[#e6edf3] tracking-tight">Skills</h1>
+        <h1 className="text-2xl font-bold text-[#e6edf3] tracking-tight">{t('skills.title')}</h1>
         <p className="text-[#667085] text-sm mt-1">Specialized capabilities and domain knowledge</p>
       </div>
 

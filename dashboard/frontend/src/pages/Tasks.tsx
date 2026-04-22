@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { CalendarClock, Plus, Play, X, Eye, RefreshCw, Pencil, Trash2 } from 'lucide-react'
 import { api } from '../lib/api'
+import { useTranslation } from 'react-i18next'
 
 interface Task {
   id: number
@@ -60,6 +61,7 @@ function formatDate(iso: string | null): string {
 const emptyForm = { name: '', description: '', type: 'skill', payload: '', agent: '', scheduled_at: '' }
 
 export default function Tasks() {
+  const { t } = useTranslation()
   const [tasks, setTasks] = useState<Task[]>([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
@@ -166,7 +168,7 @@ export default function Tasks() {
     return (
       <div>
         <div className="mb-8">
-          <h1 className="text-2xl font-bold text-[#e6edf3]">Scheduled Tasks</h1>
+          <h1 className="text-2xl font-bold text-[#e6edf3]">{t('tasks.title')}</h1>
         </div>
         <div className="space-y-3">
           {[...Array(3)].map((_, i) => <div key={i} className="skeleton h-16 rounded-xl" />)}
@@ -184,7 +186,7 @@ export default function Tasks() {
             <CalendarClock size={20} className="text-[#00FFA7]" />
           </div>
           <div>
-            <h1 className="text-2xl font-bold text-[#e6edf3]">Scheduled Tasks</h1>
+            <h1 className="text-2xl font-bold text-[#e6edf3]">{t('tasks.title')}</h1>
             <p className="text-[#667085] mt-0.5 text-sm">One-off scheduled actions</p>
           </div>
         </div>

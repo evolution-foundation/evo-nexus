@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef, useCallback, type FormEvent } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useAuth } from '../context/AuthContext'
 import { api } from '../lib/api'
+import { setWorkspaceLanguage } from '../i18n'
 
 /* ── Animated mesh background ── */
 function NetworkCanvas() {
@@ -84,10 +86,21 @@ export default function Setup() {
   const { refreshUser } = useAuth()
   const [hasConfig, setHasConfig] = useState<boolean | null>(null)
 
+  const { t, i18n } = useTranslation()
   const [ownerName, setOwnerName] = useState('')
   const [companyName, setCompanyName] = useState('')
   const [timezone, setTimezone] = useState('America/Sao_Paulo')
-  const [language, setLanguage] = useState('en')
+  // Default to whatever the detector picked (workspace-aware or browser-aware).
+  const [language, setLanguage] = useState<string>(() => {
+    const lng = i18n.language
+    return (lng === 'pt-BR' || lng === 'es' || lng === 'en-US') ? lng : 'en-US'
+  })
+
+  // Reflect language picker selections into i18n immediately so the rest of
+  // the form translates on the fly while the user is still on Step 1.
+  useEffect(() => {
+    setWorkspaceLanguage(language)
+  }, [language])
 
   const [username, setUsername] = useState('')
   const [email, setEmail] = useState('')
@@ -111,18 +124,18 @@ export default function Setup() {
 
   const handleStep1 = useCallback((e: FormEvent) => {
     e.preventDefault()
-    if (!ownerName.trim()) { setError('Name is required'); return }
+    if (!ownerName.trim()) { setError(t('setup.nameRequired')); return }
     setError('')
     setDisplayName(ownerName)
     setCurrentStep(2)
-  }, [ownerName])
+  }, [ownerName, t])
 
   const handleStep2 = useCallback(async (e: FormEvent) => {
     e.preventDefault()
     setError('')
-    if (!username.trim()) { setError('Username is required'); return }
-    if (password.length < 6) { setError('Password must be at least 6 characters'); return }
-    if (password !== confirmPassword) { setError('Passwords do not match'); return }
+    if (!username.trim()) { setError(t('setup.usernameRequired')); return }
+    if (password.length < 6) { setError(t('setup.passwordMinChars', { count: 6 })); return }
+    if (password !== confirmPassword) { setError(t('setup.passwordsMismatch')); return }
 
     setSubmitting(true)
     try {
@@ -144,11 +157,11 @@ export default function Setup() {
       await refreshUser()
       window.location.href = '/providers'
     } catch (ex: unknown) {
-      setError(ex instanceof Error ? ex.message : 'Setup failed')
+      setError(ex instanceof Error ? ex.message : t('setup.setupFailed'))
     } finally {
       setSubmitting(false)
     }
-  }, [hasConfig, currentStep, ownerName, companyName, timezone, language, username, email, displayName, password, confirmPassword, refreshUser])
+  }, [hasConfig, currentStep, ownerName, companyName, timezone, language, username, email, displayName, password, confirmPassword, refreshUser, t])
 
   if (hasConfig === null) return (
     <div className="min-h-screen bg-[#080c14] flex items-center justify-center">
@@ -171,7 +184,7 @@ export default function Setup() {
           <div className="px-7 pt-7 pb-5 border-b border-[#152030]">
             <div className="flex flex-col items-center gap-3 mb-4">
               <img src="/EVO_NEXUS.png" alt="EvoNexus" className="h-8 w-auto" />
-              <p className="text-[11px] text-[#4a5a6e]">AI Workspace Platform</p>
+              <p className="text-[11px] text-[#4a5a6e]">{t('setup.appSubtitle')}</p>
             </div>
 
             {/* Step nav */}
@@ -186,7 +199,7 @@ export default function Setup() {
                       : 'text-[#4a5a6e] hover:text-[#7a8a9e]'
                   }`}
                 >
-                  Workspace
+                  {t('setup.tabWorkspace')}
                 </button>
                 <button
                   type="button"
@@ -197,7 +210,7 @@ export default function Setup() {
                   }`}
                   disabled
                 >
-                  Account
+                  {t('setup.tabAccount')}
                 </button>
               </div>
             )}
@@ -215,35 +228,35 @@ export default function Setup() {
             {currentStep === 1 && !hasConfig && (
               <form onSubmit={handleStep1} className="space-y-4">
                 <div>
-                  <label className={lbl}>Your name</label>
+                  <label className={lbl}>{t('setup.yourName')}</label>
                   <input type="text" value={ownerName} onChange={e => setOwnerName(e.target.value)}
-                    className={inp} placeholder="Full name" autoFocus autoComplete="name" />
+                    className={inp} placeholder={t('setup.yourNamePlaceholder')} autoFocus autoComplete="name" />
                 </div>
                 <div>
-                  <label className={lbl}>Company</label>
+                  <label className={lbl}>{t('setup.companyName')}</label>
                   <input type="text" value={companyName} onChange={e => setCompanyName(e.target.value)}
-                    className={inp} placeholder="Organization name" autoComplete="organization" />
+                    className={inp} placeholder={t('setup.companyNamePlaceholder')} autoComplete="organization" />
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className={lbl}>Timezone</label>
+                    <label className={lbl}>{t('setup.timezone')}</label>
                     <input type="text" value={timezone} onChange={e => setTimezone(e.target.value)}
                       className={inp} />
                   </div>
                   <div>
-                    <label className={lbl}>Language</label>
+                    <label className={lbl}>{t('setup.language')}</label>
                     <select value={language} onChange={e => setLanguage(e.target.value)}
                       className={inp + ' appearance-none cursor-pointer'}>
-                      <option value="en">English</option>
-                      <option value="pt-BR">Portugues (BR)</option>
-                      <option value="es">Espanol</option>
+                      <option value="en-US">English (US)</option>
+                      <option value="pt-BR">Português (BR)</option>
+                      <option value="es">Español</option>
                     </select>
                   </div>
                 </div>
 
                 <button type="submit"
                   className="w-full py-3 mt-2 rounded-lg bg-[#00FFA7] text-[#080c14] text-sm font-semibold hover:bg-[#00e69a] active:bg-[#00cc88] transition-colors">
-                  Continue
+                  {t('common.continue')}
                 </button>
               </form>
             )}
@@ -252,33 +265,33 @@ export default function Setup() {
             {currentStep === 2 && (
               <form onSubmit={handleStep2} className="space-y-4">
                 {hasConfig && (
-                  <p className="text-[#5a6b7f] text-xs mb-2">Create your administrator account to get started.</p>
+                  <p className="text-[#5a6b7f] text-xs mb-2">{t('setup.adminAccountHint')}</p>
                 )}
                 <div>
-                  <label className={lbl}>Username</label>
+                  <label className={lbl}>{t('common.username')}</label>
                   <input type="text" value={username} onChange={e => setUsername(e.target.value)}
                     className={inp} placeholder="admin" autoFocus autoComplete="username" />
                 </div>
                 <div>
-                  <label className={lbl}>Email</label>
+                  <label className={lbl}>{t('common.email')}</label>
                   <input type="email" value={email} onChange={e => setEmail(e.target.value)}
                     className={inp} placeholder="you@company.com" autoComplete="email" />
                 </div>
                 <div>
-                  <label className={lbl}>Display name</label>
+                  <label className={lbl}>{t('setup.displayName')}</label>
                   <input type="text" value={displayName} onChange={e => setDisplayName(e.target.value)}
-                    className={inp} placeholder={ownerName || 'Your name'} autoComplete="name" />
+                    className={inp} placeholder={ownerName || t('setup.yourName')} autoComplete="name" />
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className={lbl}>Password</label>
+                    <label className={lbl}>{t('common.password')}</label>
                     <input type="password" value={password} onChange={e => setPassword(e.target.value)}
-                      className={inp} placeholder="Min 6 chars" autoComplete="new-password" />
+                      className={inp} placeholder={t('setup.passwordMinCharsShort')} autoComplete="new-password" />
                   </div>
                   <div>
-                    <label className={lbl}>Confirm</label>
+                    <label className={lbl}>{t('setup.confirmShort')}</label>
                     <input type="password" value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)}
-                      className={inp} placeholder="Repeat" autoComplete="new-password" />
+                      className={inp} placeholder={t('setup.repeatShort')} autoComplete="new-password" />
                   </div>
                 </div>
 
@@ -286,7 +299,7 @@ export default function Setup() {
                   {!hasConfig && (
                     <button type="button" onClick={() => setCurrentStep(1)}
                       className="px-5 py-3 rounded-lg text-[#5a6b7f] text-sm font-medium border border-[#1e2a3a] hover:border-[#2e3a4a] hover:text-[#8a9aae] transition-colors">
-                      Back
+                      {t('common.back')}
                     </button>
                   )}
                   <button type="submit" disabled={submitting}
@@ -295,7 +308,7 @@ export default function Setup() {
                         ? 'bg-[#00FFA7]/60 text-[#080c14]'
                         : 'bg-[#00FFA7] text-[#080c14] hover:bg-[#00e69a] active:bg-[#00cc88]'
                     }`}>
-                    {submitting ? 'Creating...' : 'Create account'}
+                    {submitting ? t('setup.creatingAccount') : t('setup.createAccount')}
                   </button>
                 </div>
               </form>

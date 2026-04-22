@@ -27,10 +27,10 @@ if not _secret_key:
     _key_file = WORKSPACE / "dashboard" / "data" / ".secret_key"
     _key_file.parent.mkdir(parents=True, exist_ok=True)
     if _key_file.exists():
-        _secret_key = _key_file.read_text().strip()
+        _secret_key = _key_file.read_text(encoding="utf-8").strip()
     else:
         _secret_key = secrets.token_hex(32)
-        _key_file.write_text(_secret_key)
+        _key_file.write_text(_secret_key, encoding="utf-8")
         _key_file.chmod(0o600)
 
 app.secret_key = _secret_key
@@ -39,6 +39,20 @@ app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 app.config["REMEMBER_COOKIE_DURATION"] = timedelta(days=30)
 # SameSite=Strict prevents cross-origin cookie riding (CSRF defense layer 1).
 app.config["SESSION_COOKIE_SAMESITE"] = "Strict"
+
+# --- JSON encoding for API responses ---
+# With ensure_ascii=True (Flask default) jsonify escapes every non-ASCII
+# character as \uXXXX. JSON parsers in the browser decode this correctly,
+# but it clutters network logs and occasionally breaks naive consumers that
+# look at raw bytes (e.g. grep over nginx access logs). Emit real UTF-8 so
+# accented content ("João", "Mirandas Leilões") stays readable end-to-end.
+try:
+    app.json.ensure_ascii = False          # type: ignore[attr-defined]
+    app.json.mimetype = "application/json; charset=utf-8"  # type: ignore[attr-defined]
+except AttributeError:
+    # Flask <2.2 exposed this through app.config; keep compatibility.
+    app.config["JSON_AS_ASCII"] = False
+
 CORS(app, origins=["http://localhost:5173"], supports_credentials=True)
 
 # --------------- Database ---------------
@@ -724,7 +738,7 @@ if __name__ == "__main__":
         import yaml
         config_path = WORKSPACE / "config" / "workspace.yaml"
         if config_path.is_file():
-            with open(config_path) as f:
+            with open(config_path, encoding="utf-8") as f:
                 cfg = yaml.safe_load(f)
             if cfg and cfg.get("port"):
                 port = int(cfg["port"])

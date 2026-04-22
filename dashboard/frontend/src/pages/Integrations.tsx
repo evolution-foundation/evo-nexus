@@ -35,6 +35,7 @@ import {
 import { api } from '../lib/api'
 import IntegrationDrawer from '../components/IntegrationDrawer'
 import { getIntegrationMeta } from '../lib/integrationMeta'
+import { useTranslation } from 'react-i18next'
 
 interface Integration {
   name: string
@@ -655,6 +656,7 @@ function IntegrationCard({ int, onSelect, onEdit, onDelete }: IntegrationCardPro
 // ─── Main page ────────────────────────────────────────────────────────────────
 
 export default function Integrations() {
+  const { t } = useTranslation()
   const [integrations, setIntegrations] = useState<Integration[]>([])
   const [platforms, setPlatforms] = useState<SocialPlatform[]>([])
   const [loading, setLoading] = useState(true)
@@ -823,7 +825,7 @@ export default function Integrations() {
 
       {/* Header */}
       <div className="mb-8">
-        <h1 className="text-2xl font-bold text-[#e6edf3] tracking-tight">Integrations</h1>
+        <h1 className="text-2xl font-bold text-[#e6edf3] tracking-tight">{t('integrations.title')}</h1>
         <p className="text-[#667085] text-sm mt-1">Connected services, APIs & social accounts</p>
       </div>
 

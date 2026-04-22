@@ -906,7 +906,9 @@ def main():
         owner_name = ""
         company_name = ""
         timezone = "America/Sao_Paulo"
-        language = "ptBR"
+        # BCP-47 tag. Matches what the dashboard UI saves via Setup.tsx and
+        # Settings.tsx — keeps a single canonical form end-to-end.
+        language = "pt-BR"
         dashboard_port = 8080
     else:
         # Local mode: full interactive setup
@@ -920,7 +922,7 @@ def main():
         owner_name = ask("Your name", "")
         company_name = ask("Company name", "")
         timezone = ask("Timezone", "America/Sao_Paulo")
-        language = ask("Language", "ptBR")
+        language = ask("Language", "pt-BR")
         dashboard_port = int(ask("Dashboard port", "8080"))
         print()
 

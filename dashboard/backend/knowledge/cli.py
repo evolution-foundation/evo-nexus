@@ -34,10 +34,15 @@ def _find_env_file() -> Path:
 
 
 def _read_env_var(env_path: Path, key: str) -> str:
-    """Return the value of *key* in *env_path*, or empty string if absent."""
+    """Return the value of *key* in *env_path*, or empty string if absent.
+
+    Reads with explicit UTF-8 so non-ASCII content (accented comments,
+    names) survives on platforms where the default encoding is not UTF-8
+    (Windows cp1252, Docker slim with locale=C, etc.).
+    """
     if not env_path.exists():
         return ""
-    for line in env_path.read_text().splitlines():
+    for line in env_path.read_text(encoding="utf-8").splitlines():
         stripped = line.strip()
         if stripped.startswith(f"{key}="):
             return stripped[len(key) + 1:].strip().strip('"').strip("'")
@@ -45,16 +50,20 @@ def _read_env_var(env_path: Path, key: str) -> str:
 
 
 def _append_to_env(env_path: Path, key: str, value: str, comment: str = "") -> None:
-    """Append a KEY=value pair (with optional preceding comment) to *env_path*."""
+    """Append a KEY=value pair (with optional preceding comment) to *env_path*.
+
+    Always reads and writes as UTF-8 so existing accented content is
+    preserved across the round-trip regardless of host locale.
+    """
     env_path.parent.mkdir(parents=True, exist_ok=True)
-    content = env_path.read_text() if env_path.exists() else ""
+    content = env_path.read_text(encoding="utf-8") if env_path.exists() else ""
     # Ensure a trailing newline before appending
     if content and not content.endswith("\n"):
         content += "\n"
     if comment:
         content += "\n" + comment + "\n"
     content += f"{key}={value}\n"
-    env_path.write_text(content)
+    env_path.write_text(content, encoding="utf-8")
     try:
         env_path.chmod(0o600)
     except OSError:

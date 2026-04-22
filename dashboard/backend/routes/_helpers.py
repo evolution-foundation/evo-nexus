@@ -56,7 +56,7 @@ def _extract_agent_from_script(path: Path) -> str:
     """Extract agent name from script docstring (pattern: 'via AgentName')."""
     try:
         # Read only first 5 lines to find docstring
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             head = "".join(f.readline() for _ in range(5))
         m = re.search(r"via\s+(\w+)", head, re.IGNORECASE)
         if m:
@@ -145,7 +145,7 @@ def discover_routines() -> dict:
 def _extract_name_from_script(path: Path) -> str:
     """Extract human name from docstring (pattern: 'ADW: Name —')."""
     try:
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             head = "".join(f.readline() for _ in range(5))
         m = re.search(r'ADW:\s*(.+?)\s*[—–-]', head)
         if m:

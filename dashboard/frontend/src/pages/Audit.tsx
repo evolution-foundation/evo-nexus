@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from 'react'
 import { api } from '../lib/api'
 import { ScrollText, ChevronLeft, ChevronRight } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 
 interface AuditEntry {
   id: string
@@ -44,6 +45,7 @@ function timeAgo(dateStr: string): string {
 const PAGE_SIZE = 50
 
 export default function Audit() {
+  const { t } = useTranslation()
   const [entries, setEntries] = useState<AuditEntry[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
@@ -75,7 +77,7 @@ export default function Audit() {
             <ScrollText size={20} className="text-[#00FFA7]" />
           </div>
           <div>
-            <h1 className="text-xl font-bold text-[#e6edf3]">Audit Log</h1>
+            <h1 className="text-xl font-bold text-[#e6edf3]">{t('audit.title')}</h1>
             <p className="text-sm text-[#667085]">{total} entries</p>
           </div>
         </div>

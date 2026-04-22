@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, type FormEvent } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useAuth } from '../context/AuthContext'
 
 /* ── Animated mesh background ── */
@@ -77,6 +78,7 @@ function NetworkCanvas() {
 }
 
 export default function Login() {
+  const { t } = useTranslation()
   const { login } = useAuth()
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
@@ -114,7 +116,7 @@ export default function Login() {
           <div className="px-7 pt-7 pb-5 border-b border-[#152030]">
             <div className="flex flex-col items-center gap-3">
               <img src="/EVO_NEXUS.png" alt="EvoNexus" className="h-8 w-auto" />
-              <p className="text-[11px] text-[#4a5a6e]">Sign in to continue</p>
+              <p className="text-[11px] text-[#4a5a6e]">{t('login.subtitle')}</p>
             </div>
           </div>
 
@@ -128,14 +130,14 @@ export default function Login() {
 
             <form onSubmit={handleSubmit} className="space-y-4">
               <div>
-                <label className={lbl}>Username</label>
+                <label className={lbl}>{t('login.username')}</label>
                 <input type="text" value={username} onChange={e => setUsername(e.target.value)}
-                  className={inp} placeholder="Username" autoFocus autoComplete="username" />
+                  className={inp} placeholder={t('login.username')} autoFocus autoComplete="username" />
               </div>
               <div>
-                <label className={lbl}>Password</label>
+                <label className={lbl}>{t('login.password')}</label>
                 <input type="password" value={password} onChange={e => setPassword(e.target.value)}
-                  className={inp} placeholder="Password" autoComplete="current-password" />
+                  className={inp} placeholder={t('login.password')} autoComplete="current-password" />
               </div>
 
               <button type="submit" disabled={submitting}
@@ -144,7 +146,7 @@ export default function Login() {
                     ? 'bg-[#00FFA7]/60 text-[#080c14]'
                     : 'bg-[#00FFA7] text-[#080c14] hover:bg-[#00e69a] active:bg-[#00cc88]'
                 }`}>
-                {submitting ? 'Signing in...' : 'Sign in'}
+                {submitting ? t('login.signingIn') : t('login.submit')}
               </button>
             </form>
           </div>

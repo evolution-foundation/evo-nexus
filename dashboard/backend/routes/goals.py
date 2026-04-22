@@ -450,7 +450,7 @@ def link_routine_to_goal():
         return jsonify({"error": "config/routines.yaml not found"}), 404
 
     import yaml  # type: ignore
-    with open(routines_path, "r") as f:
+    with open(routines_path, "r", encoding="utf-8") as f:
         config = yaml.safe_load(f) or {}
 
     updated = False
@@ -468,7 +468,7 @@ def link_routine_to_goal():
     if not updated:
         return jsonify({"error": f"Routine '{routine_name}' not found in routines.yaml"}), 404
 
-    with open(routines_path, "w") as f:
+    with open(routines_path, "w", encoding="utf-8") as f:
         yaml.dump(config, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
 
     audit(current_user, "link", "goals", f"Linked routine '{routine_name}' to goal '{goal_slug}'")

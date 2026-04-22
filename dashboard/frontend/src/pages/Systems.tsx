@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from 'react'
 import { ExternalLink, Play, Square, RefreshCw, Plus, Pencil, Trash2, X, Monitor, Container, Globe, AppWindow } from 'lucide-react'
 import { api } from '../lib/api'
+import { useTranslation } from 'react-i18next'
 
 interface SystemApp {
   id: number
@@ -38,6 +39,7 @@ function getTypeConfig(type: string) {
 }
 
 export default function Systems() {
+  const { t } = useTranslation()
   const [apps, setApps] = useState<SystemApp[]>([])
   const [loading, setLoading] = useState(true)
   const [actionLoading, setActionLoading] = useState<number | null>(null)
@@ -145,7 +147,7 @@ export default function Systems() {
     <div>
       <div className="flex items-center justify-between mb-8">
         <div>
-          <h1 className="text-2xl font-bold text-[#e6edf3]">Systems</h1>
+          <h1 className="text-2xl font-bold text-[#e6edf3]">{t('systems.title')}</h1>
           <p className="text-[#667085] mt-1">Registered applications and services</p>
         </div>
         <div className="flex items-center gap-2">

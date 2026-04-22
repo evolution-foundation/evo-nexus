@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { NavLink } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
 import { useAuth } from '../context/AuthContext'
 import NotificationBell from './NotificationBell'
 import {
@@ -19,15 +20,14 @@ interface VersionInfo {
 
 interface NavItem {
   to: string
-  label: string
+  labelKey: string           // i18n key under nav.*
   icon: React.ComponentType<{ size?: number }>
   resource: string | null
   desktopOnly?: boolean
 }
 
 interface NavGroup {
-  key: string
-  label: string
+  key: string                // i18n key under nav.groups.*  (also used as storage key)
   collapsible: boolean
   adminOnly?: boolean
   items: NavItem[]
@@ -36,63 +36,58 @@ interface NavGroup {
 const navGroups: NavGroup[] = [
   {
     key: 'main',
-    label: 'Main',
     collapsible: false,
     items: [
-      { to: '/', label: 'Overview', icon: LayoutDashboard, resource: null },
+      { to: '/', labelKey: 'overview', icon: LayoutDashboard, resource: null },
     ],
   },
   {
     key: 'operations',
-    label: 'Operations',
     collapsible: true,
     items: [
-      { to: '/agents', label: 'Agents', icon: Bot, resource: 'agents' },
-      { to: '/skills', label: 'Skills', icon: Zap, resource: 'skills' },
-      { to: '/routines', label: 'Routines', icon: Clock, resource: 'routines' },
-      { to: '/tasks', label: 'Tasks', icon: CalendarClock, resource: 'tasks' },
-      { to: '/triggers', label: 'Triggers', icon: Webhook, resource: 'triggers' },
-      { to: '/heartbeats', label: 'Heartbeats', icon: Heart, resource: 'heartbeats' },
-      { to: '/goals', label: 'Goals', icon: Target, resource: 'goals' },
-      { to: '/issues', label: 'Issues', icon: Ticket, resource: 'tickets' },
-      { to: '/templates', label: 'Templates', icon: Layout, resource: 'templates' },
+      { to: '/agents', labelKey: 'agents', icon: Bot, resource: 'agents' },
+      { to: '/skills', labelKey: 'skills', icon: Zap, resource: 'skills' },
+      { to: '/routines', labelKey: 'routines', icon: Clock, resource: 'routines' },
+      { to: '/tasks', labelKey: 'tasks', icon: CalendarClock, resource: 'tasks' },
+      { to: '/triggers', labelKey: 'triggers', icon: Webhook, resource: 'triggers' },
+      { to: '/heartbeats', labelKey: 'heartbeats', icon: Heart, resource: 'heartbeats' },
+      { to: '/goals', labelKey: 'goals', icon: Target, resource: 'goals' },
+      { to: '/issues', labelKey: 'issues', icon: Ticket, resource: 'tickets' },
+      { to: '/templates', labelKey: 'templates', icon: Layout, resource: 'templates' },
     ],
   },
   {
     key: 'data',
-    label: 'Data',
     collapsible: true,
     items: [
-      { to: '/workspace', label: 'Workspace', icon: FolderOpen, resource: 'workspace' },
-      { to: '/shares', label: 'Share Links', icon: Share2, resource: 'workspace' },
-      { to: '/memory', label: 'Memory', icon: Brain, resource: 'memory' },
-      { to: '/mempalace', label: 'MemPalace', icon: Library, resource: 'mempalace' },
-      { to: '/knowledge', label: 'Knowledge', icon: Database, resource: 'knowledge' },
-      { to: '/costs', label: 'Costs', icon: DollarSign, resource: 'costs' },
+      { to: '/workspace', labelKey: 'workspace', icon: FolderOpen, resource: 'workspace' },
+      { to: '/shares', labelKey: 'shareLinks', icon: Share2, resource: 'workspace' },
+      { to: '/memory', labelKey: 'memory', icon: Brain, resource: 'memory' },
+      { to: '/mempalace', labelKey: 'mempalace', icon: Library, resource: 'mempalace' },
+      { to: '/knowledge', labelKey: 'knowledge', icon: Database, resource: 'knowledge' },
+      { to: '/costs', labelKey: 'costs', icon: DollarSign, resource: 'costs' },
     ],
   },
   {
     key: 'system',
-    label: 'System',
     collapsible: true,
     items: [
-      { to: '/settings', label: 'Settings', icon: Settings, resource: 'config' },
-      { to: '/systems', label: 'Systems', icon: Monitor, resource: 'systems' },
-      { to: '/providers', label: 'Providers', icon: Cpu, resource: 'config' },
-      { to: '/integrations', label: 'Integrations', icon: Plug, resource: 'integrations' },
-      { to: '/scheduler', label: 'Services', icon: Calendar, resource: 'scheduler' },
-      { to: '/backups', label: 'Backups', icon: HardDriveDownload, resource: 'config' },
+      { to: '/settings', labelKey: 'settings', icon: Settings, resource: 'config' },
+      { to: '/systems', labelKey: 'systems', icon: Monitor, resource: 'systems' },
+      { to: '/providers', labelKey: 'providers', icon: Cpu, resource: 'config' },
+      { to: '/integrations', labelKey: 'integrations', icon: Plug, resource: 'integrations' },
+      { to: '/scheduler', labelKey: 'scheduler', icon: Calendar, resource: 'scheduler' },
+      { to: '/backups', labelKey: 'backups', icon: HardDriveDownload, resource: 'config' },
     ],
   },
   {
     key: 'admin',
-    label: 'Admin',
     collapsible: true,
     adminOnly: true,
     items: [
-      { to: '/users', label: 'Users', icon: Users, resource: 'users' },
-      { to: '/roles', label: 'Roles', icon: Shield, resource: 'users' },
-      { to: '/audit', label: 'Audit Log', icon: ScrollText, resource: 'audit' },
+      { to: '/users', labelKey: 'users', icon: Users, resource: 'users' },
+      { to: '/roles', labelKey: 'roles', icon: Shield, resource: 'users' },
+      { to: '/audit', labelKey: 'audit', icon: ScrollText, resource: 'audit' },
     ],
   },
 ]
@@ -121,6 +116,7 @@ const roleBadgeClass: Record<string, string> = {
 
 export default function Sidebar() {
   const { user, logout, hasPermission } = useAuth()
+  const { t } = useTranslation()
   const [mobileOpen, setMobileOpen] = useState(false)
   const [versionInfo, setVersionInfo] = useState<VersionInfo | null>(null)
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>(loadCollapsedState)
@@ -157,7 +153,7 @@ export default function Sidebar() {
       }
     >
       <item.icon size={16} />
-      {item.label}
+      {t(`nav.${item.labelKey}`)}
     </NavLink>
   )
 
@@ -187,7 +183,7 @@ export default function Sidebar() {
             className="w-full flex items-center justify-between px-3 py-1.5 mt-2 group cursor-pointer"
           >
             <span className="text-[10px] uppercase tracking-wider text-[#667085] font-semibold select-none">
-              {group.label}
+              {t(`nav.groups.${group.key}`)}
             </span>
             <ChevronDown
               size={12}
@@ -199,7 +195,7 @@ export default function Sidebar() {
         ) : (
           <div className="px-3 py-1.5">
             <span className="text-[10px] uppercase tracking-wider text-[#667085] font-semibold">
-              {group.label}
+              {t(`nav.groups.${group.key}`)}
             </span>
           </div>
         )}
@@ -246,7 +242,7 @@ export default function Sidebar() {
             }
           >
             <BookOpen size={16} />
-            Docs
+            {t('nav.docs')}
           </NavLink>
         </div>
       </nav>
@@ -266,7 +262,7 @@ export default function Sidebar() {
             <button
               onClick={logout}
               className="p-1.5 rounded-lg text-[#667085] hover:text-red-400 hover:bg-red-500/10 transition-colors shrink-0"
-              title="Logout"
+              title={t('nav.logout')}
             >
               <LogOut size={16} />
             </button>
@@ -285,7 +281,7 @@ export default function Sidebar() {
                 target="_blank"
                 rel="noopener noreferrer"
                 className="flex items-center gap-1 text-[#00FFA7] hover:text-[#00FFA7]/80 transition-colors"
-                title={`Update available: v${versionInfo.latest}`}
+                title={t('nav.updateAvailable', { version: versionInfo.latest })}
               >
                 <ArrowUpCircle size={12} />
                 <span>v{versionInfo.latest}</span>
