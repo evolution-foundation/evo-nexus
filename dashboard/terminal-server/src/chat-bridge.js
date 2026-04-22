@@ -268,7 +268,7 @@ class ChatBridge {
       }
       return new Promise((resolve) => {
         if (!currentSession.pendingApprovals) currentSession.pendingApprovals = new Map();
-        currentSession.pendingApprovals.set(requestId, resolve);
+        currentSession.pendingApprovals.set(requestId, { resolve, toolInput: input });
         if (onMessage) {
           onMessage({
             type: 'permission_request',
@@ -283,7 +283,7 @@ class ChatBridge {
 
     queryOptions.canUseTool = async (toolName, input, sdkOptions) => {
       if (readTrustMode() || AUTO_APPROVE.has(toolName)) {
-        return { behavior: 'allow' };
+        return { behavior: 'allow', updatedInput: input ?? {} };
       }
       const requestId = sdkOptions.toolUseID || `req-${Date.now()}-${Math.random().toString(36).slice(2)}`;
       return requestApprovalFromUser(toolName, input, requestId, null);
@@ -439,8 +439,8 @@ class ChatBridge {
     session.active = false;
     // Deny all pending approval requests so awaiting canUseTool promises resolve.
     if (session.pendingApprovals && session.pendingApprovals.size > 0) {
-      for (const resolve of session.pendingApprovals.values()) {
-        resolve({ behavior: 'deny', message: 'Session stopped by user.' });
+      for (const entry of session.pendingApprovals.values()) {
+        entry.resolve({ behavior: 'deny', message: 'Session stopped by user.' });
       }
       session.pendingApprovals.clear();
     }
@@ -458,12 +458,12 @@ class ChatBridge {
   respondToApproval(sessionId, requestId, approved) {
     const session = this.sessions.get(sessionId);
     if (!session?.pendingApprovals) return false;
-    const resolve = session.pendingApprovals.get(requestId);
-    if (!resolve) return false;
+    const entry = session.pendingApprovals.get(requestId);
+    if (!entry) return false;
     session.pendingApprovals.delete(requestId);
-    resolve(
+    entry.resolve(
       approved
-        ? { behavior: 'allow' }
+        ? { behavior: 'allow', updatedInput: entry.toolInput ?? {} }
         : { behavior: 'deny', message: 'User denied this tool use.' }
     );
     return true;

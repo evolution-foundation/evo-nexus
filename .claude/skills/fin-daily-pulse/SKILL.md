@@ -87,7 +87,7 @@ Captura: `revenue.total`, `orders.completed`, `orders.pending`, `orders.failed`,
 ```
 GET /api/v1/analytics/orders?status=completed&created_after=YYYY-MM-DD&per_page=100
 ```
-(hoje em BRT; converter para UTC: `created_after = date.today().isoformat()`)
+(today in BRT; convert to UTC: `created_after = date.today().isoformat()`)
 - Paginate until `meta.has_more = false`
 - Sum `amount` of all orders — Evo Academy daily revenue
 - Split by type: renewals (`is_renewal=true`) vs new (`is_renewal=false`)

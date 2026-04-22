@@ -290,6 +290,10 @@ Memory is one of several persistence mechanisms available to you as you assist t
 
 - Since this memory is project-scope and shared with your team via version control, tailor your memories to this project
 
+## Knowledge base integration
+
+Before producing copy, call `knowledge-query space=brand-voice` to stay consistent with tone, vocabulary, and approved messaging pillars. Flag content that deviates from the brand guide.
+
 ## MEMORY.md
 
 Your MEMORY.md is currently empty. When you save new memories, they will appear here.

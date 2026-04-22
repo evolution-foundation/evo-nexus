@@ -5,7 +5,7 @@ import NotificationBell from './NotificationBell'
 import {
   LayoutDashboard, Bot, Clock, Zap, Layout, Calendar, CalendarClock,
   Brain, Plug, DollarSign, FolderOpen, Cpu,
-  Monitor, Users, ScrollText, LogOut, Menu, X, Shield, BookOpen, Library,
+  Monitor, Users, ScrollText, LogOut, Menu, X, Shield, BookOpen, Library, Database,
   ArrowUpCircle, ChevronDown, Webhook, HardDriveDownload, Settings, Share2, Heart, Target, Ticket,
 } from 'lucide-react'
 
@@ -66,7 +66,8 @@ const navGroups: NavGroup[] = [
       { to: '/workspace', label: 'Workspace', icon: FolderOpen, resource: 'workspace' },
       { to: '/shares', label: 'Share Links', icon: Share2, resource: 'workspace' },
       { to: '/memory', label: 'Memory', icon: Brain, resource: 'memory' },
-      { to: '/mempalace', label: 'Knowledge', icon: Library, resource: 'mempalace' },
+      { to: '/mempalace', label: 'MemPalace', icon: Library, resource: 'mempalace' },
+      { to: '/knowledge', label: 'Knowledge', icon: Database, resource: 'knowledge' },
       { to: '/costs', label: 'Costs', icon: DollarSign, resource: 'costs' },
     ],
   },

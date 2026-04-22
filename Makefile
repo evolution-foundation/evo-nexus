@@ -28,6 +28,9 @@ docs-build:         ## 📄 Regenerate docs/llms-full.txt and sync to site
 setup:              ## 🔧 Interactive setup wizard (prerequisites, config, folders)
 	$(PYTHON) setup.py
 
+init-key:           ## 🔐 Generate KNOWLEDGE_MASTER_KEY for pgvector-knowledge (one-time)
+	$(PYTHON) -m dashboard.backend.knowledge.cli init-key
+
 # ── Core Routines (shipped with repo) ─────
 
 morning:            ## ☀️  Morning briefing — agenda, emails, tasks (@clawdia)

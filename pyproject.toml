@@ -1,6 +1,6 @@
 [project]
 name = "evo-nexus"
-version = "0.24.0"
+version = "0.26.0"
 description = "Unofficial open source toolkit for Claude Code — AI-powered business operating system"
 requires-python = ">=3.10"
 dependencies = [
@@ -18,7 +18,19 @@ dependencies = [
     "flask-sock>=0.7",
     "boto3>=1.35",
     "pywinpty>=3.0.3; sys_platform == 'win32'",
+    "cryptography>=42",
+    "psycopg2-binary",
+    "alembic>=1.13",
+    "tiktoken>=0.7",
+    "sentence-transformers>=3.0",
+    "openai>=1.0",
+    "google-genai>=0.3",
+    "anthropic>=0.25",
+    "marker-pdf>=1.6.1",
 ]
+
+[project.scripts]
+evonexus = "dashboard.backend.knowledge.cli:main"
 
 [tool.uv]
 dev-dependencies = [
