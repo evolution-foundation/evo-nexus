@@ -786,6 +786,39 @@ def copy_env_example(config: dict):
         dst.write_text("# EvoNexus Environment Variables\n# Fill in your API keys below\n\n", encoding="utf-8")
 
 
+def ensure_knowledge_master_key(config: dict):
+    """Generate KNOWLEDGE_MASTER_KEY on first setup so the Knowledge Base
+    (pgvector-knowledge) works out of the box — no need for the user to run
+    `evonexus init-key` manually.
+
+    Idempotent: a key that already exists is preserved.
+    Safe: failure is non-fatal — Knowledge features will error clearly at
+    first use and the user can still run `make init-key` manually.
+    """
+    env_path = WORKSPACE / ".env"
+    try:
+        # Import lazily so a missing cryptography (pre-`uv sync`) does not
+        # break the rest of the setup wizard.
+        sys.path.insert(0, str(WORKSPACE / "dashboard" / "backend"))
+        from knowledge.cli import ensure_master_key
+        was_generated, _ = ensure_master_key(env_path)
+    except RuntimeError as exc:
+        # cryptography not installed yet — acceptable; uv sync will fix
+        # on the next line and the user can re-run this step if needed.
+        print(f"  {YELLOW}!{RESET} Skipped KNOWLEDGE_MASTER_KEY generation ({exc})")
+        print(f"    {DIM}Run `make init-key` after setup completes to generate it.{RESET}")
+        return
+    except Exception as exc:  # noqa: BLE001 — never block setup on this
+        print(f"  {YELLOW}!{RESET} Could not ensure KNOWLEDGE_MASTER_KEY: {exc}")
+        print(f"    {DIM}Run `make init-key` after setup completes to generate it.{RESET}")
+        return
+
+    if was_generated:
+        print(f"  {GREEN}✓{RESET} Generated KNOWLEDGE_MASTER_KEY (Knowledge Base encryption)")
+    else:
+        print(f"  {DIM}  KNOWLEDGE_MASTER_KEY already set — preserved{RESET}")
+
+
 def copy_routines_config(config: dict):
     dst = WORKSPACE / "config" / "routines.yaml"
     if dst.exists():
@@ -920,6 +953,9 @@ def main():
 
     # .env
     copy_env_example(config)
+
+    # KNOWLEDGE_MASTER_KEY (idempotent; generated on first setup)
+    ensure_knowledge_master_key(config)
 
     # routines.yaml
     copy_routines_config(config)

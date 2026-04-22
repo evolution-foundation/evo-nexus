@@ -53,6 +53,34 @@ if ! grep -q '^EVONEXUS_SECRET_KEY=' "$CONFIG_DIR/.env" 2>/dev/null; then
     echo "EVONEXUS_SECRET_KEY=$(openssl rand -hex 32)" >> "$CONFIG_DIR/.env"
 fi
 
+# --- 3b. Ensure KNOWLEDGE_MASTER_KEY exists (Knowledge Base DSN encryption) ---
+# Without this, /api/knowledge/* endpoints raise on startup and the Knowledge
+# section of the dashboard fails to load. Fernet requires a urlsafe-base64
+# encoded 32-byte key, so `openssl rand` cannot be used directly — we go
+# through Python's cryptography lib (already installed in the venv via
+# pyproject.toml). Generated once on first boot; the UI never exposes it.
+if ! grep -q '^KNOWLEDGE_MASTER_KEY=' "$CONFIG_DIR/.env" 2>/dev/null; then
+    # Prefer the venv python (has `cryptography` pinned); fall back to system.
+    _PYBIN="/workspace/.venv/bin/python3"
+    [ -x "$_PYBIN" ] || _PYBIN="$(command -v python3 || true)"
+    if [ -n "$_PYBIN" ]; then
+        _KEY=$("$_PYBIN" -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())" 2>/dev/null || true)
+        if [ -n "$_KEY" ]; then
+            {
+                printf '\n# Knowledge encryption key — DO NOT delete, DO NOT commit.\n'
+                printf '# Losing this key = losing access to ALL configured connections.\n'
+                printf 'KNOWLEDGE_MASTER_KEY=%s\n' "$_KEY"
+            } >> "$CONFIG_DIR/.env"
+            echo "[$(date -Is)] Generated KNOWLEDGE_MASTER_KEY (first boot)" >&2
+        else
+            echo "[$(date -Is)] WARNING: could not generate KNOWLEDGE_MASTER_KEY (cryptography missing?)" >&2
+        fi
+    else
+        echo "[$(date -Is)] WARNING: no python3 found — KNOWLEDGE_MASTER_KEY not generated" >&2
+    fi
+    unset _PYBIN _KEY
+fi
+
 # --- 4. Symlinks so the app finds files at the paths it expects ------------
 ln -sfn "$CONFIG_DIR/.env" /workspace/.env
 if [ ! -e /workspace/CLAUDE.md ] && [ ! -L /workspace/CLAUDE.md ]; then
