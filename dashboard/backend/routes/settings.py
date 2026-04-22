@@ -11,6 +11,39 @@ bp = Blueprint("settings", __name__)
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
+# Legacy language codes that predate the BCP-47 normalization. setup.py used
+# to save "ptBR" without a hyphen; older workspace.yaml files still have it.
+# We normalize silently so the dashboard UI (which expects "pt-BR") receives
+# a canonical form without forcing users to migrate their .yaml by hand.
+#
+# Keys are stored in lowercase — lookup in _normalize_language lowercases
+# the input first, so "ptBR", "PTBR", "pt_BR", "Pt_Br" all match.
+_LANGUAGE_ALIASES = {
+    "ptbr": "pt-BR",
+    "pt_br": "pt-BR",
+    "pt": "pt-BR",
+    "enus": "en-US",
+    "en_us": "en-US",
+    "en": "en-US",
+}
+
+
+def _normalize_language(raw) -> str:
+    """Return a canonical BCP-47 tag for legacy / short language codes.
+
+    Safe on empty/None — returns the input unchanged. Unknown codes pass
+    through so Portuguese → pt-BR but e.g. "fr" stays "fr" (the UI falls
+    back to en-US on unknown codes via the i18n detector).
+
+    Alias lookup is case-insensitive to match the frontend's normalizeLocale
+    (which uses /^ptBR$/i etc.), so "PTBR" and "En_Us" resolve correctly too.
+    """
+    if not raw:
+        return raw
+    s = str(raw).strip()
+    return _LANGUAGE_ALIASES.get(s.lower(), s)
+
+
 def _load_yaml(path):
     import yaml
     try:
@@ -43,11 +76,19 @@ def _require_manage():
 @bp.route("/api/settings/workspace")
 @login_required
 def get_workspace():
-    """Return workspace section of workspace.yaml as JSON."""
+    """Return workspace section of workspace.yaml as JSON.
+
+    Transparently normalizes legacy language codes ("ptBR" → "pt-BR") in
+    the response so the frontend always sees a canonical BCP-47 tag,
+    regardless of when the yaml was first written.
+    """
     config_path = WORKSPACE / "config" / "workspace.yaml"
     data = _load_yaml(config_path)
+    workspace = dict(data.get("workspace") or {})
+    if "language" in workspace:
+        workspace["language"] = _normalize_language(workspace["language"])
     return jsonify({
-        "workspace": data.get("workspace", {}),
+        "workspace": workspace,
         "dashboard": data.get("dashboard", {}),
     })
 
@@ -70,6 +111,10 @@ def update_workspace():
         ws = data.setdefault("workspace", {})
         for k, v in body["workspace"].items():
             if k in allowed_ws:
+                # Canonicalize language on write so legacy values don't
+                # pollute future reads.
+                if k == "language":
+                    v = _normalize_language(v)
                 ws[k] = v
 
     if "dashboard" in body:

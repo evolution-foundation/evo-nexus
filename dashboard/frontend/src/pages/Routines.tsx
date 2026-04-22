@@ -24,6 +24,7 @@ import {
 } from 'lucide-react'
 import { api } from '../lib/api'
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts'
+import { useTranslation } from 'react-i18next'
 
 interface Routine {
   name: string
@@ -138,6 +139,7 @@ function SkeletonRow() {
 }
 
 export default function Routines() {
+  const { t } = useTranslation()
   const [routines, setRoutines] = useState<Routine[]>([])
   const [loading, setLoading] = useState(true)
   const [sortKey, setSortKey] = useState<SortKey>('name')
@@ -202,7 +204,7 @@ export default function Routines() {
     <div className="max-w-[1400px] mx-auto">
       {/* Header */}
       <div className="mb-8">
-        <h1 className="text-2xl font-bold text-[#e6edf3] tracking-tight">Routines</h1>
+        <h1 className="text-2xl font-bold text-[#e6edf3] tracking-tight">{t('routines.title')}</h1>
         <p className="text-[#667085] text-sm mt-1">Automated routine performance</p>
       </div>
 

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { CheckCircle2, AlertCircle, RefreshCw, X } from 'lucide-react'
 import { api } from '../lib/api'
+import { useTranslation } from 'react-i18next'
 
 interface ProviderEnvVars { [key: string]: string }
 
@@ -173,6 +174,7 @@ function ModelCombobox({ value, onChange, options, placeholder, inputClassName }
 }
 
 export default function Providers() {
+  const { t } = useTranslation()
   const [providers, setProviders] = useState<Provider[]>([])
   const [activeProvider, setActiveProvider] = useState('anthropic')
   const [loading, setLoading] = useState(true)
@@ -358,7 +360,7 @@ export default function Providers() {
     <div className="max-w-[1200px] mx-auto font-[Inter,-apple-system,sans-serif]">
       {/* Header */}
       <div className="mb-6">
-        <h1 className="text-xl font-bold text-white tracking-tight">Providers</h1>
+        <h1 className="text-xl font-bold text-white tracking-tight">{t('providers.title')}</h1>
         <p className="text-[#5a6b7f] text-sm mt-1">Configure and activate AI providers for your workspace</p>
       </div>
 

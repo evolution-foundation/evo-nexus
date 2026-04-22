@@ -6,6 +6,7 @@ import {
 } from 'lucide-react'
 import { api } from '../lib/api'
 import Markdown from '../components/Markdown'
+import { useTranslation } from 'react-i18next'
 
 interface TreeItem {
   name: string
@@ -58,6 +59,7 @@ function relativeTime(ts: number): string {
 }
 
 export default function Reports() {
+  const { t } = useTranslation()
   const { '*': routePath } = useParams()
   const navigate = useNavigate()
   const [tree, setTree] = useState<TreeResponse | null>(null)
@@ -160,7 +162,7 @@ export default function Reports() {
     <div className="max-w-[1400px] mx-auto">
       {/* Header */}
       <div className="mb-6">
-        <h1 className="text-2xl font-bold text-[#e6edf3] tracking-tight">Workspace</h1>
+        <h1 className="text-2xl font-bold text-[#e6edf3] tracking-tight">{t('reports.title')}</h1>
         <p className="text-[#667085] text-sm mt-1">Browse your workspace files and reports</p>
       </div>
 

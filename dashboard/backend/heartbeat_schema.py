@@ -90,7 +90,7 @@ def load_heartbeats_yaml(path: Path | None = None) -> HeartbeatsFile:
         else:
             return HeartbeatsFile(heartbeats=[])
 
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         raw = yaml.safe_load(f) or {}
 
     return HeartbeatsFile.model_validate(raw)
@@ -112,7 +112,7 @@ def save_heartbeats_yaml(data: HeartbeatsFile, path: Path | None = None) -> None
     }
 
     tmp_path = path.with_suffix(".yaml.tmp")
-    with open(tmp_path, "w") as f:
+    with open(tmp_path, "w", encoding="utf-8") as f:
         yaml.dump(raw, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
 
     os.rename(tmp_path, path)

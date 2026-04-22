@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { X, CheckCircle, XCircle, RefreshCw, Database } from 'lucide-react'
 import { api } from '../../../lib/api'
 import { useKnowledge } from '../../../context/KnowledgeContext'
@@ -37,6 +38,7 @@ const defaultPhases: ConfigPhase[] = [
 ]
 
 export default function Wizard({ onClose, onCreated }: Props) {
+  const { t } = useTranslation()
   const { refreshConnections } = useKnowledge()
   const [step, setStep] = useState<Step>(1)
   const [form, setForm] = useState<FormData>({
@@ -170,7 +172,7 @@ export default function Wizard({ onClose, onCreated }: Props) {
         <div className="flex items-center justify-between px-6 py-4 border-b border-[#344054]">
           <div className="flex items-center gap-2">
             <Database size={16} className="text-[#00FFA7]" />
-            <h2 className="text-sm font-semibold text-[#F9FAFB]">New Connection</h2>
+            <h2 className="text-sm font-semibold text-[#F9FAFB]">{t('knowledge.newConnection')}</h2>
           </div>
           <button onClick={onClose} className="p-1.5 rounded-lg text-[#667085] hover:text-[#D0D5DD] hover:bg-white/5 transition-colors">
             <X size={16} />

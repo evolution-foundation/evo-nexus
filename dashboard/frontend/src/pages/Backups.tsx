@@ -5,6 +5,7 @@ import {
   ChevronDown, Eye, EyeOff, Save, Upload,
 } from 'lucide-react'
 import { api } from '../lib/api'
+import { useTranslation } from 'react-i18next'
 
 interface BackupManifest {
   version: string
@@ -212,6 +213,7 @@ interface S3BackupEntry {
 }
 
 export default function Backups() {
+  const { t } = useTranslation()
   const [backups, setBackups] = useState<BackupEntry[]>([])
   const [s3Backups, setS3Backups] = useState<S3BackupEntry[]>([])
   const [s3Error, setS3Error] = useState<string | null>(null)
@@ -359,7 +361,7 @@ export default function Backups() {
             <HardDriveDownload size={20} className="text-[#00FFA7]" />
           </div>
           <div>
-            <h1 className="text-xl font-semibold text-[#e6edf3]">Backups</h1>
+            <h1 className="text-xl font-semibold text-[#e6edf3]">{t('backups.title')}</h1>
             <p className="text-sm text-[#667085]">Export and restore workspace data</p>
           </div>
         </div>

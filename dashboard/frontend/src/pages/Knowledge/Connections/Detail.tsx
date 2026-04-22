@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
 import { ArrowLeft, RefreshCw, Trash2, CheckCircle, XCircle, AlertTriangle, Wifi } from 'lucide-react'
 import { api } from '../../../lib/api'
 import { useAuth } from '../../../context/AuthContext'
@@ -32,6 +33,7 @@ interface ConnectionEvent {
 }
 
 export default function ConnectionDetail() {
+  const { t } = useTranslation()
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
   const { hasPermission } = useAuth()
@@ -223,7 +225,7 @@ export default function ConnectionDetail() {
       {/* Events */}
       {conn.events && conn.events.length > 0 && (
         <div>
-          <h3 className="text-sm font-semibold text-[#D0D5DD] mb-3">Recent Events</h3>
+          <h3 className="text-sm font-semibold text-[#D0D5DD] mb-3">{t('knowledge.recentEvents')}</h3>
           <div className="space-y-2">
             {conn.events.map((ev) => (
               <div key={ev.id} className="bg-[#182230] border border-[#344054] rounded-xl px-4 py-3 flex items-start gap-3">
@@ -247,7 +249,7 @@ export default function ConnectionDetail() {
       {/* Danger zone */}
       {canManage && (
         <div className="border border-red-500/20 rounded-xl p-4">
-          <h3 className="text-sm font-semibold text-red-400 mb-2">Danger Zone</h3>
+          <h3 className="text-sm font-semibold text-red-400 mb-2">{t('knowledge.dangerZone')}</h3>
           <p className="text-xs text-[#667085] mb-4">
             Deleting this connection removes it from EvoNexus only.{' '}
             <strong className="text-[#D0D5DD]">Data on your Postgres remains untouched.</strong>

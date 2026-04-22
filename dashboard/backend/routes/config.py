@@ -170,7 +170,7 @@ def update_integration_env():
         if key not in updated_keys:
             new_lines.append(f"{key}={val}")
 
-    env_path.write_text("\n".join(new_lines) + "\n")
+    env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
 
     # Reload dotenv in current process
     try:

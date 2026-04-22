@@ -18,6 +18,7 @@ import {
 } from 'lucide-react'
 import { api } from '../lib/api'
 import Markdown from '../components/Markdown'
+import { useTranslation } from 'react-i18next'
 
 interface GlobalFile {
   name: string
@@ -68,6 +69,7 @@ function formatSize(bytes: number): string {
 }
 
 export default function Memory() {
+  const { t } = useTranslation()
   const [data, setData] = useState<MemoryData | null>(null)
   const [loading, setLoading] = useState(true)
   const [expandedGlobal, setExpandedGlobal] = useState<string | null>(null)
@@ -130,7 +132,7 @@ export default function Memory() {
     <div className="max-w-[1400px] mx-auto">
       {/* Header */}
       <div className="mb-8">
-        <h1 className="text-2xl font-bold text-[#e6edf3] tracking-tight">Memory</h1>
+        <h1 className="text-2xl font-bold text-[#e6edf3] tracking-tight">{t('memory.title')}</h1>
         <p className="text-[#667085] text-sm mt-1">Persistent workspace memory</p>
 
         {/* Stats bar */}

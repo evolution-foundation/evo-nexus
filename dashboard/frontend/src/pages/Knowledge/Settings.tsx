@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback } from 'react'
+import { useTranslation } from 'react-i18next'
 import { RefreshCw, CheckCircle, Download, Info } from 'lucide-react'
 import { api } from '../../lib/api'
 import { useAuth } from '../../context/AuthContext'
@@ -72,6 +73,7 @@ const PARSER_OPTIONS: Array<{ value: 'marker'; label: string; desc: string }> = 
 const GEMINI_KEY_PATTERN = /^AIzaSy[A-Za-z0-9_-]{33}$/
 
 export default function KnowledgeSettings() {
+  const { t } = useTranslation()
   const { hasPermission } = useAuth()
   const canManage = hasPermission('knowledge', 'manage')
 
@@ -229,7 +231,7 @@ export default function KnowledgeSettings() {
       <div className="bg-[#182230] border border-[#344054] rounded-xl p-5">
         <div className="flex items-start justify-between mb-4">
           <div>
-            <h3 className="text-sm font-semibold text-[#F9FAFB]">Embedder Provider</h3>
+            <h3 className="text-sm font-semibold text-[#F9FAFB]">{t('knowledge.settingsPage.embedderProvider')}</h3>
             <p className="text-xs text-[#667085] mt-0.5">Global for all connections. Cannot change after first connection is added.</p>
           </div>
           {providerLocked && (
@@ -429,7 +431,7 @@ export default function KnowledgeSettings() {
 
       {/* Parser */}
       <div className="bg-[#182230] border border-[#344054] rounded-xl p-5">
-        <h3 className="text-sm font-semibold text-[#F9FAFB] mb-1">Default Parser</h3>
+        <h3 className="text-sm font-semibold text-[#F9FAFB] mb-1">{t('knowledge.settingsPage.defaultParser')}</h3>
         <p className="text-xs text-[#667085] mb-4">Used when uploading documents without explicit parser selection.</p>
 
         <div className="space-y-2">

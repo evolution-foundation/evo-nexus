@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Layout, FileCode, FileText } from 'lucide-react'
 import { api } from '../lib/api'
 import Markdown from '../components/Markdown'
+import { useTranslation } from 'react-i18next'
 
 interface Template {
   name: string
@@ -12,6 +13,7 @@ interface Template {
 }
 
 export default function Templates() {
+  const { t } = useTranslation()
   const [templates, setTemplates] = useState<Template[]>([])
   const [loading, setLoading] = useState(true)
   const [selected, setSelected] = useState<Template | null>(null)
@@ -63,7 +65,7 @@ export default function Templates() {
   return (
     <div>
       <div className="mb-8">
-        <h1 className="text-2xl font-bold text-[#e6edf3]">Templates</h1>
+        <h1 className="text-2xl font-bold text-[#e6edf3]">{t('templates.title')}</h1>
         <p className="text-[#667085] mt-1">Reusable templates</p>
       </div>
 

@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback } from 'react'
+import { useTranslation } from 'react-i18next'
 import { Plus, Copy, Trash2, RefreshCw, X, Key, CheckCircle, AlertTriangle } from 'lucide-react'
 import { api } from '../../lib/api'
 import { useAuth } from '../../context/AuthContext'
@@ -38,6 +39,7 @@ const defaultForm: NewKeyForm = {
 }
 
 export default function KnowledgeApiKeys() {
+  const { t } = useTranslation()
   const { hasPermission } = useAuth()
   const { activeConnectionId } = useKnowledge()
   const canManage = hasPermission('knowledge', 'manage')
@@ -249,7 +251,7 @@ export default function KnowledgeApiKeys() {
             <div className="flex items-center justify-between px-5 py-4 border-b border-[#344054]">
               <div className="flex items-center gap-2">
                 <Key size={14} className="text-[#00FFA7]" />
-                <h3 className="text-sm font-semibold text-[#F9FAFB]">New API Key</h3>
+                <h3 className="text-sm font-semibold text-[#F9FAFB]">{t('knowledge.newApiKey')}</h3>
               </div>
               <button onClick={() => setShowModal(false)} className="p-1.5 rounded-lg text-[#667085] hover:text-[#D0D5DD] hover:bg-white/5"><X size={14} /></button>
             </div>
