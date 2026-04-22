@@ -183,7 +183,7 @@ export default function Setup() {
           {/* Header */}
           <div className="px-7 pt-7 pb-5 border-b border-[#152030]">
             <div className="flex flex-col items-center gap-3 mb-4">
-              <img src="/EVO_NEXUS.png" alt="EvoNexus" className="h-8 w-auto" />
+              <img src="/EVO_NEXUS.webp" alt="EvoNexus" className="h-8 w-auto" />
               <p className="text-[11px] text-[#4a5a6e]">{t('setup.appSubtitle')}</p>
             </div>
 

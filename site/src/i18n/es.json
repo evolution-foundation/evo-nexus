@@ -6,9 +6,9 @@
   },
   "hero": {
     "badge": "v{{version}} ya disponible",
-    "title": "Gestiona tu empresa",
-    "titleHighlight": "con agentes de IA.",
-    "subtitle": "Finanzas, marketing, legal, ventas, comunidad, ingeniería. 38 agentes especializados listos para trabajar. Open source. Un comando.",
+    "title": "Tu equipo de IA,",
+    "titleHighlight": "ya armado.",
+    "subtitle": "38 agentes que recuerdan, agendan y cumplen metas. De finanzas a ingeniería — todo conectado. Open source. Un comando.",
     "cta": "Comienza Ahora, es gratis",
     "viewGithub": "Ver en GitHub",
     "discord": "Únete a 17,000+ devs en Discord",
@@ -17,6 +17,30 @@
       "agents": "Agentes de IA",
       "skills": "Skills",
       "integrations": "Integraciones"
+    }
+  },
+  "howWorkGetsDone": {
+    "sectionTitle": "Cómo se hace el trabajo",
+    "sectionSubtitle": "No es un menú de features. Es una estructura que sigue trabajando cuando cierras el laptop.",
+    "beat1": {
+      "title": "Define la meta una vez",
+      "body": "EvoNexus organiza el trabajo en cuatro niveles: Misión → Proyecto → Meta → Tarea. Defines qué es éxito — \"100 clientes pagantes para el Q4\" — y el sistema lo rastrea automáticamente. Las metas avanzan cuando las tareas se marcan como hechas. Los agentes reciben el contexto completo antes de actuar.",
+      "example": "Misión: MRR $1M Q4 2026 → Proyecto: Evo AI → Meta: 100 clientes pagantes para 30/jun (progreso: 23/100, 45 días restantes) → Tareas asignadas a los agentes."
+    },
+    "beat2": {
+      "title": "Cada agente en su lugar",
+      "body": "Activa un agente con un slash command — /clawdia, /flux, /apex — o deja que los heartbeats los despierten en horario. Cada agente tiene alcance definido, memoria de largo plazo propia y autoridad de decisión dentro de su dominio. No necesitan reconfigurarse en cada sesión. Recuerdan quién eres y lo que ya se decidió.",
+      "example": "Atlas revisa Linear cada 4 horas. Si un bloqueador lleva más de 24 horas abierto sin respuesta, escala — sin que lo pidas. Lees el resumen en el briefing de la mañana."
+    },
+    "beat3": {
+      "title": "Documentos que los agentes realmente leen",
+      "body": "Sube PDFs, documentos internos, SOPs, transcripciones — los agentes los consultan verbatim. EvoNexus viene con un sistema RAG híbrido (búsqueda por palabra clave + semántica) en tu propio Postgres. Tú traes los datos, los agentes traen el contexto. Sin alucinaciones sobre lo que dicen tus políticas — citan la fuente.",
+      "example": "Lex revisa un nuevo contrato de proveedor. Consulta tu base de conocimiento legal, encuentra la cláusula que contradice tu template estándar de NDA y la señala con el párrafo exacto de la fuente. Revisas el diff, no el documento entero."
+    },
+    "beat4": {
+      "title": "Todo lo que pasa queda registrado",
+      "body": "Los tickets persisten. Las ejecuciones de heartbeat se registran con costo, duración y decisión tomada. El progreso de metas se rastrea automáticamente por la finalización de tareas. El log de auditoría muestra quién hizo qué, cuándo y por qué. Nada sucede en una caja negra. Cada acción de agente es atribuible.",
+      "example": "Zara clasifica 14 tickets de soporte durante la noche. En la mañana ves: 11 resueltos, 2 escalados con resumen, 1 esperando respuesta del cliente. Costo: $0.23. Apruebas las escalaciones — la clasificación ya está hecha."
     }
   },
   "screenshots": {
@@ -29,78 +53,6 @@
     "integrationsTitle": "Integraciones",
     "costTracking": "Control de Costos",
     "chatUI": "Chat con Agentes"
-  },
-  "features": {
-    "sectionTitle": "Todo incluido. Sin lock-in.",
-    "sectionSubtitle": "EvoNexus viene con un conjunto completo de herramientas listas para usar.",
-    "agents": {
-      "title": "38 Agentes Especializados",
-      "desc": "17 agentes de negocio (ops, finanzas, marketing, ventas, legal y más) + 21 agentes de ingeniería (arquitectura, código, revisión, pruebas, seguridad y más). Cada uno con su propia memoria y alcance."
-    },
-    "skills": {
-      "title": "175+ Skills",
-      "desc": "Skills de negocio (fin-, social-, mkt-, hr-, legal-...) más 25 dev-* skills de ingeniería (autopilot, plan, ralplan, verify, ultraqa, trace...)"
-    },
-    "routines": {
-      "title": "Rutinas Automatizadas",
-      "desc": "Del briefing matutino al cierre mensual, ejecutándose en horario automáticamente"
-    },
-    "dashboard": {
-      "title": "Dashboard Web",
-      "desc": "React + Flask con auth, roles, terminal, reportes, gestión de servicios"
-    },
-    "integrations": {
-      "title": "23 Integraciones",
-      "desc": "Gmail, Calendar, GitHub, Linear, Discord, Stripe, Bling, Asaas, Omie y más"
-    },
-    "channels": {
-      "title": "Canales",
-      "desc": "Chat bidireccional via Telegram, Discord e iMessage. Habla con Claude desde tu móvil."
-    },
-    "memory": {
-      "title": "Memoria Persistente",
-      "desc": "Sistema de dos niveles que recuerda el contexto entre conversaciones y sesiones"
-    },
-    "teams": {
-      "title": "Equipos de Agentes",
-      "desc": "Ejecución paralela de múltiples agentes para rutinas de consolidación más rápidas (experimental)"
-    },
-    "scheduled": {
-      "title": "Tareas Programadas",
-      "desc": "Acciones únicas en fecha/hora específica. Programa una skill, prompt o script."
-    },
-    "openSource": {
-      "title": "100% Open Source",
-      "desc": "Licencia MIT, haz fork, personalízalo, controla toda tu infraestructura de IA."
-    }
-  },
-  "why": {
-    "sectionTitle": "Qué cambia cuando tienes un equipo de IA estructurado",
-    "sectionSubtitle": "Claude Code es poderoso. Sin estructura, reconfiguras el mismo agente cada semana. Con EvoNexus, recuerda quién eres.",
-    "markdownFirst": {
-      "title": "Agentes en Markdown",
-      "desc": "Los agentes son archivos .md simples con system prompts. Sin SDK, sin plugin runtime, sin compilación. Pon un archivo en .claude/agents/ y ya está activo."
-    },
-    "skillsAsInstructions": {
-      "title": "Skills como Instrucciones",
-      "desc": "175+ capacidades reutilizables en finanzas, comunidad, social, ingeniería, datos, legal, RRHH, ops, producto, CS. Cada una un conjunto de instrucciones en markdown. Agrega, edita o elimina editando texto."
-    },
-    "multiProvider": {
-      "title": "Multi-Provider, Sin Lock-In",
-      "desc": "Por defecto corre en la CLI nativa de Claude de Anthropic, o cambia a OpenRouter, OpenAI, Gemini, Bedrock o Vertex AI via OpenClaude. Un clic en la página de Providers, sin cambios de código. Tus claves, tu elección de modelo."
-    },
-    "mcpIntegrations": {
-      "title": "Integraciones MCP",
-      "desc": "El Model Context Protocol conecta agentes a Google Calendar, Gmail, GitHub, Linear, Telegram, Canva, Notion y más. Interfaz estandarizada con soporte nativo incluido."
-    },
-    "slashCommands": {
-      "title": "Slash Commands",
-      "desc": "Escribe /clawdia, /flux, /pulse o /apex para activar agentes instantáneamente. Interfaz de comando natural directo en la terminal. Sin menús, sin formularios."
-    },
-    "persistentMemory": {
-      "title": "Memoria Persistente",
-      "desc": "Memoria en dos niveles: CLAUDE.md para estado de trabajo, memory/ por agente para contexto a largo plazo. Sobrevive entre sesiones. Tus agentes recuerdan quién eres, en qué estás trabajando y qué se decidió."
-    }
   },
   "howItWorks": {
     "sectionTitle": "De cero a operaciones con IA en minutos",
@@ -129,11 +81,11 @@
     },
     "flux": {
       "role": "Finanzas",
-      "desc": "Stripe, integración con ERP, reportes de flujo de caja y cierre mensual. Sin hoja de cálculo."
+      "desc": "Stripe, integración con ERP, reportes de flujo de caja y cierre mensual. Sin hoja de cálculo, sin sorpresas."
     },
     "atlas": {
       "role": "Proyectos",
-      "desc": "PRs en GitHub, issues en Linear, seguimiento de sprint. Un agente para la vista completa del proyecto."
+      "desc": "PRs en GitHub, issues en Linear, seguimiento de sprint. Una sola vista de todo lo que está en marcha."
     },
     "oracle": {
       "role": "Conocimiento",
@@ -145,7 +97,7 @@
     },
     "pulse": {
       "role": "Comunidad",
-      "desc": "Monitoreo de Discord y WhatsApp, sincronización de FAQ, análisis de sentimiento. Tu comunidad nunca duerme."
+      "desc": "Monitoreo de Discord y WhatsApp, sincronización de FAQ, análisis de sentimiento. Tu comunidad nunca se queda sin respuesta."
     },
     "apex": {
       "role": "Arquitecto",
@@ -155,6 +107,23 @@
       "role": "Ejecutor",
       "desc": "Implementación con el mínimo diff viable. Archivos cambiados, tests pasando, sin scope creep."
     }
+  },
+  "knowledge": {
+    "sectionTitle": "Agentes que sí leen tus documentos",
+    "sectionSubtitle": "Sube tus documentos una vez. Cada agente los consulta en contexto — verbatim, con citas.",
+    "body": "EvoNexus viene con un sistema RAG híbrido: búsqueda por palabra clave + embeddings semánticos (MPNet local, OpenAI o Gemini con MRL 768/1536/3072). Tu conocimiento vive en tu propio Postgres. Los agentes consultan en tiempo de ejecución — sin alucinaciones sobre lo que dicen tus SOPs, sin respuestas genéricas cuando existe una fuente. Citan el párrafo, no su mejor suposición.",
+    "bullet1": "Soporta PDF, DOCX, PPTX, XLSX, HTML, EPUB y texto plano. Ingesta una vez por la UI de Knowledge o CLI.",
+    "bullet2": "Recuperación híbrida: búsqueda por palabra clave para precisión, búsqueda semántica para cobertura. Los dos, no uno u otro.",
+    "bullet3": "Trae tu propio Postgres — Supabase, Neon, RDS o on-prem. Tus datos se quedan en tu infraestructura."
+  },
+  "heartbeats": {
+    "sectionTitle": "Agentes en piloto automático",
+    "sectionSubtitle": "Cron para tus agentes, con guardrails. Configura cuándo hace check-in cada uno — solo actúan cuando hace falta.",
+    "body": "Los heartbeats son ejecuciones programadas de agentes con un paso de decisión integrado. Defines el intervalo y la condición. El agente despierta, revisa el estado y actúa — o salta, si nada justifica acción. No es un cron job que siempre ejecuta. Es un agente que siempre despierta pero solo actúa cuando debe. Costo cuando está ocioso: casi cero.",
+    "bullet1": "Atlas revisa Linear cada 4h — escala bloqueadores abiertos más de 24h sin respuesta.",
+    "bullet2": "Zara barre la cola de soporte cada 2h — tría, responde, escala basándose en las reglas que definas.",
+    "bullet3": "Flux revisa Stripe y Omie cada 6h — señala anomalías, redacta el reporte diario de pulse.",
+    "example": "Te desconectas un fin de semana. Atlas está pendiente. El sábado por la mañana encuentra un PR bloqueado por un CI con fallos que Danilo no ha visto. Abre un ticket, lo reasigna a la cola y registra la acción. El lunes por la mañana lees el log, no la sorpresa."
   },
   "socialProof": {
     "production": "Usado en producción",
@@ -183,6 +152,6 @@
     "documentation": "Documentación",
     "contributing": "Contribuir",
     "changelog": "Changelog",
-    "disclaimer": "Toolkit no oficial para Claude Code. Sin afiliación con Anthropic."
+    "disclaimer": "Toolkit no oficial para Claude Code. Sin vínculo con Anthropic."
   }
 }

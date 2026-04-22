@@ -63,41 +63,13 @@ fi
 chown -R "$SERVICE_USER:$SERVICE_USER" "$SERVICE_DIR"
 chown -R "$SERVICE_USER:$SERVICE_USER" "$SERVICE_HOME"
 
-# ── Step 2b: Regenerate start-services.sh with correct paths ──
+# ── Step 2b: Make start-services.sh executable ──
+# The script self-discovers its install dir at runtime (SCRIPT_DIR=...),
+# so no path substitution is needed here — chmod + chown is enough.
 
-LOGS_DIR="$SERVICE_DIR/logs"
-echo -e "  Generating start-services.sh..."
-cat > "$SERVICE_DIR/start-services.sh" << STARTEOF
-#!/bin/bash
-export PATH="/usr/local/bin:/usr/bin:/bin:\$HOME/.local/bin"
-cd $SERVICE_DIR
-
-# Load environment variables
-if [ -f .env ]; then
-  set -a
-  source .env
-  set +a
-fi
-
-# Kill existing services (including scheduler)
-pkill -f 'terminal-server/bin/server.js' 2>/dev/null
-pkill -f 'python.*app.py' 2>/dev/null
-pkill -f 'python.*scheduler.py' 2>/dev/null
-sleep 1
-
-# Start terminal-server (must run FROM the project root for agent discovery)
-nohup node dashboard/terminal-server/bin/server.js > $LOGS_DIR/terminal-server.log 2>&1 &
-
-# Start scheduler
-nohup $SERVICE_DIR/.venv/bin/python scheduler.py > $LOGS_DIR/scheduler.log 2>&1 &
-
-# Start Flask dashboard
-cd dashboard/backend
-nohup $SERVICE_DIR/.venv/bin/python app.py > $LOGS_DIR/dashboard.log 2>&1 &
-STARTEOF
 chmod 755 "$SERVICE_DIR/start-services.sh"
 chown "$SERVICE_USER:$SERVICE_USER" "$SERVICE_DIR/start-services.sh"
-echo -e "  ${GREEN}✓${RESET} start-services.sh regenerated"
+echo -e "  ${GREEN}✓${RESET} start-services.sh ready"
 
 # ── Step 3: Install uv for the user ──
 
