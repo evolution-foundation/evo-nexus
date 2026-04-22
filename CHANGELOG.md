@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.28.0] - 2026-04-22
+
+### Added
+
+- **Landing page reframe — work narrative over feature inventory** — hero rewritten across all three locales: EN `"Your AI team, pre-assembled."` / PT `"Seu time de IA, já montado."` / ES `"Tu equipo de IA, ya armado."`. New section "How Work Gets Done" with 4-beat narrative (Set the goal → Agents that know their lane → Docs your agents actually read → Every action, traceable). New standalone sections for **Knowledge Base** (hybrid RAG + BYO Postgres) and **Heartbeats** (cron for agents, with guardrails) — surfacing v0.25+v0.27 features that had been invisible on the LP. Full proposal doc in `workspace/marketing/[C]lp-reframe-v1.md` (gitignored).
+- **Setup wizard i18n (pt-BR / en-US / es)** (#25) — `make setup` now asks for wizard language first (1=EN / 2=PT / 3=ES), then translates every user-visible message: banner, section headers, field prompts, progress lines, success/failure, final next-steps. Non-interactive contexts (`EVO_NEXUS_AUTO_INSTALL=1`, CI, pip backend) silently keep `en-US`. 153 keys per bundle, exact parity verified.
+- **Auto-relocate install for non-root service user** (#25) — detects when `SUDO_USER` cannot read+enter the install dir via `su - <user> -c 'test -x ... && test -r setup.py'`. If not, copies project to `/home/<user>/evo-nexus`, chowns, updates the global `WORKSPACE`, and `chdir`s there. Every later step (uv sync, npm install, systemd `WorkingDirectory`, ownership fix) sees the new location automatically. Fixes the regression where direct-to-root installs with `SUDO_USER=ubuntu` silently failed on systemd unit start.
+- **Tool bootstrap for non-root service user** (#25) — new `_ensure_user_has_tools(user)` bootstraps `uv`, `claude`, `openclaude` into `~/.local/` for any non-root service user (mirrors what the `evonexus` auto-created branch already did). Idempotent — skips tools already present.
+
+### Changed
+
+- **Image optimization — 265 KB saved across 50 assets** (#25) — PNG brand assets converted to WebP (quality 85, method 6), existing WebP avatars re-encoded at quality 82. Sweep over `dashboard/frontend/public/`, `public/`, `site/public/`. Before: 2,302 KB. After: 2,037 KB. Favicons intentionally kept as PNG (cross-browser WebP favicon support still patchy; files already 4 KB).
+- **`dashboard/frontend/.npmrc`** (#25) — `legacy-peer-deps=true` with explanatory comment, so `npm install --silent` inside `setup.py` returns 0 despite `react-i18next@15` declaring peer `typescript@^5` while the dashboard pins `typescript@~6`.
+- **Landing page section reorder** — hero → How Work Gets Done → Agents → Knowledge → Heartbeats → Screenshots → Integrations → Quick Start. Removed the 10-card "Features Grid" and the 6-card "Why EvoNexus?" section (dead post-reframe — the same arguments now live as prose in "How Work Gets Done"). Merged the 3-step "How It Works" into the Quick Start section above the terminal block. Removed the redundant Social Proof stats bar (numbers already in hero stats pills).
+- **Hardcoded counts updated** — README, LP, and dashboard stats now show **190+ skills** (was 175+) and **25 integrations** (was 23-24 depending on location — inconsistent). Numbers verified against `ls .claude/skills/` (190 dirs) and `.claude/rules/integrations.md` (25 entries).
+- **Landing page copy — editorial pass in pt-BR / en / es** — rewrote every user-facing string as if each locale were the original language, not a translation. Replaced abstract nouns with active verbs, dropped anglicisms (`pré-montado` → `já montado`; `pre-ensamblado` → `ya armado`), killed SaaS clichés (`never sleeps` → `never left hanging` / `nunca fica sem resposta` / `nunca se queda sin respuesta`). Heartbeats section renamed from `Agents that wake on schedule` → `Agents on autopilot` across all three locales.
+- **5 placeholder integration icons removed from LP** — LinkedIn, Amplitude, DocuSign, Bling, Asaas were rendering as generic Lucide `<Activity>`, `<FileText>`, `<Workflow>`, `<Zap>` (and LinkedIn+Amplitude shared the same icon). `react-icons/si` has no match for these brands; showing a wrong icon was worse than omitting. Integration count stays 25 in copy (real count from `integrations.md`) — logos on home just show the most recognizable.
+- **iMessage channel clarified** — `features.channels.desc` across all locales now appends `(macOS)` qualifier, since iMessage ships via the `@claude-plugins-official` plugin and depends on Messages.app being open on macOS. No behavior change, just accuracy.
+
+### Fixed
+
+- **`start-services.sh` self-discovering install dir** (#27) — replaced hard-coded `/home/evonexus/evo-nexus` with `SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"` so the same script works for any service user at any path. Fixes silent systemd failure where the unit reported `active (exited)` but no processes were running — triggered when `SUDO_USER` was set to something other than the auto-created `evonexus` user (typical VPS pattern: clone into `/root/*` while `SUDO_USER=ubuntu` is preserved by `sudo -i`). `install-service.sh` no longer regenerates `start-services.sh` via heredoc; just `chmod` + `chown` the checked-in version. Added `mkdir -p logs` and `cd ... || exit 1` guards so fresh installs and dir-less reboots fail loudly instead of silently running from the wrong cwd.
+
 ## [0.27.0] - 2026-04-22
 
 ### Added

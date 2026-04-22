@@ -6,9 +6,9 @@
   },
   "hero": {
     "badge": "v{{version}} is now live",
-    "title": "Run your business",
-    "titleHighlight": "with AI agents.",
-    "subtitle": "Finance, marketing, legal, sales, community, engineering. 38 specialized agents ready to work. Open source. One command.",
+    "title": "Your AI team,",
+    "titleHighlight": "pre-assembled.",
+    "subtitle": "38 agents that remember, schedule, and hit targets. From finance to engineering — all wired up. Open source. One command.",
     "cta": "Get Started, it's free",
     "viewGithub": "View on GitHub",
     "discord": "Join 17,000+ developers on Discord",
@@ -17,6 +17,30 @@
       "agents": "AI Agents",
       "skills": "Skills",
       "integrations": "Integrations"
+    }
+  },
+  "howWorkGetsDone": {
+    "sectionTitle": "How work gets done",
+    "sectionSubtitle": "Not a menu of features. A structure that keeps working when you close the laptop.",
+    "beat1": {
+      "title": "Set the goal once",
+      "body": "EvoNexus organizes work across four levels: Mission → Project → Goal → Task. You define what success looks like — \"100 paying customers by Q4\" — and the system tracks it automatically. Goals update when tasks are marked done. Agents receive the full cascade as context before they act.",
+      "example": "Mission: MRR $1M Q4 2026 → Project: Evo AI → Goal: 100 paying customers by Jun 30 (progress: 23/100, 45 days left) → Tasks assigned to agents."
+    },
+    "beat2": {
+      "title": "Agents that know their lane",
+      "body": "Activate an agent with a slash command — /clawdia, /flux, /apex — or let heartbeats wake them on schedule. Each agent has a defined scope, its own long-term memory, and decision authority within its domain. They do not need to be reconfigured every session. They remember who you are and what's been decided.",
+      "example": "Atlas checks Linear every 4 hours. If a blocker has been open for 24+ hours with no response, it escalates — without being asked. You read the summary in your morning briefing."
+    },
+    "beat3": {
+      "title": "Docs your agents actually read",
+      "body": "Upload PDFs, internal docs, SOPs, transcripts — agents query them verbatim. EvoNexus ships with a hybrid RAG system (keyword + semantic search) backed by your own Postgres. You bring the data, agents bring the context. No hallucinations about what your policies say — they cite the source.",
+      "example": "Lex reviews a new vendor contract. It queries your legal knowledge base, finds the clause that contradicts your standard NDA template, and flags it with the exact source paragraph. You review the diff, not the whole document."
+    },
+    "beat4": {
+      "title": "Every action, traceable",
+      "body": "Tickets persist. Heartbeat runs are logged with cost, duration, and decision. Goal progress is tracked automatically by task completion. The audit log shows who did what, when, and why. Nothing happens in a black box. Every agent action is attributable.",
+      "example": "Zara triages 14 support tickets overnight. In the morning you see: 11 resolved, 2 escalated with summary, 1 waiting on customer reply. Cost: $0.23. You approve the escalations, not the triage."
     }
   },
   "screenshots": {
@@ -29,78 +53,6 @@
     "integrationsTitle": "Integrations",
     "costTracking": "Cost Tracking",
     "chatUI": "Agent Chat UI"
-  },
-  "features": {
-    "sectionTitle": "Everything included. Zero lock-in.",
-    "sectionSubtitle": "EvoNexus comes with a complete suite of tools out of the box.",
-    "agents": {
-      "title": "38 Specialized Agents",
-      "desc": "17 business agents (ops, finance, marketing, sales, legal and more) + 21 engineering agents (architecture, code, review, tests, security and more). Each with their own memory and scope."
-    },
-    "skills": {
-      "title": "175+ Skills",
-      "desc": "Business skills (fin-, social-, mkt-, hr-, legal-...) plus 25 dev-* engineering skills (autopilot, plan, ralplan, verify, ultraqa, trace...)"
-    },
-    "routines": {
-      "title": "Automated Routines",
-      "desc": "Morning briefing to monthly close, running on schedule automatically"
-    },
-    "dashboard": {
-      "title": "Web Dashboard",
-      "desc": "React + Flask with auth, roles, terminal, reports, service management"
-    },
-    "integrations": {
-      "title": "23 Integrations",
-      "desc": "Gmail, Calendar, GitHub, Linear, Discord, Stripe, Bling, Asaas, Omie, and more"
-    },
-    "channels": {
-      "title": "Channels",
-      "desc": "Bidirectional chat via Telegram, Discord, and iMessage. Talk to Claude from your phone."
-    },
-    "memory": {
-      "title": "Persistent Memory",
-      "desc": "Two-tier system that remembers context across conversations and sessions"
-    },
-    "teams": {
-      "title": "Agent Teams",
-      "desc": "Parallel multi-agent execution for faster consolidation routines (experimental)"
-    },
-    "scheduled": {
-      "title": "Scheduled Tasks",
-      "desc": "One-off actions at a specific date/time. Schedule a skill, prompt, or script."
-    },
-    "openSource": {
-      "title": "100% Open Source",
-      "desc": "MIT License, fork it, customize it, own your entire AI infrastructure."
-    }
-  },
-  "why": {
-    "sectionTitle": "What changes when you have a structured AI team",
-    "sectionSubtitle": "Claude Code is powerful. Without structure, you reconfigure the same agent every week. With EvoNexus, it remembers who you are.",
-    "markdownFirst": {
-      "title": "Markdown-First Agents",
-      "desc": "Agents are plain .md files with system prompts. No SDK, no plugin runtime, no compile step. Drop a file in .claude/agents/ and it's live."
-    },
-    "skillsAsInstructions": {
-      "title": "Skills as Instructions",
-      "desc": "175+ reusable capabilities across finance, community, social, engineering, data, legal, HR, ops, product, CS. Each one a markdown instruction set. Add, edit, or remove by editing text."
-    },
-    "multiProvider": {
-      "title": "Multi-Provider, No Lock-In",
-      "desc": "Default runs on Anthropic's native claude CLI, or swap to OpenRouter, OpenAI, Gemini, Bedrock, or Vertex AI via OpenClaude. One click in the Providers page, no code changes. Your keys, your model choice."
-    },
-    "mcpIntegrations": {
-      "title": "MCP Integrations",
-      "desc": "Model Context Protocol connects agents to Google Calendar, Gmail, GitHub, Linear, Telegram, Canva, Notion, and more. Standardized interface with first-class support built in."
-    },
-    "slashCommands": {
-      "title": "Slash Commands",
-      "desc": "Type /clawdia, /flux, /pulse, or /apex to activate agents instantly. Natural command interface directly in the terminal. No menus, no forms."
-    },
-    "persistentMemory": {
-      "title": "Persistent Memory",
-      "desc": "Two-tier memory: CLAUDE.md for working state, per-agent memory/ for long-term context. Survives across sessions. Your agents remember who you are, what you're working on, and what's been decided."
-    }
   },
   "howItWorks": {
     "sectionTitle": "From zero to AI ops in minutes",
@@ -129,11 +81,11 @@
     },
     "flux": {
       "role": "Finance",
-      "desc": "Stripe, ERP integration, cash flow reports, and monthly close. No spreadsheet needed."
+      "desc": "Stripe, ERP integration, cash flow reports, and monthly close. No spreadsheets, no surprises."
     },
     "atlas": {
       "role": "Projects",
-      "desc": "GitHub PRs, Linear issues, sprint tracking. One agent for the full project view."
+      "desc": "GitHub PRs, Linear issues, sprint tracking. One view of everything in motion."
     },
     "oracle": {
       "role": "Knowledge",
@@ -145,7 +97,7 @@
     },
     "pulse": {
       "role": "Community",
-      "desc": "Discord and WhatsApp monitoring, FAQ sync, sentiment analysis. Your community never sleeps."
+      "desc": "Discord and WhatsApp monitoring, FAQ sync, sentiment analysis. Your community is never left hanging."
     },
     "apex": {
       "role": "Architect",
@@ -155,6 +107,23 @@
       "role": "Executor",
       "desc": "Smallest viable diff implementation. Files changed, tests green, no scope creep."
     }
+  },
+  "knowledge": {
+    "sectionTitle": "Agents that actually read your docs",
+    "sectionSubtitle": "Upload your documents once. Every agent queries them in context — verbatim, with citations.",
+    "body": "EvoNexus ships with a hybrid RAG system: keyword search + semantic embeddings (local MPNet, OpenAI, or Gemini with MRL 768/1536/3072). Your knowledge lives in your own Postgres database. Agents query it at runtime — no hallucinations about what your SOPs say, no generic answers when a source exists. They cite the paragraph, not their best guess.",
+    "bullet1": "Supports PDF, DOCX, PPTX, XLSX, HTML, EPUB, and plain text. Ingest once via the Knowledge UI or CLI.",
+    "bullet2": "Hybrid retrieval: keyword match for precision, semantic search for coverage. Both, not either/or.",
+    "bullet3": "Bring your own Postgres — Supabase, Neon, RDS, or on-prem. Your data stays in your infrastructure."
+  },
+  "heartbeats": {
+    "sectionTitle": "Agents on autopilot",
+    "sectionSubtitle": "Cron for your agents, with guardrails. Configure when each one checks in — they act only when needed.",
+    "body": "Heartbeats are scheduled agent runs with a built-in decision step. You define the interval and the condition. The agent wakes, checks state, and acts — or skips if nothing warrants action. This is not a cron job that always runs. It is an agent that always wakes up but only acts when it should. Cost when idle: near zero.",
+    "bullet1": "Atlas checks Linear every 4h — escalates blockers open >24h with no response.",
+    "bullet2": "Zara scans the support queue every 2h — triages, responds, escalates based on rules you set.",
+    "bullet3": "Flux checks Stripe and Omie every 6h — flags anomalies, drafts the daily pulse report.",
+    "example": "You go offline for a weekend. Atlas is watching. On Saturday morning it finds a PR blocked by a failing CI run that Danilo hasn't seen. It opens a ticket, assigns it back to the queue, and logs the action. Monday morning you read the log, not the surprise."
   },
   "socialProof": {
     "production": "Used in production",
