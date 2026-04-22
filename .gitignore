@@ -44,11 +44,11 @@ config/providers.json
 # ── Runtime data & logs ───────────────────
 backups/
 ADWs/logs/
-dashboard/data/*.db
-dashboard/data/*.db-shm
-dashboard/data/*.db-wal
-dashboard/data/.secret_key
-dashboard/data/mempalace/
+# Runtime DBs may be created in repo root, dashboard/data/ or dashboard/backend/
+*.db
+*.db-shm
+*.db-wal
+dashboard/data/
 dashboard/backend/*.db
 dashboard/backend/*.db-shm
 dashboard/backend/*.db-wal
