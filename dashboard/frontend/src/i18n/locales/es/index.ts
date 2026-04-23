@@ -173,6 +173,7 @@ const translations = {
       tasks: 'Tareas',
       triggers: 'Disparadores',
       routines: 'Rutinas',
+      activity: 'Actividad',
       scheduler: 'Servicios',
       integrations: 'Integraciones',
       providers: 'Proveedores',

@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.30.0] - 2026-04-23
+
+Minor release adding a unified Activity Log — a single page aggregating execution history across routines, heartbeats and triggers so the user can answer "what did the system just do?" without visiting three separate pages.
+
+### Added
+
+- **`/activity` — Unified Activity Timeline** — new page aggregating execution history across all three automation primitives: scheduler routines, agent heartbeats, and event-based triggers. Presented as a reverse-chronological timeline (Linear / Vercel Logs / GitHub Actions style). Each row shows name + type badge + status pill (success / error / running) + duration + relative time. Click opens a right-side drawer (480px) with full output, metadata (started / finished / exit code / cost / tokens), and a "Open in dedicated page" link.
+  - **Filters:** multi-select type chips (Routines / Heartbeats / Triggers), status dropdown (All / Success / Error / Running), period tabs (Today / 7d / 30d / All), debounced search (300ms, client-side).
+  - **Auto-refresh:** 30s interval, paused automatically when the browser tab is in background (`visibilitychange`).
+  - **Load more:** client-side pagination at 50 items per page.
+  - **Accessibility:** drawer is `role="dialog"` `aria-modal="true"`, Escape closes, click-outside closes.
+  - **Nav:** new sidebar item "Activity" (`Atividade` pt-BR / `Actividad` es) under the operations group. `View all →` on the Overview Routines card now points to `/activity` for a unified journey.
+  - **Data sources:** reuses existing backend endpoints — `GET /api/routines/logs`, `GET /api/heartbeats/{id}/runs`, `GET /api/triggers/{id}`. Client-side aggregation (N+1 fetches via `Promise.all`) — acceptable for v1 volume; server-side aggregated endpoint can come later if needed.
+
+### Known limitations (v1)
+
+- `/api/routines/logs` only accepts `?date=`, so the period filter (7d / 30d / All) affects heartbeats and triggers only — routines always show today. The routine log endpoint will need `from`/`to` params to honor longer periods; deferred to a follow-up.
+- Client-side aggregation means timeline loads can do up to `1 + N + M` requests (1 for routines today, N for each heartbeat's last 10 runs, M for each trigger's detail). Fine under ~20 heartbeats/triggers, may need batching later.
+
 ## [0.29.3] - 2026-04-23
 
 Patch release: fix the infinite page scroll in thread mode so the embedded chat behaves exactly like the agent chat (fixed input at the bottom, messages scroll inside the container), and harden `.gitignore` against nested `.claude/` folders that agents were accidentally creating from subdirectory cwds.

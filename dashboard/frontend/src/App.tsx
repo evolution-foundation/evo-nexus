@@ -30,6 +30,7 @@ import Settings from './pages/Settings'
 import ShareView from './pages/ShareView'
 import ShareLinks from './pages/ShareLinks'
 import HeartbeatsList, { HeartbeatDetail } from './pages/Heartbeats'
+import Activity from './pages/Activity'
 import Goals from './pages/Goals'
 import Topics from './pages/Topics'
 import TicketDetail from './pages/TicketDetail'
@@ -109,6 +110,7 @@ function AppContent() {
           <Route path="/agents" element={<Agents />} />
           <Route path="/agents/:name" element={<AgentDetail />} />
           <Route path="/routines" element={<Routines />} />
+          {hasPermission('scheduler', 'view') && <Route path="/activity" element={<Activity />} />}
           <Route path="/tasks" element={<Tasks />} />
           {hasPermission('triggers', 'view') && <Route path="/triggers" element={<Triggers />} />}
           <Route path="/skills" element={<Skills />} />

@@ -358,7 +358,7 @@ export default function Overview() {
               </div>
               Routines
             </h2>
-            <Link to="/routines" className="text-xs font-medium text-[#667085] hover:text-[#00FFA7] transition-colors flex items-center gap-1">
+            <Link to="/activity" className="text-xs font-medium text-[#667085] hover:text-[#00FFA7] transition-colors flex items-center gap-1">
               View all <ArrowRight size={12} />
             </Link>
           </div>
