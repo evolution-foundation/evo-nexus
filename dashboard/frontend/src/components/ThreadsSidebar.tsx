@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { Plus, ChevronRight, ChevronDown, PanelLeftClose, PanelLeftOpen } from 'lucide-react'
 import { api } from '../lib/api'
 import { getAgentMeta } from '../lib/agent-meta'
+import { AgentIcon } from './AgentIcon'
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -36,49 +37,6 @@ function relativeTime(iso: string): string {
   if (diffD < 7) return `${diffD}d`
   const diffW = Math.floor(diffD / 7)
   return `${diffW}sem`
-}
-
-// ── Agent avatar (24px square) ───────────────────────────────────────────────
-
-function AgentIcon({ agent, size = 24 }: { agent: string; size?: number }) {
-  const meta = getAgentMeta(agent)
-  const initials = agent
-    .split('-')
-    .slice(0, 2)
-    .map(p => p[0]?.toUpperCase() ?? '')
-    .join('')
-
-  if (meta.avatar) {
-    return (
-      <img
-        src={meta.avatar}
-        alt={agent}
-        width={size}
-        height={size}
-        className="rounded object-cover flex-shrink-0"
-        style={{ width: size, height: size }}
-        onError={e => {
-          // fallback to initials on broken img
-          ;(e.currentTarget as HTMLImageElement).style.display = 'none'
-        }}
-      />
-    )
-  }
-
-  return (
-    <div
-      className="rounded flex items-center justify-center flex-shrink-0 text-[9px] font-bold"
-      style={{
-        width: size,
-        height: size,
-        backgroundColor: `${meta.color}22`,
-        color: meta.color,
-        border: `1px solid ${meta.color}40`,
-      }}
-    >
-      {initials}
-    </div>
-  )
 }
 
 // ── Thread item ──────────────────────────────────────────────────────────────
