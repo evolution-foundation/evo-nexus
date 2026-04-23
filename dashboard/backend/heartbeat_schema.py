@@ -34,6 +34,13 @@ class HeartbeatConfig(BaseModel):
     @field_validator("agent")
     @classmethod
     def agent_must_exist(cls, v: str) -> str:
+        # Sentinel values for heartbeats that run infrastructure scripts
+        # directly (not a Claude session). These don't have a .md file in
+        # .claude/agents/ — they dispatch to a Python worker instead.
+        # Keep this list explicit so typos still raise.
+        SYSTEM_SENTINELS = {"system"}
+        if v in SYSTEM_SENTINELS:
+            return v
         agents_dir = WORKSPACE / ".claude" / "agents"
         agent_file = agents_dir / f"{v}.md"
         if not agent_file.exists():
