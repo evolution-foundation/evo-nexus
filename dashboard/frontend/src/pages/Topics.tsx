@@ -320,7 +320,7 @@ function CreateModal({ onClose, onCreated }: CreateModalProps) {
 
 // ── Main page ─────────────────────────────────────────────────────────────────
 
-export default function Issues() {
+export default function Topics() {
   const { t } = useTranslation()
   const navigate = useNavigate()
   const [tickets, setTickets] = useState<TicketItem[]>([])
