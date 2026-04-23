@@ -130,3 +130,28 @@ body {
 .animate-slide-in-left {
   animation: slideInLeft 200ms ease-out forwards;
 }
+
+/* Toast notifications */
+@keyframes toastIn {
+  from { transform: translateX(110%); opacity: 0; }
+  to   { transform: translateX(0); opacity: 1; }
+}
+@keyframes toastOut {
+  from { transform: translateX(0); opacity: 1; }
+  to   { transform: translateX(110%); opacity: 0; }
+}
+.toast-enter {
+  animation: toastIn 200ms ease-out forwards;
+}
+.toast-exit {
+  animation: toastOut 180ms ease-in forwards;
+}
+
+/* Confirm dialog */
+@keyframes dialogIn {
+  from { opacity: 0; transform: scale(0.96) translateY(-4px); }
+  to   { opacity: 1; transform: scale(1) translateY(0); }
+}
+.dialog-enter {
+  animation: dialogIn 160ms ease-out forwards;
+}

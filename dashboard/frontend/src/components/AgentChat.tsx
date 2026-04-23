@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
+import { useToast } from './Toast'
 import Markdown from './Markdown'
 import { AgentAvatar } from './AgentAvatar'
 import { useNotifications } from '../context/NotificationContext'
@@ -79,6 +80,7 @@ type Status = 'idle' | 'connecting' | 'running' | 'error'
 
 export default function AgentChat({ agent, sessionId, accentColor = '#00FFA7', externalLoading = false, externalError = null, onPendingCountChange, onNeedsAttention, workingDir: _workingDir, threadTicketId: _threadTicketId, onTurnCompleted }: AgentChatProps) {
   const { dismissBySession } = useNotifications()
+  const toast = useToast()
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [input, setInput] = useState('')
   const [status, setStatus] = useState<Status>('idle')
@@ -363,7 +365,7 @@ export default function AgentChat({ agent, sessionId, accentColor = '#00FFA7', e
       const ticket = await res.json()
       await bindTicket(ticket.id)
     } catch (err: any) {
-      alert(err?.message || 'Failed to create ticket')
+      toast.error('Falha ao criar ticket', err?.message)
     }
   }, [agent, bindTicket])
 

@@ -1,4 +1,6 @@
 import { useEffect, useState, Fragment } from 'react'
+import { useToast } from '../components/Toast'
+import { useConfirm } from '../components/ConfirmDialog'
 import { useNavigate, useParams } from 'react-router-dom'
 import {
   Heart, Play, RefreshCw, Plus, Trash2, ToggleLeft, ToggleRight,
@@ -86,6 +88,8 @@ function StatusBadge({ status }: { status: string }) {
 
 export function HeartbeatsList() {
   const { t } = useTranslation()
+  const toast = useToast()
+  const confirm = useConfirm()
   const [heartbeats, setHeartbeats] = useState<Heartbeat[]>([])
   const [loading, setLoading] = useState(true)
   const [running, setRunning] = useState<string | null>(null)
@@ -110,23 +114,35 @@ export function HeartbeatsList() {
       await api.patch(`/heartbeats/${hb.id}`, { enabled: !hb.enabled })
       load()
     } catch (e: any) {
-      alert(e?.message || 'Failed to toggle')
+      toast.error('Falha ao alternar heartbeat', e?.message)
     }
   }
 
   const handleDelete = async (hb: Heartbeat) => {
-    if (!confirm(`Delete heartbeat "${hb.id}"? This will remove all run history.`)) return
+    const ok = await confirm({
+      title: 'Deletar heartbeat',
+      description: `Deletar "${hb.id}"? Todo o histórico de execuções será removido.`,
+      confirmText: 'Deletar',
+      variant: 'danger',
+    })
+    if (!ok) return
     try {
       await api.delete(`/heartbeats/${hb.id}`)
       load()
     } catch (e: any) {
       if (e?.status === 409) {
-        if (confirm(`A run is in progress. Force delete?`)) {
+        const force = await confirm({
+          title: 'Run em andamento',
+          description: 'Há uma execução em progresso. Forçar a exclusão?',
+          confirmText: 'Forçar delete',
+          variant: 'danger',
+        })
+        if (force) {
           await api.delete(`/heartbeats/${hb.id}?force=true`)
           load()
         }
       } else {
-        alert(e?.message || 'Failed to delete')
+        toast.error('Falha ao deletar', e?.message)
       }
     }
   }
@@ -135,10 +151,10 @@ export function HeartbeatsList() {
     setRunning(hb.id)
     try {
       const result = await api.post(`/heartbeats/${hb.id}/run`)
-      alert(`Run dispatched: ${result.run_id || 'ok'}`)
+      toast.success('Run disparada', result.run_id || 'ok')
       setTimeout(load, 2000)
     } catch (e: any) {
-      alert(e?.message || 'Failed to run')
+      toast.error('Falha ao executar', e?.message)
     } finally {
       setRunning(null)
     }
@@ -311,6 +327,7 @@ const WAKE_TRIGGER_OPTIONS = ['interval', 'new_task', 'mention', 'manual', 'appr
 
 function HeartbeatCreateModal({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
   const { t } = useTranslation()
+  const toast = useToast()
   const [form, setForm] = useState({
     id: '',
     agent: '',
@@ -372,7 +389,7 @@ function HeartbeatCreateModal({ onClose, onCreated }: { onClose: () => void; onC
         }
         setErrors(errs)
       } else {
-        alert(e?.message || 'Failed to create heartbeat')
+        toast.error('Falha ao criar heartbeat', e?.message)
       }
     } finally {
       setSaving(false)
@@ -546,6 +563,7 @@ function HeartbeatCreateModal({ onClose, onCreated }: { onClose: () => void; onC
 export function HeartbeatDetail() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
+  const toast = useToast()
   const [hb, setHb] = useState<Heartbeat | null>(null)
   const [runs, setRuns] = useState<HeartbeatRun[]>([])
   const [loading, setLoading] = useState(true)
@@ -575,10 +593,10 @@ export function HeartbeatDetail() {
     setRunning(true)
     try {
       const result = await api.post(`/heartbeats/${id}/run`)
-      alert(`Run dispatched: ${result.run_id}`)
+      toast.success('Run disparada', result.run_id)
       setTimeout(load, 2000)
     } catch (e: any) {
-      alert(e?.message || 'Failed to run')
+      toast.error('Falha ao executar', e?.message)
     } finally {
       setRunning(false)
     }

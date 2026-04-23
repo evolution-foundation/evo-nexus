@@ -1,4 +1,6 @@
 import { useEffect, useState } from 'react'
+import { useToast } from '../components/Toast'
+import { useConfirm } from '../components/ConfirmDialog'
 import { Plus, Pencil, Trash2, X, Play, Copy, RefreshCw, KeyRound } from 'lucide-react'
 import { api } from '../lib/api'
 import { useAuth } from '../context/AuthContext'
@@ -63,6 +65,8 @@ const emptyForm = {
 
 export default function Triggers() {
   const { hasPermission } = useAuth()
+  const toast = useToast()
+  const confirm = useConfirm()
   const [triggers, setTriggers] = useState<TriggerItem[]>([])
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState('all')
@@ -124,7 +128,7 @@ export default function Triggers() {
     setSaving(true)
     try {
       let ef: Record<string, string>
-      try { ef = JSON.parse(form.event_filter) } catch { alert('Invalid JSON in event filter'); setSaving(false); return }
+      try { ef = JSON.parse(form.event_filter) } catch { toast.error('JSON inválido no event filter'); setSaving(false); return }
 
       const body = { ...form, event_filter: ef, agent: form.agent || null }
       if (editingId) {
@@ -135,18 +139,24 @@ export default function Triggers() {
       setShowModal(false)
       fetchTriggers()
     } catch (e) {
-      alert(`Error: ${e}`)
+      toast.error('Erro ao salvar trigger', String(e))
     }
     setSaving(false)
   }
 
   const handleDelete = async (id: number) => {
-    if (!confirm('Delete this trigger and all its executions?')) return
+    const ok = await confirm({
+      title: 'Deletar trigger',
+      description: 'Deletar este trigger e todas as suas execuções?',
+      confirmText: 'Deletar',
+      variant: 'danger',
+    })
+    if (!ok) return
     try {
       await api.delete(`/triggers/${id}`)
       fetchTriggers()
     } catch (e) {
-      alert(`Error: ${e}`)
+      toast.error('Erro ao deletar', String(e))
     }
   }
 
@@ -155,7 +165,7 @@ export default function Triggers() {
       await api.post(`/triggers/${id}/test`)
       fetchTriggers()
     } catch (e) {
-      alert(`Error: ${e}`)
+      toast.error('Erro ao testar trigger', String(e))
     }
   }
 
@@ -164,7 +174,7 @@ export default function Triggers() {
       await api.put(`/triggers/${t.id}`, { enabled: !t.enabled })
       fetchTriggers()
     } catch (e) {
-      alert(`Error: ${e}`)
+      toast.error('Erro ao alternar trigger', String(e))
     }
   }
 
@@ -190,12 +200,18 @@ export default function Triggers() {
   }
 
   const handleRegenerateSecret = async (id: number) => {
-    if (!confirm('Regenerate webhook secret? The old secret will stop working immediately.')) return
+    const ok = await confirm({
+      title: 'Regenerar webhook secret',
+      description: 'O secret atual deixará de funcionar imediatamente.',
+      confirmText: 'Regenerar',
+      variant: 'danger',
+    })
+    if (!ok) return
     try {
       const data = await api.post(`/triggers/${id}/regenerate-secret`)
       setNewSecret({ id, secret: data.secret })
     } catch (e) {
-      alert(`Error: ${e}`)
+      toast.error('Erro ao regenerar secret', String(e))
     }
   }
 

@@ -1,4 +1,6 @@
 import { useEffect, useState, useRef } from 'react'
+import { useToast } from '../components/Toast'
+import { useConfirm } from '../components/ConfirmDialog'
 import { Play, Square, RefreshCw, Terminal, X, Clock, RotateCcw } from 'lucide-react'
 import { api } from '../lib/api'
 import StatusDot from '../components/StatusDot'
@@ -72,6 +74,8 @@ function sortTasks(tasks: ScheduledTask[]): ScheduledTask[] {
 
 export default function Scheduler() {
   const { t } = useTranslation()
+  const toast = useToast()
+  const confirm = useConfirm()
   const [services, setServices] = useState<Service[]>([])
   const [tasks, setTasks] = useState<ScheduledTask[]>([])
   const [loading, setLoading] = useState(true)
@@ -97,7 +101,13 @@ export default function Scheduler() {
   const [restarting, setRestarting] = useState(false)
 
   const handleRestartAll = async () => {
-    if (!confirm('Restart EvoNexus? Dashboard, scheduler, and terminal-server will restart.')) return
+    const ok = await confirm({
+      title: 'Reiniciar EvoNexus',
+      description: 'Dashboard, scheduler e terminal-server serão reiniciados.',
+      confirmText: 'Reiniciar',
+      variant: 'danger',
+    })
+    if (!ok) return
     setRestarting(true)
     try {
       await api.post('/services/restart-all')
@@ -106,7 +116,7 @@ export default function Scheduler() {
         window.location.reload()
       }, 5000)
     } catch (e: any) {
-      alert(e?.message || 'Failed to restart. Is the systemd service installed?')
+      toast.error('Falha ao reiniciar', e?.message || 'O serviço systemd está instalado?')
       setRestarting(false)
     }
   }

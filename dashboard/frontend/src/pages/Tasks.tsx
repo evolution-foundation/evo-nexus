@@ -1,4 +1,6 @@
 import { useEffect, useState } from 'react'
+import { useToast } from '../components/Toast'
+import { useConfirm } from '../components/ConfirmDialog'
 import { CalendarClock, Plus, Play, X, Eye, RefreshCw, Pencil, Trash2 } from 'lucide-react'
 import { api } from '../lib/api'
 import { useTranslation } from 'react-i18next'
@@ -62,6 +64,8 @@ const emptyForm = { name: '', description: '', type: 'skill', payload: '', agent
 
 export default function Tasks() {
   const { t } = useTranslation()
+  const toast = useToast()
+  const confirm = useConfirm()
   const [tasks, setTasks] = useState<Task[]>([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
@@ -122,18 +126,24 @@ export default function Tasks() {
       setLoading(true)
       fetchTasks()
     } catch (e) {
-      alert(`Error: ${e}`)
+      toast.error('Erro ao salvar tarefa', String(e))
     }
     setSaving(false)
   }
 
   const handleCancel = async (id: number) => {
-    if (!confirm('Cancel this task?')) return
+    const ok = await confirm({
+      title: 'Cancelar tarefa',
+      description: 'Cancelar esta tarefa agendada?',
+      confirmText: 'Cancelar tarefa',
+      variant: 'danger',
+    })
+    if (!ok) return
     try {
       await api.delete(`/tasks/${id}`)
       fetchTasks()
     } catch (e) {
-      alert(`Error: ${e}`)
+      toast.error('Erro ao cancelar', String(e))
     }
   }
 
@@ -142,17 +152,23 @@ export default function Tasks() {
       await api.post(`/tasks/${id}/run`)
       fetchTasks()
     } catch (e) {
-      alert(`Error: ${e}`)
+      toast.error('Erro ao executar', String(e))
     }
   }
 
   const handleDelete = async (id: number) => {
-    if (!confirm('Delete this task permanently?')) return
+    const ok = await confirm({
+      title: 'Deletar tarefa',
+      description: 'Deletar esta tarefa permanentemente?',
+      confirmText: 'Deletar',
+      variant: 'danger',
+    })
+    if (!ok) return
     try {
       await api.delete(`/tasks/${id}`)
       fetchTasks()
     } catch (e) {
-      alert(`Error: ${e}`)
+      toast.error('Erro ao deletar', String(e))
     }
   }
 
