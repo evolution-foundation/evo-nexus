@@ -5,7 +5,9 @@ from __future__ import annotations
 import csv
 import io
 import json
+import os
 import re
+import shutil
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -13,6 +15,13 @@ from typing import Optional
 
 from flask import Blueprint, Response, jsonify, request
 from flask_login import current_user
+
+# Trigger a summary job after this many turns (fixed in v1, Q9)
+SUMMARY_EVERY_N = 20
+
+# Max memory.md size before warning (bytes)
+MEMORY_WARN_BYTES = 64 * 1024   # 64 KB
+MEMORY_TRUNCATE_BYTES = 32 * 1024  # 32 KB per section
 from models import (
     Heartbeat, Ticket, TicketActivity, TicketComment,
     PRIORITY_RANK, TICKET_PRIORITIES, TICKET_STATUSES,
@@ -121,6 +130,7 @@ def list_tickets():
     project_id = request.args.get("project_id", type=int)
     goal_id = request.args.get("goal_id", type=int)
     q = request.args.get("q", "").strip()
+    display_mode = request.args.get("display_mode", "all")  # threads | issues | all
     limit = min(int(request.args.get("limit", 50)), 500)
     offset = int(request.args.get("offset", 0))
 
@@ -136,6 +146,10 @@ def list_tickets():
         query = query.filter(Ticket.project_id == project_id)
     if goal_id is not None:
         query = query.filter(Ticket.goal_id == goal_id)
+    if display_mode == "threads":
+        query = query.filter(Ticket.memory_md_path.isnot(None))
+    elif display_mode == "issues":
+        query = query.filter(Ticket.memory_md_path.is_(None))
     if q:
         like = f"%{q}%"
         from models import TicketComment as TC
@@ -167,6 +181,20 @@ def list_tickets():
         "limit": limit,
         "offset": offset,
     })
+
+
+# --------------- Counts ---------------
+
+@bp.route("/api/tickets/counts")
+def ticket_counts():
+    """Return thread/issue split for the Issues page section headers."""
+    denied = _require("view")
+    if denied:
+        return denied
+
+    threads = Ticket.query.filter(Ticket.memory_md_path.isnot(None)).count()
+    issues = Ticket.query.filter(Ticket.memory_md_path.is_(None)).count()
+    return jsonify({"threads": threads, "issues": issues, "total": threads + issues})
 
 
 # --------------- Single ---------------
@@ -292,6 +320,9 @@ def update_ticket(ticket_id: str):
         changes["priority"] = new_priority
 
     if "assignee_agent" in data:
+        # Thread-mode invariant: agent is immutable once thread is activated (RF1, Q1)
+        if ticket.memory_md_path is not None and data["assignee_agent"] != ticket.assignee_agent:
+            return jsonify({"error": "agent_immutable_in_thread_mode"}), 409
         ticket.assignee_agent = data["assignee_agent"] or None
         changes["assignee_agent"] = ticket.assignee_agent
 
@@ -306,6 +337,11 @@ def update_ticket(ticket_id: str):
 
     if "goal_id" in data:
         ticket.goal_id = data["goal_id"]
+
+    # Thread-areas: allow persisting the SDK session ID back from the frontend (R1 mitigation)
+    if "thread_session_id" in data:
+        ticket.thread_session_id = data["thread_session_id"] or None
+        changes["thread_session_id"] = ticket.thread_session_id
 
     ticket.updated_at = _now()
     _log_activity(ticket_id, current_user.username, "status_changed" if "status" in changes else "updated", changes)
@@ -561,3 +597,292 @@ def export_csv():
         mimetype="text/csv",
         headers={"Content-Disposition": "attachment; filename=tickets.csv"},
     )
+
+
+# ============================================================
+# Thread-Areas endpoints
+# ============================================================
+
+# --------------- Convert to thread ---------------
+
+@bp.route("/api/tickets/<string:ticket_id>/convert-to-thread", methods=["PATCH"])
+def convert_to_thread(ticket_id: str):
+    denied = _require("execute")
+    if denied:
+        return denied
+    ticket = Ticket.query.get_or_404(ticket_id)
+
+    data = request.get_json() or {}
+    workspace_path = (data.get("workspace_path") or "").strip()
+
+    if ticket.memory_md_path is not None:
+        # Idempotência: já é thread. Conflito só se workspace_path diferente foi passado.
+        if workspace_path and workspace_path != ticket.workspace_path:
+            return jsonify({
+                "error": "workspace_path_conflict",
+                "current_workspace_path": ticket.workspace_path,
+                "requested_workspace_path": workspace_path,
+            }), 409
+        # No-op — retorna estado atual sem criar nada novo
+        return jsonify(ticket.to_dict()), 200
+    if not workspace_path:
+        return jsonify({"error": "workspace_path is required"}), 400
+
+    # Validate workspace_path stays inside WORKSPACE
+    target = (WORKSPACE / workspace_path).resolve()
+    if not str(target).startswith(str(WORKSPACE.resolve())):
+        return jsonify({"error": "workspace_path must be inside workspace root"}), 400
+
+    # Create the workspace path if it doesn't exist (Q3: UI offers create if not exists)
+    target.mkdir(parents=True, exist_ok=True)
+
+    # Create memory directory + empty memory.md
+    memory_dir = WORKSPACE / "memory" / "threads" / ticket_id
+    memory_dir.mkdir(parents=True, exist_ok=True)
+    memory_md = memory_dir / "memory.md"
+    if not memory_md.exists():
+        memory_md.write_text(
+            f"# Thread Memory — {ticket.title}\n\n"
+            f"Ticket ID: {ticket_id}\n"
+            f"Created: {_now()}\n\n"
+            f"---\n",
+            encoding="utf-8",
+        )
+
+    memory_md_path = f"memory/threads/{ticket_id}/memory.md"
+    now = _now()
+    ticket.workspace_path = workspace_path
+    ticket.memory_md_path = memory_md_path
+    ticket.thread_session_id = None  # Lazy — created on first chat turn (RF2)
+    ticket.updated_at = now
+
+    _log_activity(
+        ticket_id,
+        current_user.username,
+        "converted_to_thread",
+        {"workspace_path": workspace_path, "memory_md_path": memory_md_path},
+    )
+    db.session.commit()
+
+    audit(current_user, "execute", "tickets", f"converted ticket {ticket_id} to thread")
+    return jsonify(ticket.to_dict())
+
+
+# --------------- Get thread memory ---------------
+
+@bp.route("/api/tickets/<string:ticket_id>/memory")
+def get_thread_memory(ticket_id: str):
+    denied = _require("view")
+    if denied:
+        return denied
+    ticket = Ticket.query.get_or_404(ticket_id)
+    if ticket.memory_md_path is None:
+        return jsonify({"error": "not_a_thread"}), 400
+
+    memory_file = WORKSPACE / ticket.memory_md_path
+    if not memory_file.exists():
+        return jsonify({"content": "", "size_bytes": 0, "truncated": False})
+
+    raw = memory_file.read_bytes()
+    size = len(raw)
+    truncated = False
+    content = raw.decode("utf-8", errors="replace")
+
+    if size > MEMORY_WARN_BYTES:
+        # Truncate by section: keep as many complete sections (## headings) as fit under 32KB
+        sections = re.split(r"(?=\n## )", content)
+        kept: list[str] = []
+        total = 0
+        for section in reversed(sections):
+            section_bytes = len(section.encode("utf-8"))
+            if total + section_bytes <= MEMORY_TRUNCATE_BYTES:
+                kept.insert(0, section)
+                total += section_bytes
+            else:
+                truncated = True
+        content = "".join(kept)
+
+    return jsonify({
+        "content": content,
+        "size_bytes": size,
+        "truncated": truncated,
+        "memory_md_path": ticket.memory_md_path,
+    })
+
+
+# --------------- Workspace subfolders ---------------
+
+@bp.route("/api/workspace/subfolders")
+def workspace_subfolders():
+    """Return immediate subdirectories of workspace/ for the convert-to-thread modal."""
+    denied = _require("view")
+    if denied:
+        return denied
+    root = WORKSPACE / "workspace"
+    folders: list[dict] = []
+    try:
+        for entry in sorted(root.iterdir()):
+            if entry.is_dir() and not entry.name.startswith("."):
+                rel_path = f"workspace/{entry.name}"
+                folders.append({
+                    "name": entry.name,
+                    "path": rel_path,
+                    "full_path": str(entry),
+                })
+    except OSError as exc:
+        return jsonify({"error": str(exc)}), 500
+
+    return jsonify({"folders": folders})
+
+
+# --------------- Turn completed (Option D — summary trigger) ---------------
+
+@bp.route("/api/tickets/<string:ticket_id>/turn-completed", methods=["POST"])
+def turn_completed(ticket_id: str):
+    """Frontend fires this on every chat_complete event for thread tickets.
+
+    Monotonically increments message_count. If the delta since last_summary_at_message
+    reaches SUMMARY_EVERY_N, enqueues a summary job (fire-and-forget subprocess).
+    Idempotent: UPDATE ... WHERE message_count < :n prevents decrement races.
+    """
+    denied = _require("execute")
+    if denied:
+        return denied
+    ticket = Ticket.query.get_or_404(ticket_id)
+    if ticket.memory_md_path is None:
+        return jsonify({"error": "not_a_thread"}), 400
+
+    now = _now()
+
+    # Monotonic increment — race-safe: SET message_count = :n WHERE message_count < :n
+    # Two concurrent POSTs with the same current value will both compute n = current + 1;
+    # only the first will satisfy the WHERE guard; the second is a no-op (rowcount == 0).
+    expected = ticket.message_count + 1
+    result = db.session.execute(
+        db.text(
+            "UPDATE tickets SET message_count = :n, updated_at = :now "
+            "WHERE id = :id AND message_count < :n"
+        ),
+        {"id": ticket_id, "n": expected, "now": now},
+    )
+    db.session.commit()
+    if result.rowcount == 0:
+        # Already at or above expected — no-op, return current state silently
+        import logging
+        logging.getLogger(__name__).debug(
+            "[turn-completed] no-op for ticket %s (already at message_count >= %d)", ticket_id, expected
+        )
+
+    # Re-read fresh count
+    db.session.expire(ticket)
+    ticket = Ticket.query.get(ticket_id)
+    new_count = ticket.message_count
+    delta = new_count - ticket.last_summary_at_message
+
+    summary_queued = False
+    if delta >= SUMMARY_EVERY_N:
+        # Update last_summary_at_message first (monotonic guard)
+        updated = db.session.execute(
+            db.text(
+                "UPDATE tickets SET last_summary_at_message = :new_count, updated_at = :now "
+                "WHERE id = :id AND last_summary_at_message < :new_count"
+            ),
+            {"id": ticket_id, "new_count": new_count, "now": now},
+        )
+        db.session.commit()
+        if updated.rowcount > 0:
+            _enqueue_summary(ticket_id, ticket.memory_md_path, new_count)
+            summary_queued = True
+
+    return jsonify({
+        "message_count": new_count,
+        "last_summary_at_message": ticket.last_summary_at_message,
+        "summary_queued": summary_queued,
+    })
+
+
+def _enqueue_summary(ticket_id: str, memory_md_path: str, up_to_turn: int) -> None:
+    """Fire-and-forget: spawn summary_worker.py as a subprocess."""
+    import subprocess
+    import sys
+    worker = Path(__file__).resolve().parent.parent / "summary_worker.py"
+    if not worker.exists():
+        print(f"[tickets] WARNING: summary_worker.py not found at {worker}", flush=True)
+        return
+    subprocess.Popen(
+        [sys.executable, str(worker), "--ticket-id", ticket_id,
+         "--memory-path", memory_md_path, "--up-to-turn", str(up_to_turn)],
+        start_new_session=True,
+    )
+    print(f"[tickets] summary job queued for ticket {ticket_id} (up to turn {up_to_turn})", flush=True)
+
+
+# --------------- Archive thread ---------------
+
+@bp.route("/api/tickets/<string:ticket_id>/archive-thread", methods=["POST"])
+def archive_thread(ticket_id: str):
+    """Tombstone: status='archived', move memory folder to _archive/."""
+    denied = _require("manage")
+    if denied:
+        return denied
+    ticket = Ticket.query.get_or_404(ticket_id)
+    if ticket.memory_md_path is None:
+        return jsonify({"error": "not_a_thread"}), 400
+    if ticket.status == "archived":
+        return jsonify({"error": "already_archived"}), 409
+
+    src_dir = WORKSPACE / "memory" / "threads" / ticket_id
+    archive_dir = WORKSPACE / "memory" / "threads" / "_archive" / ticket_id
+
+    if src_dir.exists():
+        archive_dir.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(src_dir), str(archive_dir))
+        # Write tombstone
+        (archive_dir / "ARCHIVED.json").write_text(
+            json.dumps({"ticket_id": ticket_id, "archived_at": _now(), "archived_by": current_user.username}),
+            encoding="utf-8",
+        )
+
+    now = _now()
+    old_status = ticket.status
+    ticket.status = "archived"
+    ticket.updated_at = now
+    _log_activity(ticket_id, current_user.username, "status_changed", {"from": old_status, "to": "archived"})
+    db.session.commit()
+
+    audit(current_user, "manage", "tickets", f"archived thread {ticket_id}")
+    return jsonify(ticket.to_dict())
+
+
+# --------------- Unarchive thread ---------------
+
+@bp.route("/api/tickets/<string:ticket_id>/unarchive-thread", methods=["POST"])
+def unarchive_thread(ticket_id: str):
+    """Restore archived thread: move memory folder back, set status='open'."""
+    denied = _require("manage")
+    if denied:
+        return denied
+    ticket = Ticket.query.get_or_404(ticket_id)
+    if ticket.memory_md_path is None:
+        return jsonify({"error": "not_a_thread"}), 400
+    if ticket.status != "archived":
+        return jsonify({"error": "not_archived"}), 409
+
+    archive_dir = WORKSPACE / "memory" / "threads" / "_archive" / ticket_id
+    src_dir = WORKSPACE / "memory" / "threads" / ticket_id
+
+    if archive_dir.exists():
+        # Remove tombstone before moving back
+        tombstone = archive_dir / "ARCHIVED.json"
+        if tombstone.exists():
+            tombstone.unlink()
+        shutil.move(str(archive_dir), str(src_dir))
+
+    now = _now()
+    ticket.status = "open"
+    ticket.updated_at = now
+    _log_activity(ticket_id, current_user.username, "status_changed", {"from": "archived", "to": "open"})
+    db.session.commit()
+
+    audit(current_user, "manage", "tickets", f"unarchived thread {ticket_id}")
+    return jsonify(ticket.to_dict())

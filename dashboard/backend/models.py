@@ -736,7 +736,7 @@ class GoalTask(db.Model):
 
 # --------------- Tickets models (Feature 1.3) ---------------
 
-TICKET_STATUSES = ("open", "in_progress", "blocked", "review", "resolved", "closed")
+TICKET_STATUSES = ("open", "in_progress", "blocked", "review", "resolved", "closed", "archived")
 TICKET_PRIORITIES = ("urgent", "high", "medium", "low")
 PRIORITY_RANK = {"urgent": 4, "high": 3, "medium": 2, "low": 1}
 
@@ -773,6 +773,12 @@ class Ticket(db.Model):
     created_by = db.Column(db.String(100), nullable=False, default="davidson")
     source_agent = db.Column(db.String(100), nullable=True)
     source_session_id = db.Column(db.String(36), nullable=True)
+    # thread-areas columns
+    workspace_path = db.Column(db.Text, nullable=True)
+    memory_md_path = db.Column(db.Text, nullable=True)
+    thread_session_id = db.Column(db.Text, nullable=True)
+    message_count = db.Column(db.Integer, nullable=False, default=0)
+    last_summary_at_message = db.Column(db.Integer, nullable=False, default=0)
     created_at = db.Column(db.String(30), nullable=False)
     updated_at = db.Column(db.String(30), nullable=False)
     resolved_at = db.Column(db.String(30), nullable=True)
@@ -797,6 +803,13 @@ class Ticket(db.Model):
             "created_by": self.created_by,
             "source_agent": self.source_agent,
             "source_session_id": self.source_session_id,
+            # thread-areas fields
+            "workspace_path": self.workspace_path,
+            "memory_md_path": self.memory_md_path,
+            "thread_session_id": self.thread_session_id,
+            "message_count": self.message_count,
+            "last_summary_at_message": self.last_summary_at_message,
+            "is_thread": self.memory_md_path is not None,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "resolved_at": self.resolved_at,
