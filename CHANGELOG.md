@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.2] - 2026-04-23
+
+Patch release: in-app toasts and confirm dialogs replacing 47 native `alert()`/`confirm()` calls, agent avatars in the Topics list, plus fixes for PR #30 (provider routing + docker) and the archive endpoint.
+
+### Added
+
+- **In-app Toast system (`useToast`)** — stackable notifications in the bottom-right corner (max 5), auto-dismiss 4s, variants `success` / `error` / `warning` / `info`. Replaces all `window.alert()` usage in the dashboard with a consistent, non-blocking pattern in the EvoNexus dark tone. Zero new dependencies (pure CSS keyframes + Context API).
+- **In-app Confirm dialog (`useConfirm`)** — promise-based modal with `default` / `danger` variants, keyboard support (Enter confirms, Escape cancels), focus on Cancel for danger variant (safer default). Replaces all `window.confirm()` usage.
+- **Agent avatars in `/topics` list** — threads now show the assigned agent's avatar (24px, same as the sidebar) instead of a generic green chat icon, matching the visual language of `ThreadsSidebar`. Shared `AgentIcon` component extracted from the sidebar for reuse.
+
+### Changed
+
+- **47 UX call sites migrated from native dialogs to in-app components** across `AgentChat`, `ChatSessionList`, `Backups`, `Heartbeats`, `Roles`, `Scheduler`, `Systems`, `Tasks`, `TicketDetail`, `Topics`, `Triggers`, `Users`. All messages translated to pt-BR where they were in English.
+- **Provider config centralized** (PR #30) — shared `provider-config.js` helper in the terminal-server centralizes loading, env var allow-listing, and model capability detection (`code` vs `chat`). Reduces duplication between `chat-bridge.js` and `claude-bridge.js`.
+- **Chat uses OpenAI-compatible streaming for non-Anthropic providers** (PR #30) — `/chat/completions` streaming so chat-completion style models (GPT, Gemini, custom OmniRouter) work in dashboard Chat. Anthropic keeps the existing Agent SDK flow.
+- **Terminal enforces code-only models for non-Anthropic providers** (PR #30) — chat-completion models are now blocked in the Terminal with a clear error directing the user to the Chat instead.
+- **Telegram notification helper for ADW routines** (PR #30) — `run_skill(..., notify_telegram=True)` appends a deterministic notification instruction to the skill prompt so end-of-day and good-morning routines emit exactly one Telegram message via the MCP `reply()` call. `ADWs/runner.py` also exposes a `send_telegram()` helper that posts directly via Bot API as a fallback.
+
+### Fixed
+
+- **Archive thread endpoint — 500 on re-archive** — `shutil.move` was raising `OSError` when `memory/threads/_archive/{ticket_id}/` already existed from a previous partial archive. Now checks for existing path and falls back to a timestamped suffix; tombstone write is best-effort and wrapped in try/except; the endpoint surfaces a proper JSON error instead of a bare 500.
+- **Docker dashboard container starts reliably** (PR #30) — `npm install --legacy-peer-deps` in `Dockerfile.swarm.dashboard` avoids peer-dep install failures on fresh rebuilds (same pin already applied to the non-Docker install).
+
 ## [0.29.1] - 2026-04-23
 
 Patch iterating on the v0.29.0 thread-areas feature: UI rebrand, navigation polish, and fixes identified by the post-release verification pass.
