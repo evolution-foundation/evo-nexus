@@ -505,7 +505,8 @@ export default function TicketDetail() {
   // --- End thread mode ---
 
   return (
-    <div className="max-w-3xl mx-auto">
+    <div className="h-full overflow-auto p-4 lg:p-8 pt-16 lg:pt-8">
+      <div className="max-w-3xl mx-auto">
       {/* Back */}
       <button
         onClick={() => navigate('/topics')}
@@ -744,6 +745,7 @@ export default function TicketDetail() {
           onConverted={() => { setShowConvertModal(false); fetchTicket() }}
         />
       )}
+      </div>
     </div>
   )
 }
