@@ -19,6 +19,10 @@ Minor release adding a unified Activity Log — a single page aggregating execut
   - **Nav:** new sidebar item "Activity" (`Atividade` pt-BR / `Actividad` es) under the operations group. `View all →` on the Overview Routines card now points to `/activity` for a unified journey.
   - **Data sources:** reuses existing backend endpoints — `GET /api/routines/logs`, `GET /api/heartbeats/{id}/runs`, `GET /api/triggers/{id}`. Client-side aggregation (N+1 fetches via `Promise.all`) — acceptable for v1 volume; server-side aggregated endpoint can come later if needed.
 
+### Fixed (same release)
+
+- **Activity parser — real routine log shape** — initial parser was looking for `log.name` / `log.routine_name` / `log.status` / `log.exit_code`, which don't exist in `ADWs/logs/YYYY-MM-DD.jsonl`. Real shape is `{ timestamp, run, prompt, returncode, duration_seconds, input_tokens, output_tokens, cost_usd }`. Parser now reads `run` as the routine name (so rows show `good-morning`, `end-of-day`, etc. instead of `Unknown Routine`), derives status from `returncode`, and surfaces `cost_usd` / token counts / prompt preview in the drawer.
+
 ### Known limitations (v1)
 
 - `/api/routines/logs` only accepts `?date=`, so the period filter (7d / 30d / All) affects heartbeats and triggers only — routines always show today. The routine log endpoint will need `from`/`to` params to honor longer periods; deferred to a follow-up.
