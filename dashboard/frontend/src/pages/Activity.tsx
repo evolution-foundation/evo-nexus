@@ -360,17 +360,29 @@ export default function ActivityPage() {
         const today = new Date().toISOString().slice(0, 10)
         const logs: any[] = await api.get(`/routines/logs?date=${today}`)
         for (const log of Array.isArray(logs) ? logs : []) {
+          // Real shape (ADWs/logs/YYYY-MM-DD.jsonl lines):
+          //   { timestamp, run, prompt, returncode, duration_seconds,
+          //     stdout_lines, stderr_lines, input_tokens, output_tokens, cost_usd }
+          const name = log.run || log.routine_name || log.name || log.script || 'Routine'
+          const rc = log.returncode ?? log.exit_code
+          const status = log.status || (rc === 0 ? 'success' : rc != null ? 'error' : 'success')
+          const ts = log.timestamp || log.started_at || ''
+          const durMs = log.duration_ms ?? (log.duration_seconds != null ? log.duration_seconds * 1000 : null)
           results.push({
-            id: `routine-${log.routine_name || log.name || 'unknown'}-${log.started_at || log.timestamp || Date.now()}`,
+            id: `routine-${name}-${ts || Date.now()}`,
             type: 'routine',
-            name: log.routine_name || log.name || log.script || 'Unknown Routine',
-            status: log.status || (log.exit_code === 0 ? 'success' : 'error'),
-            started_at: log.started_at || log.timestamp || '',
+            name,
+            status,
+            started_at: ts,
             ended_at: log.ended_at || log.completed_at || null,
-            duration_ms: log.duration_ms ?? (log.duration_seconds != null ? log.duration_seconds * 1000 : null),
+            duration_ms: durMs,
             triggered_by: log.triggered_by || 'schedule',
-            error: log.error || log.stderr || null,
-            routine_name: log.routine_name || log.name || null,
+            error: log.error || log.stderr || (rc != null && rc !== 0 ? `Exit code ${rc}` : null),
+            routine_name: name,
+            cost_usd: log.cost_usd ?? null,
+            tokens_in: log.input_tokens ?? null,
+            tokens_out: log.output_tokens ?? null,
+            prompt_preview: log.prompt ? String(log.prompt).slice(0, 200) : null,
           })
         }
       } catch { /* routines may have no logs */ }
