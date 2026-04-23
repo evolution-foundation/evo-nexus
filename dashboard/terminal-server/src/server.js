@@ -102,13 +102,17 @@ class TerminalServer {
 
     // Find-or-create a session for a specific subagent (e.g. 'oracle')
     this.app.post('/api/sessions/for-agent', (req, res) => {
-      const { agentName, workingDir } = req.body;
+      const { agentName, workingDir, ticketId, systemPromptExtras } = req.body;
       if (!agentName) {
         return res.status(400).json({ error: 'agentName is required' });
       }
 
+      // Scope reuse by (agentName, ticketId) when ticketId is provided.
+      // Without ticketId the old behaviour is preserved (reuse by agentName alone).
       for (const [id, s] of this.claudeSessions.entries()) {
-        if (s.agentName === agentName) {
+        const agentMatch = s.agentName === agentName;
+        const ticketMatch = ticketId ? s.ticketId === ticketId : !s.ticketId;
+        if (agentMatch && ticketMatch) {
           return res.json({
             success: true,
             sessionId: id,
@@ -119,6 +123,7 @@ class TerminalServer {
               workingDir: s.workingDir,
               active: s.active,
               agentName: s.agentName,
+              ticketId: s.ticketId || null,
             },
           });
         }
@@ -145,6 +150,8 @@ class TerminalServer {
         active: false,
         agent: null,
         agentName,
+        ticketId: ticketId || null,
+        systemPromptExtras: systemPromptExtras || null,
         workingDir: validWorkingDir,
         connections: new Set(),
         outputBuffer: [],
@@ -163,6 +170,7 @@ class TerminalServer {
           workingDir: session.workingDir,
           active: false,
           agentName,
+          ticketId: ticketId || null,
         },
       });
     });
@@ -531,6 +539,7 @@ class TerminalServer {
                 prompt: data.prompt,
                 files: data.files,
                 sdkSessionId: chatSession.sdkSessionId || undefined,
+                systemPromptExtras: chatSession.systemPromptExtras || undefined,
                 onMessage: (msg) => {
                   // Track SDK session ID
                   if (msg.type === 'session_id' && msg.sdkSessionId) {

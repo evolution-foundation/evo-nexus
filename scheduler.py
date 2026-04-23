@@ -27,6 +27,11 @@ def acquire_lock() -> bool:
     both proceed to start.
     """
     import fcntl
+    # ADWs/logs/ is not in git (no .gitkeep) and setup.py's create_folders
+    # only makes the user-facing workspace dirs, so on a fresh clone the
+    # parent of PID_FILE doesn't exist and os.open() raises FileNotFoundError
+    # before the scheduler can even start. Make it idempotently.
+    PID_FILE.parent.mkdir(parents=True, exist_ok=True)
     try:
         fd = os.open(str(PID_FILE), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
         os.write(fd, str(os.getpid()).encode())

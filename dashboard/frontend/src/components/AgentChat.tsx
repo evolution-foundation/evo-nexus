@@ -42,6 +42,10 @@ interface AgentChatProps {
   externalError?: string | null
   onPendingCountChange?: (sessionId: string, count: number) => void
   onNeedsAttention?: (sessionId: string) => void
+  // Thread-mode props (thread-areas feature)
+  workingDir?: string
+  threadTicketId?: string
+  onTurnCompleted?: () => void
 }
 
 // Terminal-server URL
@@ -73,7 +77,7 @@ type AssistantBlock =
 
 type Status = 'idle' | 'connecting' | 'running' | 'error'
 
-export default function AgentChat({ agent, sessionId, accentColor = '#00FFA7', externalLoading = false, externalError = null, onPendingCountChange, onNeedsAttention }: AgentChatProps) {
+export default function AgentChat({ agent, sessionId, accentColor = '#00FFA7', externalLoading = false, externalError = null, onPendingCountChange, onNeedsAttention, workingDir: _workingDir, threadTicketId: _threadTicketId, onTurnCompleted }: AgentChatProps) {
   const { dismissBySession } = useNotifications()
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [input, setInput] = useState('')
@@ -244,6 +248,10 @@ export default function AgentChat({ agent, sessionId, accentColor = '#00FFA7', e
             // Signal unread response when user is in another tab
             if (document.hidden && sessionId && onNeedsAttention) {
               onNeedsAttention(sessionId)
+            }
+            // Thread-mode: fire turn-completed (Option D summary trigger)
+            if (onTurnCompleted) {
+              onTurnCompleted()
             }
             setMessages(prev => {
               const copy = [...prev]

@@ -314,6 +314,25 @@ with app.app_context():
         _conn.commit()
     # --- End source attribution migration ---
 
+    # --- Thread-areas columns on tickets ---
+    _ticket_cols = {row[1] for row in _cur.execute("PRAGMA table_info(tickets)").fetchall()}
+    if "workspace_path" not in _ticket_cols:
+        _cur.execute("ALTER TABLE tickets ADD COLUMN workspace_path TEXT")
+        _conn.commit()
+    if "memory_md_path" not in _ticket_cols:
+        _cur.execute("ALTER TABLE tickets ADD COLUMN memory_md_path TEXT")
+        _conn.commit()
+    if "thread_session_id" not in _ticket_cols:
+        _cur.execute("ALTER TABLE tickets ADD COLUMN thread_session_id TEXT")
+        _conn.commit()
+    if "message_count" not in _ticket_cols:
+        _cur.execute("ALTER TABLE tickets ADD COLUMN message_count INTEGER NOT NULL DEFAULT 0")
+        _conn.commit()
+    if "last_summary_at_message" not in _ticket_cols:
+        _cur.execute("ALTER TABLE tickets ADD COLUMN last_summary_at_message INTEGER NOT NULL DEFAULT 0")
+        _conn.commit()
+    # --- End thread-areas migration ---
+
     # --- End tickets migration ---
 
     # --- Knowledge connections migration (pgvector-knowledge feature) ---
@@ -565,6 +584,7 @@ from routes.knowledge import bp as knowledge_bp
 from routes.knowledge_public import bp as knowledge_public_bp
 from routes.knowledge_proxy import bp as knowledge_proxy_bp
 from routes.knowledge_v1 import bp as knowledge_v1_bp
+from routes.databases import bp as databases_bp
 
 app.register_blueprint(overview_bp)
 app.register_blueprint(workspace_bp)
@@ -595,6 +615,7 @@ app.register_blueprint(knowledge_bp)
 app.register_blueprint(knowledge_public_bp)
 app.register_blueprint(knowledge_proxy_bp)
 app.register_blueprint(knowledge_v1_bp)
+app.register_blueprint(databases_bp)
 
 # --------------- Social Auth blueprints ---------------
 from auth.youtube import bp as youtube_auth_bp

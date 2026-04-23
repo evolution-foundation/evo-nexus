@@ -191,6 +191,7 @@ class ChatBridge {
       prompt,
       files,
       sdkSessionId,
+      systemPromptExtras,
       onMessage,
       onError,
       onComplete,
@@ -230,11 +231,17 @@ class ChatBridge {
 
         const runtimeBlock = runtimeLines.join('\n');
 
-        // Use systemPrompt with claude_code preset + agent prompt appended
+        // Use systemPrompt with claude_code preset + agent prompt appended.
+        // systemPromptExtras (e.g. thread memory.md content) is only injected on
+        // fresh sessions — when resuming, the context is already in the conversation.
+        let promptAppend = agentDef.prompt + '\n\n' + runtimeBlock;
+        if (systemPromptExtras && !sdkSessionId) {
+          promptAppend = promptAppend + '\n\n' + systemPromptExtras;
+        }
         queryOptions.systemPrompt = {
           type: 'preset',
           preset: 'claude_code',
-          append: agentDef.prompt + '\n\n' + runtimeBlock,
+          append: promptAppend,
         };
         if (agentDef.model) queryOptions.model = agentDef.model;
         console.log(`[chat-bridge] Loaded agent "${agentName}" via systemPrompt.append (${agentDef.prompt.length} chars, model: ${agentDef.model || 'inherit'})`);

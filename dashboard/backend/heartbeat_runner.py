@@ -369,6 +369,57 @@ def step9_release_checkout(task_id: str | None, run_id: str, conn):
         pass  # Table may not exist in F1.1
 
 
+# ── System heartbeat dispatcher ───────────────────────────────────────────────
+
+# Map heartbeat_id → Python module (relative to heartbeat_runner.py's directory)
+_SYSTEM_HEARTBEAT_SCRIPTS: dict[str, str] = {
+    "summary-watcher": "summary_watcher",
+}
+
+
+def _run_system_heartbeat(heartbeat_id: str, timeout_seconds: int) -> dict:
+    """Run a system heartbeat by importing its module and calling run_watcher().
+
+    Returns result dict compatible with step8_persist expectations.
+    """
+    import importlib
+    import time as _time
+
+    script_module = _SYSTEM_HEARTBEAT_SCRIPTS.get(heartbeat_id)
+    if not script_module:
+        print(f"[heartbeat_runner] ERROR: no script registered for system heartbeat {heartbeat_id}", flush=True)
+        return {"status": "fail", "error": f"no script for {heartbeat_id}", "duration_ms": 0,
+                "output": "", "tokens_in": None, "tokens_out": None, "cost_usd": None}
+
+    print(f"[heartbeat_runner] running system heartbeat {heartbeat_id} via {script_module}.run_watcher()", flush=True)
+    start = _time.time()
+    try:
+        mod = importlib.import_module(script_module)
+        stats = mod.run_watcher()
+        duration_ms = int((_time.time() - start) * 1000)
+        return {
+            "status": "success",
+            "error": None,
+            "output": json.dumps(stats),
+            "duration_ms": duration_ms,
+            "tokens_in": None,
+            "tokens_out": None,
+            "cost_usd": None,
+        }
+    except Exception as exc:
+        import traceback
+        duration_ms = int((_time.time() - start) * 1000)
+        return {
+            "status": "fail",
+            "error": traceback.format_exc(),
+            "output": "",
+            "duration_ms": duration_ms,
+            "tokens_in": None,
+            "tokens_out": None,
+            "cost_usd": None,
+        }
+
+
 # ── Main protocol ─────────────────────────────────────────────────────────────
 
 def run_heartbeat(heartbeat_id: str, triggered_by: str = "manual", trigger_id: str | None = None, run_id: str | None = None):
@@ -414,47 +465,55 @@ def run_heartbeat(heartbeat_id: str, triggered_by: str = "manual", trigger_id: s
         task_id = None
 
         try:
-            # Step 1
-            identity = step1_load_identity(hb["agent"])
-            print(f"[heartbeat_runner] step1 identity loaded ({len(identity)} chars)", flush=True)
+            # Special case: agent='system' heartbeats run a Python script directly
+            # instead of invoking Claude. The script path is resolved by heartbeat id.
+            if hb["agent"] == "system":
+                full_prompt = f"[system heartbeat] {heartbeat_id}"
+                result = _run_system_heartbeat(heartbeat_id, hb["timeout_seconds"])
+                result["agent"] = "system"
+                result["started_at"] = started_at
+            else:
+                # Step 1
+                identity = step1_load_identity(hb["agent"])
+                print(f"[heartbeat_runner] step1 identity loaded ({len(identity)} chars)", flush=True)
 
-            # Step 2
-            approvals = step2_check_approvals(hb["agent"], conn)
-            print(f"[heartbeat_runner] step2 approvals={len(approvals)}", flush=True)
+                # Step 2
+                approvals = step2_check_approvals(hb["agent"], conn)
+                print(f"[heartbeat_runner] step2 approvals={len(approvals)}", flush=True)
 
-            # Step 3
-            inbox = step3_query_inbox(hb["agent"], conn)
-            print(f"[heartbeat_runner] step3 inbox={len(inbox)}", flush=True)
+                # Step 3
+                inbox = step3_query_inbox(hb["agent"], conn)
+                print(f"[heartbeat_runner] step3 inbox={len(inbox)}", flush=True)
 
-            # Step 4
-            decision_ctx = step4_pick_priority(identity, approvals, inbox, hb["decision_prompt"])
-            print(f"[heartbeat_runner] step4 decision context assembled", flush=True)
+                # Step 4
+                decision_ctx = step4_pick_priority(identity, approvals, inbox, hb["decision_prompt"])
+                print(f"[heartbeat_runner] step4 decision context assembled", flush=True)
 
-            # Step 5
-            task_id = None  # no specific task in F1.1
-            checkout_ok = step5_atomic_checkout(task_id, run_id, conn)
-            if not checkout_ok:
-                print(f"[heartbeat_runner] step5 checkout conflict, skipping", flush=True)
-                result = {"status": "success", "error": None, "agent": hb["agent"], "duration_ms": 0}
-                step8_persist(run_id, heartbeat_id, result, trigger_id, triggered_by, "", conn)
-                return
+                # Step 5
+                task_id = None  # no specific task in F1.1
+                checkout_ok = step5_atomic_checkout(task_id, run_id, conn)
+                if not checkout_ok:
+                    print(f"[heartbeat_runner] step5 checkout conflict, skipping", flush=True)
+                    result = {"status": "success", "error": None, "agent": hb["agent"], "duration_ms": 0}
+                    step8_persist(run_id, heartbeat_id, result, trigger_id, triggered_by, "", conn)
+                    return
 
-            # Step 6
-            full_prompt = step6_assemble_context(identity, decision_ctx, hb.get("goal_id"))
-            print(f"[heartbeat_runner] step6 prompt assembled ({len(full_prompt)} chars)", flush=True)
+                # Step 6
+                full_prompt = step6_assemble_context(identity, decision_ctx, hb.get("goal_id"))
+                print(f"[heartbeat_runner] step6 prompt assembled ({len(full_prompt)} chars)", flush=True)
 
-            # Step 7
-            print(f"[heartbeat_runner] step7 invoking claude agent={hb['agent']} max_turns={hb['max_turns']} timeout={hb['timeout_seconds']}s", flush=True)
-            invoke_result = step7_invoke_claude(
-                agent=hb["agent"],
-                prompt=full_prompt,
-                max_turns=hb["max_turns"],
-                timeout_seconds=hb["timeout_seconds"],
-            )
-            invoke_result["agent"] = hb["agent"]
-            invoke_result["started_at"] = started_at
-            result = invoke_result
-            print(f"[heartbeat_runner] step7 done status={result['status']} duration_ms={result.get('duration_ms')}", flush=True)
+                # Step 7
+                print(f"[heartbeat_runner] step7 invoking claude agent={hb['agent']} max_turns={hb['max_turns']} timeout={hb['timeout_seconds']}s", flush=True)
+                invoke_result = step7_invoke_claude(
+                    agent=hb["agent"],
+                    prompt=full_prompt,
+                    max_turns=hb["max_turns"],
+                    timeout_seconds=hb["timeout_seconds"],
+                )
+                invoke_result["agent"] = hb["agent"]
+                invoke_result["started_at"] = started_at
+                result = invoke_result
+                print(f"[heartbeat_runner] step7 done status={result['status']} duration_ms={result.get('duration_ms')}", flush=True)
 
         except Exception as exc:
             import traceback
