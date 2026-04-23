@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.30.1] - 2026-04-23
+
+Patch release focused on thread UX polish: session now swaps cleanly when switching threads via the sidebar, the agent is briefed explicitly about running inside a persistent thread (not a fresh one-shot session), the assignee dropdown stops hiding agents, and fresh installs no longer inherit Evolution-specific goal seed data.
+
+### Fixed
+
+- **Thread switch leaked previous conversation** — switching threads via the sidebar kept `threadSessionId` pinned to the old ticket and `<AgentChat>` kept rendering the old messages until a full page reload (or going back to `/topics` and entering again). Two fixes in `TicketDetail.tsx`: (1) a new effect resets `threadSessionId` whenever `ticket?.id` changes so the auto-init re-runs for the new ticket; (2) `<AgentChat key={ticket.id}>` forces a full remount so the WebSocket, message buffer and internal effects restart cleanly.
+- **Topics assignee dropdown hid 18 of 38 agents** — the Assign-to-agent combobox in `/topics` sliced the filtered list at 20 items (`filteredAgents.slice(0, 20)`), silently dropping agents whose slugs come later alphabetically (from `m` onward). Removed the slice and bumped `max-h-48` to `max-h-72` so ~12 agents are visible at once without scrolling and all 38 are reachable.
+- **Goals: Evolution-specific seed leaking into open-source installs** — `dashboard/backend/app.py` was seeding a hardcoded "Evolution Revenue $1M Q4 2026" mission with 3 projects (evo-ai, evo-summit, evo-academy) and 5 goals on first boot. Removed the seed block so new instances start empty. The `/goals` empty state now points users at the `/create-goal` skill instead of the misleading "Run the backend migration to seed initial data" message. Existing installations with the seed applied can clean it with `DELETE FROM goal_tasks; DELETE FROM goals; DELETE FROM projects; DELETE FROM missions;`.
+
+### Changed
+
+- **Thread context now always injected into the agent's system prompt** — when a thread session initialises, `TicketDetail.initThreadSession` always builds a "Thread Context" block explaining that the agent is running inside a persistent thread (not a fresh session): the thread title, description, assigned agent slug, default workspace folder, memory file path, summarization cadence, and resume behaviour. It also tells the agent **not** to re-invoke itself via the `Agent` tool (which was causing confusing `@zara-cs` calling `@zara-cs` patterns). Memory.md content is appended when present, so empty threads still get the full context and populated threads still surface prior-session knowledge. Respects the existing `!sdkSessionId` guard in `chat-bridge.js` — only injected on fresh sessions, not on `--resume`.
+
 ## [0.30.0] - 2026-04-23
 
 Minor release adding a unified Activity Log — a single page aggregating execution history across routines, heartbeats and triggers so the user can answer "what did the system just do?" without visiting three separate pages.

@@ -280,8 +280,8 @@ function CreateModal({ onClose, onCreated }: CreateModalProps) {
                 onBlur={() => setTimeout(() => setAgentOpen(false), 150)}
               />
               {agentOpen && filteredAgents.length > 0 && (
-                <div className="absolute z-10 mt-1 w-full max-h-48 overflow-y-auto bg-[#161b22] border border-[#21262d] rounded-lg shadow-xl">
-                  {filteredAgents.slice(0, 20).map(slug => (
+                <div className="absolute z-10 mt-1 w-full max-h-72 overflow-y-auto bg-[#161b22] border border-[#21262d] rounded-lg shadow-xl">
+                  {filteredAgents.map(slug => (
                     <button
                       type="button"
                       key={slug}

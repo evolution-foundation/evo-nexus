@@ -271,9 +271,35 @@ export default function TicketDetail() {
         // memory fetch failure is non-fatal
       }
 
-      const systemPromptExtras = memoryContent
-        ? `## Thread Memory\n\nThis is a persistent thread. Below is the accumulated memory from previous sessions:\n\n${memoryContent}`
-        : ''
+      // Build a scoped context block — always injected, not just when memory exists.
+      // Goal: tell the agent it is running inside a persistent thread with
+      // fixed scope, a dedicated memory file, and a default working folder,
+      // so it does not treat every turn as a fresh session nor invoke
+      // sub-tasks of itself.
+      const lines: string[] = []
+      lines.push('## Thread Context')
+      lines.push('')
+      lines.push('You are running inside a **persistent chat thread** on EvoNexus, not a fresh one-shot session. This means:')
+      lines.push('')
+      lines.push(`- **Thread title:** "${t.title}"`)
+      if (t.description) lines.push(`- **Description:** ${t.description}`)
+      lines.push(`- **Your role:** you are the agent \`@${t.assignee_agent}\` — this thread is yours and will not switch agents. Do NOT invoke the \`Agent\` tool with \`subagent_type: ${t.assignee_agent}\` to re-launch yourself; you are already running.`)
+      if (t.workspace_path) {
+        lines.push(`- **Default working folder:** \`${t.workspace_path}\` — all artifacts you produce belong here unless stated otherwise.`)
+      }
+      lines.push('- **Memory:** a curated \`memory.md\` lives under `memory/threads/{this_ticket_id}/memory.md`. It is summarised every 20 turns. You may read and update it as part of your work to preserve knowledge across turns/days.')
+      lines.push('- **Resume behaviour:** conversations here survive browser closes and day breaks via Claude CLI `--resume`. Assume continuity, not a cold start.')
+      lines.push('')
+      lines.push('Delegate to other agents via the `Agent` tool only when the task genuinely falls outside your own specialty, not as a way to "call yourself".')
+
+      if (memoryContent.trim()) {
+        lines.push('')
+        lines.push('## Thread Memory (accumulated from previous turns)')
+        lines.push('')
+        lines.push(memoryContent.trim())
+      }
+
+      const systemPromptExtras = lines.join('\n')
 
       // Get or create session scoped to this ticket
       const sessionRes = await fetch(`${TS_HTTP}/api/sessions/for-agent`, {
@@ -307,12 +333,19 @@ export default function TicketDetail() {
     }
   }, [])
 
+  // Reset thread session state when ticket id changes (switching threads via sidebar)
+  // Without this, threadSessionId stays pinned to the previous thread and AgentChat
+  // keeps rendering the old conversation until a full remount happens.
+  useEffect(() => {
+    setThreadSessionId(null)
+  }, [ticket?.id])
+
   // Auto-init thread session when ticket loads as thread
   useEffect(() => {
     if (ticket?.is_thread && !threadSessionId && !sessionLoading) {
       initThreadSession(ticket)
     }
-  }, [ticket?.id, ticket?.is_thread])
+  }, [ticket?.id, ticket?.is_thread, threadSessionId, sessionLoading])
 
   // Option D: fire turn-completed on each chat_complete in thread mode
   const handleTurnCompleted = useCallback(async () => {
@@ -481,6 +514,7 @@ export default function TicketDetail() {
               )}
               <div className={`flex-1 overflow-hidden${ticket.status === 'archived' ? ' pointer-events-none opacity-60' : ''}`}>
                 <AgentChat
+                  key={ticket.id}
                   agent={ticket.assignee_agent || ''}
                   sessionId={threadSessionId}
                   workingDir={ticket.workspace_path || undefined}
