@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.0] - 2026-04-23
+
+### Added
+
+- **Thread Areas — persistent chat threads with isolated memory** — tickets can be converted to "thread mode", turning them into a chat surface embedded in `TicketDetail` (via `AgentChat`). Each thread has a dedicated agent (immutable after conversion), a default `workspace_path`, and a curated `memory.md` at `memory/threads/{ticket_id}/memory.md` that persists across sessions. Solves context degradation in long conversations: fixed scope (1 agent × 1 area) + periodic summarization + `--resume` to keep conversation alive across days. Canonical use case: 1 financial agent × N companies, each as an isolated thread. Zero new tables — extends `tickets` with 5 columns (`workspace_path`, `memory_md_path`, `thread_session_id`, `message_count`, `last_summary_at_message`). New endpoints: `PATCH /api/tickets/:id/convert-to-thread` (idempotent), `POST /api/tickets/:id/turn-completed` (monotonic with `UPDATE WHERE message_count < :n`), `POST /api/tickets/:id/archive-thread` and `/unarchive-thread`, `GET /api/tickets/counts`, `GET /api/workspace/subfolders`, plus `display_mode` filter on list. UI: `/issues` splits into "Threads" (💬) and "Issues" sections; `TicketDetail` renders `AgentChat` when the ticket is a thread; modal guards agent immutability; archived threads show read-only banner with Unarchive action. Summary subsystem: `summary_worker.py` generates a new dated section in `memory.md` every 20 turns; `summary_watcher.py` heartbeat safety net (disabled by default) recovers turns missed when the browser tab closes mid-conversation (Option D + B hybrid per ADR).
+- **Database integrations — Postgres, MySQL, MongoDB, Redis** — four new skills (`db-postgres`, `db-mysql`, `db-mongo`, `db-redis`) let the user query and explore databases configured via `.env` (`DB_POSTGRES_N_*`, `DB_MYSQL_N_*`, `DB_MONGO_N_*`, `DB_REDIS_N_*`). Integrations UI gains a full-page database section for connection management. Backend route `dashboard/backend/routes/databases.py` wires the dashboard to the skills. Documented in `docs/integrations/databases.md`.
+
+### Fixed
+
+- **Heartbeats — accept `system` sentinel for infra-only heartbeats** — allows heartbeats without an assigned agent (e.g., `summary-watcher`) to register without tripping validation.
+- **VPS install — survive first reboot** — scheduler, start-services and firewall now persist across reboots on fresh VPS installs; prior setups would silently fail to come back up.
+
 ## [0.28.0] - 2026-04-22
 
 ### Added
