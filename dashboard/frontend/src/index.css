@@ -121,3 +121,12 @@ body {
   animation: shimmer 1.5s infinite;
   border-radius: 8px;
 }
+
+/* Mobile drawer slide-in animation */
+@keyframes slideInLeft {
+  from { transform: translateX(-100%); }
+  to   { transform: translateX(0); }
+}
+.animate-slide-in-left {
+  animation: slideInLeft 200ms ease-out forwards;
+}
