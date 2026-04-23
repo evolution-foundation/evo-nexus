@@ -870,16 +870,27 @@ def archive_thread(ticket_id: str):
         return jsonify({"error": "already_archived"}), 409
 
     src_dir = WORKSPACE / "memory" / "threads" / ticket_id
-    archive_dir = WORKSPACE / "memory" / "threads" / "_archive" / ticket_id
+    archive_root = WORKSPACE / "memory" / "threads" / "_archive"
+    archive_dir = archive_root / ticket_id
+
+    archive_root.mkdir(parents=True, exist_ok=True)
 
     if src_dir.exists():
-        archive_dir.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(src_dir), str(archive_dir))
+        # If archive_dir already exists (previous partial archive), rename with timestamp suffix
+        if archive_dir.exists():
+            archive_dir = archive_root / f"{ticket_id}.{_now().replace(':', '-').replace('.', '-')}"
+        try:
+            shutil.move(str(src_dir), str(archive_dir))
+        except OSError as exc:
+            return jsonify({"error": "archive_move_failed", "message": str(exc)}), 500
         # Write tombstone
-        (archive_dir / "ARCHIVED.json").write_text(
-            json.dumps({"ticket_id": ticket_id, "archived_at": _now(), "archived_by": current_user.username}),
-            encoding="utf-8",
-        )
+        try:
+            (archive_dir / "ARCHIVED.json").write_text(
+                json.dumps({"ticket_id": ticket_id, "archived_at": _now(), "archived_by": current_user.username}),
+                encoding="utf-8",
+            )
+        except OSError:
+            pass  # tombstone is best-effort
 
     now = _now()
     old_status = ticket.status
