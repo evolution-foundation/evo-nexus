@@ -180,7 +180,7 @@ const translations = {
       backups: 'Copias',
       costs: 'Costos',
       docs: 'Docs',
-      issues: 'Incidencias',
+      issues: 'Temas',
       reports: 'Informes',
       mempalace: 'MemPalace',
       systems: 'Sistemas',
@@ -540,8 +540,8 @@ const translations = {
     },
 
     issues: {
-      title: 'Incidencias',
-      subtitle: 'Bugs, regresiones y puntos a observar',
+      title: 'Temas',
+      subtitle: 'Cola de trabajo y hilos de conversación',
       openCount: '{{count}} abierta(s)',
       closed: 'Cerrada',
       reopen: 'Reabrir',

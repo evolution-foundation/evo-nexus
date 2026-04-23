@@ -192,7 +192,7 @@ const translations = {
       backups: 'Backups',
       costs: 'Costs',
       docs: 'Docs',
-      issues: 'Issues',
+      issues: 'Topics',
       reports: 'Reports',
       mempalace: 'MemPalace',
       systems: 'Systems',
@@ -555,8 +555,8 @@ const translations = {
     },
 
     issues: {
-      title: 'Issues',
-      subtitle: 'Bugs, regressions, and things to watch',
+      title: 'Topics',
+      subtitle: 'Work queue and conversation threads',
       openCount: '{{count}} open',
       closed: 'Closed',
       reopen: 'Reopen',

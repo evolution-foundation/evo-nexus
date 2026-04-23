@@ -52,7 +52,7 @@ const navGroups: NavGroup[] = [
       { to: '/triggers', labelKey: 'triggers', icon: Webhook, resource: 'triggers' },
       { to: '/heartbeats', labelKey: 'heartbeats', icon: Heart, resource: 'heartbeats' },
       { to: '/goals', labelKey: 'goals', icon: Target, resource: 'goals' },
-      { to: '/issues', labelKey: 'issues', icon: Ticket, resource: 'tickets' },
+      { to: '/topics', labelKey: 'issues', icon: Ticket, resource: 'tickets' },
       { to: '/templates', labelKey: 'templates', icon: Layout, resource: 'templates' },
     ],
   },
