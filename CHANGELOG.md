@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.1] - 2026-04-23
+
+Patch iterating on the v0.29.0 thread-areas feature: UI rebrand, navigation polish, and fixes identified by the post-release verification pass.
+
+### Changed
+
+- **Renamed "Issues" → "Topics" across the UI** — the feature evolved from a pure issue tracker into a container for both tasks and persistent chat threads, so the label no longer fit. Page file renamed `Issues.tsx` → `Topics.tsx`, route moved `/issues` → `/topics` with a 302 redirect preserving old bookmarks, sidebar nav item updated, breadcrumb `Topics / {title}`, i18n updated across 3 locales: en `Topics`, pt-BR `Tópicos`, es `Temas`. Backend (`tickets` table, `/api/tickets/*` endpoints, `Ticket` model) intentionally unchanged — pure UX rebranding, zero data migration.
+
+### Added
+
+- **Threads sidebar — navigate between chat threads without leaving the conversation** — when viewing a ticket in thread mode, a 280px sidebar now appears on the left listing all threads, grouped by agent (Clawdia, Kai, Flux…), with active/archived split. Active thread is highlighted with a green left border. Toggle button collapses to 48px (persisted in localStorage). Each item shows title + relative time (`há 2h`, `ontem`, `3d`). On mobile (<768px), sidebar becomes a slide-in drawer triggered by a `PanelLeft` icon — 85vw from the left with backdrop, Escape/click-outside/close to dismiss, `role=dialog` accessibility. Desktop and mobile share the same `ThreadsSidebar` component via an `asDrawer` prop; drawer lazy-mounts to avoid double-fetch. Pure CSS transitions, zero new dependencies.
+- **Create workspace folders from the Convert to Thread modal** — `+ Nova pasta` button inline in the folder dropdown opens an input accepting `[a-z0-9-]+` names (2-50 chars). Pressing Enter or clicking Create fires `POST /api/workspace/subfolders`; new folder appears in the dropdown pre-selected, no page reload. Backend validates name pattern, defends against path traversal, returns 409 if folder exists, 201 with `{name, path, full_path}` on success.
+
+### Fixed
+
+- **`convert-to-thread` is now idempotent** — calling the endpoint on a ticket that is already a thread returns 200 with the current ticket state instead of 409. Workspace path conflict (different path supplied) still returns 409 `workspace_path_conflict` with both paths in the error body. Prevents spurious errors when the UI double-fires the conversion.
+- **`turn-completed` is now race-safe monotonic** — uses `UPDATE ... WHERE message_count < :n` with `n = current + 1`, so concurrent calls with the same base value only increment once (second call is a silent no-op). Implements option (a) from the summary-trigger ADR without extra IO.
+- **Convert to Thread modal warns about agent immutability** — orange warning banner before the Convert button: "Após converter, o agente desta thread não poderá ser alterado. Crie uma thread nova para trocar de agente." Consistent with the existing `archived` badge style.
+- **Archived threads are read-only in the UI** — when a thread's status is `archived`, the `TicketDetail` shows a "📦 Thread arquivada — read-only. [Unarchive]" banner above the chat, disables interaction on the embedded `AgentChat` via `pointer-events-none opacity-60`, and the Unarchive button calls `POST /api/tickets/:id/unarchive-thread` to reactivate. Previously the UI allowed typing and only the backend rejected it.
+
 ## [0.29.0] - 2026-04-23
 
 ### Added
