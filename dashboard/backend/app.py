@@ -210,45 +210,9 @@ with app.app_context():
         END;
     """)
     _conn.commit()
-    # Seed data if missions table is empty (guard on row count, not table existence)
-    _cur.execute("SELECT COUNT(*) FROM missions")
-    if _cur.fetchone()[0] == 0:
-        _now_seed = "2026-04-14T00:00:00.000000Z"
-        _cur.execute("""
-            INSERT INTO missions (slug, title, description, target_metric, target_value, current_value, due_date, status, created_at, updated_at)
-            VALUES ('evo-revenue-1m-q4-2026', 'Evolution Revenue $1M Q4 2026',
-                    'Atingir $1M de receita anual até o Q4 2026',
-                    'revenue_usd', 1000000, 0, '2026-12-31', 'active', ?, ?)
-        """, (_now_seed, _now_seed))
-        _mission_id = _cur.lastrowid
-        # Projects
-        for _slug, _title, _desc in [
-            ('evo-ai', 'Evo AI', 'CRM + AI agents — produto principal'),
-            ('evo-summit', 'Evolution Summit', 'Evento de lançamento (14-16 Abr 2026)'),
-            ('evo-academy', 'Evo Academy', 'Plataforma de cursos'),
-        ]:
-            _cur.execute("""
-                INSERT INTO projects (slug, mission_id, title, description, status, created_at, updated_at)
-                VALUES (?, ?, ?, ?, 'active', ?, ?)
-            """, (_slug, _mission_id, _title, _desc, _now_seed, _now_seed))
-        _conn.commit()
-        # Goals per project
-        _evo_ai_id = _cur.execute("SELECT id FROM projects WHERE slug='evo-ai'").fetchone()[0]
-        _summit_id = _cur.execute("SELECT id FROM projects WHERE slug='evo-summit'").fetchone()[0]
-        _academy_id = _cur.execute("SELECT id FROM projects WHERE slug='evo-academy'").fetchone()[0]
-        _goals_seed = [
-            ('evo-ai-100-customers', _evo_ai_id, '100 paying customers by Jun 30', 'customers', 'count', 100, '2026-06-30'),
-            ('evo-ai-billing-v2', _evo_ai_id, 'Ship billing v2', 'shipped', 'boolean', 1, '2026-05-31'),
-            ('evo-summit-200-tickets', _summit_id, 'Sell 200 tickets', 'tickets_sold', 'count', 200, '2026-04-13'),
-            ('evo-summit-3-sponsors', _summit_id, 'Close 3 sponsors', 'sponsors', 'count', 3, '2026-04-10'),
-            ('evo-academy-50-students', _academy_id, '50 beta students', 'students', 'count', 50, '2026-06-30'),
-        ]
-        for _gs in _goals_seed:
-            _cur.execute("""
-                INSERT INTO goals (slug, project_id, title, target_metric, metric_type, target_value, current_value, status, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, 0, 'active', ?, ?)
-            """, (_gs[0], _gs[1], _gs[2], _gs[3], _gs[4], _gs[5], _now_seed, _now_seed))
-        _conn.commit()
+    # No seed data — Goals start empty. Users create Mission → Project → Goal via UI
+    # or via the create-goal skill. Previous seed was Evolution-specific and leaked
+    # into fresh installations of open-source users.
     # --- End Goal Cascade migration ---
 
     # --- Tickets migration (Feature 1.3) ---

@@ -690,8 +690,11 @@ export default function Goals() {
 
       {/* Mission tree */}
       {filteredMissions.length === 0 ? (
-        <div className="text-center py-16 text-[#667085] text-sm">
-          No missions found. Run the backend migration to seed initial data.
+        <div className="text-center py-16 px-4">
+          <p className="text-sm text-[#e6edf3] mb-2">Nenhuma Mission criada ainda.</p>
+          <p className="text-xs text-[#667085] max-w-md mx-auto">
+            Missions são os objetivos de topo da sua organização. Projects e Goals descendem delas. Use a skill <code className="text-[#00FFA7]">/create-goal</code> para criar a primeira.
+          </p>
         </div>
       ) : (
         filteredMissions.map((mission) => (
