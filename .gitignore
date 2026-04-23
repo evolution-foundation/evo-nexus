@@ -23,6 +23,11 @@ workspace/projects/*/
 
 # ── Agent memory (runtime, personal) ──────
 .claude/agent-memory/
+# Catch nested .claude/ folders that agents may accidentally create when
+# running from subdirectories (e.g. cd dashboard/frontend && claude ...).
+# The canonical .claude/ lives at the repo root; everything nested is noise.
+**/.claude/agent-memory/
+dashboard/*/.claude/
 memory/**
 !memory/.gitkeep
 
