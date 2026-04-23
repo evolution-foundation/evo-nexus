@@ -122,10 +122,20 @@ def _schedule_hc(get_app_fn) -> None:
 
 
 def start_health_check_thread(get_app_fn) -> None:
-    """Start the background health check scheduler (idempotent)."""
-    global _hc_started
+    """Start the background health check scheduler (idempotent).
+
+    Runs the first pass on a short-delay timer (not inline) so app startup
+    isn't blocked by slow/unreachable Postgres connections. Without this
+    initial pass, the classify_worker would spam the log for up to
+    _INTERVAL_S (5 min) on boot if a connection is offline, because stale
+    status='ready' from the last session won't be reconciled until the
+    first scheduled tick.
+    """
+    global _hc_started, _hc_timer
     with _hc_lock:
         if _hc_started:
             return
         _hc_started = True
-    _schedule_hc(get_app_fn)
+    _hc_timer = threading.Timer(5.0, _hc_loop, args=(get_app_fn,))
+    _hc_timer.daemon = True
+    _hc_timer.start()
