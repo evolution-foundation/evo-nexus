@@ -4,6 +4,8 @@ import { BrowserRouter } from 'react-router-dom'
 import './index.css'
 import i18n from './i18n'
 import App from './App'
+import { ToastProvider } from './components/Toast'
+import { ConfirmProvider } from './components/ConfirmDialog'
 
 // Guarantee that i18n resources are registered before the first React
 // render. Without this, the first pass through <Setup/>, <Login/>, etc
@@ -27,7 +29,11 @@ waitForI18n().then(() => {
   createRoot(document.getElementById('root')!).render(
     <StrictMode>
       <BrowserRouter>
-        <App />
+        <ToastProvider>
+          <ConfirmProvider>
+            <App />
+          </ConfirmProvider>
+        </ToastProvider>
       </BrowserRouter>
     </StrictMode>,
   )

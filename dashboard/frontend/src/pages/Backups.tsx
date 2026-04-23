@@ -1,4 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
+import { useToast } from '../components/Toast'
+import { useConfirm } from '../components/ConfirmDialog'
 import {
   HardDriveDownload, Plus, Download, RotateCcw, Trash2, RefreshCw,
   Cloud, HardDrive, AlertCircle, CheckCircle, Loader2, FileArchive,
@@ -57,6 +59,7 @@ const S3_FIELDS = [
 ]
 
 function S3ConfigPanel({ config, onSaved }: { config: BackupConfig; onSaved: () => void }) {
+  const toast = useToast()
   const [expanded, setExpanded] = useState(false)
   const [values, setValues] = useState<Record<string, string>>({})
   const [revealed, setRevealed] = useState<Set<string>>(new Set())
@@ -102,7 +105,7 @@ function S3ConfigPanel({ config, onSaved }: { config: BackupConfig; onSaved: () 
       setTimeout(() => setSaved(false), 2000)
       onSaved()
     } catch {
-      alert('Erro ao salvar')
+      toast.error('Erro ao salvar')
     } finally {
       setSaving(false)
     }
@@ -214,6 +217,8 @@ interface S3BackupEntry {
 
 export default function Backups() {
   const { t } = useTranslation()
+  const toast = useToast()
+  const confirm = useConfirm()
   const [backups, setBackups] = useState<BackupEntry[]>([])
   const [s3Backups, setS3Backups] = useState<S3BackupEntry[]>([])
   const [s3Error, setS3Error] = useState<string | null>(null)
@@ -303,7 +308,13 @@ export default function Backups() {
   }
 
   const handleDelete = async (filename: string) => {
-    if (!confirm(`Delete ${filename}?`)) return
+    const ok = await confirm({
+      title: 'Deletar backup',
+      description: `Deletar "${filename}"? Esta ação não pode ser desfeita.`,
+      confirmText: 'Deletar',
+      variant: 'danger',
+    })
+    if (!ok) return
     try {
       await api.delete(`/backups/${filename}`)
       fetchData()
@@ -317,7 +328,7 @@ export default function Backups() {
     if (!file) return
     e.target.value = '' // Reset input
     if (!file.name.endsWith('.zip')) {
-      alert('Apenas arquivos .zip são aceitos')
+      toast.warning('Apenas arquivos .zip são aceitos')
       return
     }
     setUploading(true)
@@ -332,12 +343,12 @@ export default function Backups() {
       })
       if (!res.ok) {
         const data = await res.json().catch(() => ({}))
-        alert(data.error || 'Erro ao importar backup')
+        toast.error('Erro ao importar backup', data.error)
         return
       }
       fetchData()
     } catch {
-      alert('Erro ao importar backup')
+      toast.error('Erro ao importar backup')
     } finally {
       setUploading(false)
     }

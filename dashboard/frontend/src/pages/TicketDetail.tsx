@@ -1,4 +1,6 @@
 import { useEffect, useState, useCallback } from 'react'
+import { useToast } from '../components/Toast'
+import { useConfirm } from '../components/ConfirmDialog'
 import { useParams, useNavigate } from 'react-router-dom'
 import {
   Ticket, ArrowLeft, Lock, Unlock, MessageSquare, Activity,
@@ -111,6 +113,8 @@ function actionLabel(action: string, payload: Record<string, any>): string {
 export default function TicketDetail() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
+  const toast = useToast()
+  const confirm = useConfirm()
   const [ticket, setTicket] = useState<TicketItem | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -194,7 +198,7 @@ export default function TicketDetail() {
       setCommentBody('')
       fetchTicket()
     } catch (err: any) {
-      alert(err?.message ||'Failed to add comment')
+      toast.error('Falha ao adicionar comentário', err?.message)
     } finally {
       setSubmitting(false)
     }
@@ -207,7 +211,7 @@ export default function TicketDetail() {
       setEditStatus(false)
       fetchTicket()
     } catch (err: any) {
-      alert(err?.message ||'Failed to update status')
+      toast.error('Falha ao atualizar status', err?.message)
     }
   }
 
@@ -218,18 +222,24 @@ export default function TicketDetail() {
       setEditPriority(false)
       fetchTicket()
     } catch (err: any) {
-      alert(err?.message ||'Failed to update priority')
+      toast.error('Falha ao atualizar prioridade', err?.message)
     }
   }
 
   const handleDelete = async () => {
     if (!id || !ticket) return
-    if (!confirm(`Delete "${ticket.title}"? This cannot be undone.`)) return
+    const ok = await confirm({
+      title: 'Deletar ticket',
+      description: `Deletar "${ticket.title}"? Esta ação não pode ser desfeita.`,
+      confirmText: 'Deletar',
+      variant: 'danger',
+    })
+    if (!ok) return
     try {
       await api.delete(`/tickets/${id}`)
       navigate('/topics')
     } catch (err: any) {
-      alert(err?.message || 'Failed to delete ticket')
+      toast.error('Falha ao deletar ticket', err?.message)
     }
   }
 
@@ -243,7 +253,7 @@ export default function TicketDetail() {
       await api.patch(`/tickets/${id}`, { title: newTitle })
       fetchTicket()
     } catch (err: any) {
-      alert(err?.message || 'Failed to update title')
+      toast.error('Falha ao atualizar título', err?.message)
     }
   }
 
@@ -316,12 +326,17 @@ export default function TicketDetail() {
 
   const handleArchiveThread = async () => {
     if (!id || !ticket) return
-    if (!confirm(`Archive thread "${ticket.title}"? It will be read-only. You can unarchive later.`)) return
+    const ok = await confirm({
+      title: 'Arquivar thread',
+      description: `Arquivar "${ticket.title}"? A thread ficará somente leitura. Você pode reativar depois.`,
+      confirmText: 'Arquivar',
+    })
+    if (!ok) return
     try {
       await api.post(`/tickets/${id}/archive-thread`, {})
       navigate('/topics')
     } catch (err: any) {
-      alert(err?.message || 'Failed to archive thread')
+      toast.error('Falha ao arquivar thread', err?.message)
     }
   }
 
@@ -455,7 +470,7 @@ export default function TicketDetail() {
                         await api.post(`/tickets/${ticket.id}/unarchive-thread`, {})
                         setTicket(t => t ? { ...t, status: 'open' } : t)
                       } catch (err: any) {
-                        alert(err?.message || 'Falha ao reativar thread')
+                        toast.error('Falha ao reativar thread', err?.message)
                       }
                     }}
                     className="text-xs text-[#00FFA7] hover:underline shrink-0"

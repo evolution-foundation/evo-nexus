@@ -1,4 +1,6 @@
 import { useEffect, useState, useCallback } from 'react'
+import { useToast } from '../components/Toast'
+import { useConfirm } from '../components/ConfirmDialog'
 import { api } from '../lib/api'
 import { Shield, Plus, Pencil, Trash2, X, Check, Lock, Users, Code2, FolderOpen } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
@@ -36,6 +38,8 @@ const DEFAULT_WORKSPACE_FOLDERS: WorkspaceFolders = { mode: 'all' }
 
 export default function Roles() {
   const { t } = useTranslation()
+  const toast = useToast()
+  const confirm = useConfirm()
   const [roles, setRoles] = useState<RoleData[]>([])
   const [resources, setResources] = useState<Resources>({})
   const [agentLayers, setAgentLayers] = useState<AgentLayers>({})
@@ -158,12 +162,18 @@ export default function Roles() {
   }
 
   const handleDelete = async (role: RoleData) => {
-    if (!confirm(`Delete role "${role.name}"? Users with this role will lose access.`)) return
+    const ok = await confirm({
+      title: 'Deletar role',
+      description: `Deletar "${role.name}"? Usuários com esta role perderão o acesso.`,
+      confirmText: 'Deletar',
+      variant: 'danger',
+    })
+    if (!ok) return
     try {
       await api.delete(`/roles/${role.id}`)
       fetchData()
     } catch (ex: unknown) {
-      alert(ex instanceof Error ? ex.message : 'Failed to delete')
+      toast.error('Falha ao deletar', ex instanceof Error ? ex.message : undefined)
     }
   }
 

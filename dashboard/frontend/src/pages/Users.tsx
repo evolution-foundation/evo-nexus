@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback } from 'react'
+import { useConfirm } from '../components/ConfirmDialog'
 import { api } from '../lib/api'
 import { Users as UsersIcon, Plus, Pencil, Trash2, X } from 'lucide-react'
 
@@ -58,6 +59,7 @@ function timeAgo(dateStr: string | null): string {
 }
 
 export default function UsersPage() {
+  const confirm = useConfirm()
   const [users, setUsers] = useState<User[]>([])
   const [loading, setLoading] = useState(true)
   const [modalOpen, setModalOpen] = useState(false)
@@ -135,7 +137,13 @@ export default function UsersPage() {
   }
 
   const handleDeactivate = async (u: User) => {
-    if (!confirm(`Deactivate user "${u.username}"?`)) return
+    const ok = await confirm({
+      title: 'Desativar usuário',
+      description: `Desativar "${u.username}"?`,
+      confirmText: 'Desativar',
+      variant: 'danger',
+    })
+    if (!ok) return
     try {
       await api.delete(`/users/${u.id}`)
       fetchUsers()

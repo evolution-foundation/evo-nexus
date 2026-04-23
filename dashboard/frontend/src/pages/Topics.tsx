@@ -1,4 +1,6 @@
 import { useEffect, useState, useCallback } from 'react'
+import { useToast } from '../components/Toast'
+import { useConfirm } from '../components/ConfirmDialog'
 import { useNavigate } from 'react-router-dom'
 import {
   Ticket, Plus, RefreshCw, Filter, Search, Download, CheckSquare, Square,
@@ -7,6 +9,7 @@ import {
 } from 'lucide-react'
 import { api } from '../lib/api'
 import { useTranslation } from 'react-i18next'
+import { AgentIcon } from '../components/AgentIcon'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -132,7 +135,9 @@ function TicketRow({ ticket, selected, onSelect, onClick }: TicketRowProps) {
       <div className="min-w-0">
         <div className="flex items-center gap-2">
           {ticket.is_thread && (
-            <MessageSquare size={12} className="text-[#00FFA7] shrink-0" aria-label="Thread" />
+            ticket.assignee_agent
+              ? <AgentIcon agent={ticket.assignee_agent} size={18} />
+              : <MessageSquare size={12} className="text-[#00FFA7] shrink-0" aria-label="Thread" />
           )}
           <span className="text-sm font-medium text-[#e6edf3] truncate">{ticket.title}</span>
           {ticket.locked_at && (
@@ -323,6 +328,8 @@ function CreateModal({ onClose, onCreated }: CreateModalProps) {
 export default function Topics() {
   const { t } = useTranslation()
   const navigate = useNavigate()
+  const toast = useToast()
+  const confirm = useConfirm()
   const [tickets, setTickets] = useState<TicketItem[]>([])
   const [total, setTotal] = useState(0)
   const [counts, setCounts] = useState<{ threads: number; issues: number } | null>(null)
@@ -419,19 +426,25 @@ export default function Topics() {
       setSelected(new Set())
       fetchTickets()
     } catch (err: any) {
-      alert(err?.message ||'Bulk close failed')
+      toast.error('Falha ao fechar tickets', err?.message)
     }
   }
 
   const handleBulkDelete = async () => {
     if (!selected.size) return
-    if (!confirm(`Delete ${selected.size} ticket(s)? This cannot be undone.`)) return
+    const ok = await confirm({
+      title: 'Deletar tickets',
+      description: `Deletar ${selected.size} ticket(s)? Esta ação não pode ser desfeita.`,
+      confirmText: 'Deletar',
+      variant: 'danger',
+    })
+    if (!ok) return
     try {
       await api.post('/tickets/bulk', { ids: Array.from(selected), action: 'delete' })
       setSelected(new Set())
       fetchTickets()
     } catch (err: any) {
-      alert(err?.message ||'Bulk delete failed')
+      toast.error('Falha ao deletar tickets', err?.message)
     }
   }
 
