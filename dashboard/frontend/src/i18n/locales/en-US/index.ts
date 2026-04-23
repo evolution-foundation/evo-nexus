@@ -185,6 +185,7 @@ const translations = {
       tasks: 'Tasks',
       triggers: 'Triggers',
       routines: 'Routines',
+      activity: 'Activity',
       scheduler: 'Services',
       integrations: 'Integrations',
       providers: 'Providers',

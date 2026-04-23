@@ -180,6 +180,7 @@ const translations = {
       tasks: 'Tarefas',
       triggers: 'Gatilhos',
       routines: 'Rotinas',
+      activity: 'Atividade',
       scheduler: 'Serviços',
       integrations: 'Integrações',
       providers: 'Provedores',
