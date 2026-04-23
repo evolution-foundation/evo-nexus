@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.3] - 2026-04-23
+
+Patch release: fix the infinite page scroll in thread mode so the embedded chat behaves exactly like the agent chat (fixed input at the bottom, messages scroll inside the container), and harden `.gitignore` against nested `.claude/` folders that agents were accidentally creating from subdirectory cwds.
+
+### Fixed
+
+- **Thread mode — infinite page scroll** — `TicketDetail` in thread mode used `h-full` but the parent `<main>` in `App.tsx` only applied `h-screen overflow-hidden` for `/agents/:id` and `/workspace/*` routes. Any route falling into the default branch used `overflow-auto` without a fixed height, so the embedded `AgentChat` grew with its message list and pushed the input field off-screen. Fix: add `isTicketDetail` matcher to `App.tsx` so `/tickets/:id` joins the fixed-viewport branch; in `TicketDetail.tsx` the non-thread (document) view gains its own `h-full overflow-auto` wrapper with the original padding to preserve its vertical-document layout. Thread mode now mirrors the agent chat exactly.
+
+### Changed
+
+- **`.gitignore` hardening — nested `.claude/` in subdirectories** — agents running from `dashboard/frontend/` (e.g., `cd dashboard/frontend && npm run build`) were creating `dashboard/frontend/.claude/agent-memory/` relative to cwd instead of writing to the canonical `.claude/` at the repo root. Content was already ignored by the existing `.claude/agent-memory/` rule, but the `.claude/` folder itself showed up untracked in editors. Added `**/.claude/agent-memory/` and `dashboard/*/.claude/` patterns to block this at any depth.
+
 ## [0.29.2] - 2026-04-23
 
 Patch release: in-app toasts and confirm dialogs replacing 47 native `alert()`/`confirm()` calls, agent avatars in the Topics list, plus fixes for PR #30 (provider routing + docker) and the archive endpoint.
