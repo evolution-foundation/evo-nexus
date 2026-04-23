@@ -64,10 +64,3 @@ Create the `workspace/daily-logs/` directory if it does not exist.
 ## Tone
 
 Keep the morning briefing conversational and brief. The user is starting their day — they don't need a wall of text. Punchy bullets, one clear recommendation, then move into action.
-
-### Notify via Telegram
-
-Upon completion, send a short summary via Telegram to the user:
-- Use the Telegram MCP: `reply(chat_id="YOUR_CHAT_ID", text="...")`
-- Format: emoji + routine name + main result (1-3 lines)
-- If the routine had no updates, send anyway with "no updates"
