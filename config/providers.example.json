@@ -22,6 +22,20 @@
       "default_model": "anthropic/claude-sonnet-4",
       "requires_logout": true
     },
+    "omnirouter": {
+      "name": "OMNIROUTER",
+      "description": "OpenAI-compatible custom provider (URL, API Key e Model).",
+      "cli_command": "openclaude",
+      "env_vars": {
+        "CLAUDE_CODE_USE_OPENAI": "1",
+        "OPENAI_BASE_URL": "",
+        "OPENAI_API_KEY": "",
+        "OPENAI_MODEL": ""
+      },
+      "default_base_url": "",
+      "default_model": "",
+      "requires_logout": true
+    },
     "openai": {
       "name": "OpenAI (API Key)",
       "description": "GPT-4.x / GPT-5.x via API Key da OpenAI",

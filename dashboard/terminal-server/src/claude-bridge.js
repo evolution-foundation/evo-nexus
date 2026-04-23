@@ -1,6 +1,11 @@
 const { spawn } = require('node-pty');
 const path = require('path');
 const fs = require('fs');
+const {
+  loadProviderConfig,
+  resolveProviderModel,
+  getProviderMode,
+} = require('./provider-config');
 
 class ClaudeBridge {
   constructor() {
@@ -13,78 +18,7 @@ class ClaudeBridge {
    * Only allowlisted CLI commands and env var names are accepted.
    */
   _loadProviderConfig() {
-    const ALLOWED_CLI = new Set(['claude', 'openclaude']);
-    const ALLOWED_VARS = new Set([
-      'ANTHROPIC_API_KEY',
-      'CLAUDE_CODE_USE_OPENAI', 'CLAUDE_CODE_USE_GEMINI',
-      'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX',
-      'OPENAI_BASE_URL', 'OPENAI_API_KEY', 'OPENAI_MODEL',
-      // Codex OAuth support (OpenClaude 0.3+ reads ~/.codex/auth.json
-      // automatically, but these allow overriding the path or token)
-      'CODEX_AUTH_JSON_PATH', 'CODEX_API_KEY',
-      'GEMINI_API_KEY', 'GEMINI_MODEL',
-      'AWS_REGION', 'AWS_BEARER_TOKEN_BEDROCK',
-      'ANTHROPIC_VERTEX_PROJECT_ID', 'CLOUD_ML_REGION',
-    ]);
-
-    try {
-      // Resolve config relative to this file (src/ → terminal-server/ → dashboard/ → root)
-      const workspaceRoot = path.resolve(__dirname, '..', '..', '..');
-      const configPath = path.join(workspaceRoot, 'config', 'providers.json');
-      if (!fs.existsSync(configPath)) {
-        console.log(`[provider] providers.json not found at ${configPath}, using defaults`);
-        return { cli_command: 'claude', env_vars: {}, active: 'anthropic' };      }
-      const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-      const active = config.active_provider || 'anthropic';
-      const provider = config.providers?.[active] || {};
-
-      let cliCommand = provider.cli_command || 'claude';
-      if (!ALLOWED_CLI.has(cliCommand)) {
-        console.warn(`[provider] Rejected non-allowlisted CLI: ${cliCommand}, using claude`);
-        cliCommand = 'claude';
-      }
-
-      const envVars = Object.fromEntries(
-        Object.entries(provider.env_vars || {}).filter(
-          ([k, v]) => v !== '' && ALLOWED_VARS.has(k)
-        )
-      );
-
-      // Provider isolation — the active_provider in providers.json is the
-      // user's explicit choice between API-key mode ('openai') and OAuth
-      // mode ('codex_auth'). Respect it literally:
-      //
-      //   active === 'codex_auth' → OAuth mode: remove any stale
-      //       OPENAI_API_KEY from the provider env so OpenClaude falls
-      //       back to ~/.codex/auth.json (the OAuth token source).
-      //
-      //   active === 'openai'    → API-key mode: keep OPENAI_API_KEY.
-      //       Even if ~/.codex/auth.json happens to exist on disk (from
-      //       a past OAuth login), the user has chosen API-key mode now.
-      //       Previously this branch also deleted the key, which caused
-      //       the two cards to bleed into each other on toggle.
-      //
-      //   anything else          → untouched.
-      if (active === 'codex_auth') {
-        if ('OPENAI_API_KEY' in envVars) {
-          delete envVars['OPENAI_API_KEY'];
-          console.log('[provider] codex_auth active — stripping OPENAI_API_KEY, OpenClaude will use ~/.codex/auth.json');
-        }
-        const codexAuthPath = path.join(process.env.HOME || '/', '.codex', 'auth.json');
-        if (!fs.existsSync(codexAuthPath)) {
-          console.warn('[provider] codex_auth active but ~/.codex/auth.json is missing — run OAuth login in the Providers page');
-        }
-      }
-
-      console.log(`[provider] Active provider: ${active} (cli: ${cliCommand})`);
-      if (Object.keys(envVars).length > 0) {
-        console.log(`[provider] Injecting env vars: ${Object.keys(envVars).join(', ')}`);
-      }
-      return { cli_command: cliCommand, env_vars: envVars, active };
-    } catch (err) {
-      console.warn(`[provider] Could not read providers.json: ${err.message}`);
-      return { cli_command: 'claude', env_vars: {}, active: 'anthropic' };
-    }
+    return loadProviderConfig();
   }
 
   findClaudeCommand(cliCommand = 'claude') {
@@ -172,6 +106,8 @@ class ClaudeBridge {
       // Reload provider config fresh on every session start
       // so switching provider in the dashboard takes effect immediately
       const providerConfig = this._loadProviderConfig();
+      const providerMode = getProviderMode(providerConfig);
+      const providerModel = resolveProviderModel(providerConfig);
 
       // Block session if no provider is active
       if (!providerConfig.active || providerConfig.active === 'none') {
@@ -179,6 +115,11 @@ class ClaudeBridge {
         if (onOutput) onOutput(msg);
         if (onExit) onExit(1, null);
         return;
+      }
+      if (providerConfig.active !== 'anthropic' && providerMode !== 'code') {
+        throw new Error(
+          `Provider "${providerConfig.active}" com modelo "${providerModel || 'não definido'}" está em modo Chat Completion/Memory Output. Use o Chat para esse modelo. O Terminal aceita apenas modelos Code.`
+        );
       }
 
       const cliCommand = this.findClaudeCommand(providerConfig.cli_command);

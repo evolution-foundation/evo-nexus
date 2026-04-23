@@ -6,6 +6,10 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const {
+  loadProviderConfig,
+  resolveProviderModel,
+} = require('./provider-config');
 let sdkModule = null;
 
 // Workspace root is three levels up from this file (dashboard/terminal-server/src/).
@@ -182,9 +186,158 @@ class ChatBridge {
     this.sessions = new Map(); // sessionId -> { query, abortController, active, sdkSessionId }
   }
 
-  async startSession(sessionId, options = {}) {
-    const { query: sdkQuery } = await loadSDK();
+  _buildChatCompletionSystemPrompt(agentName, cwd, sessionId) {
+    const lines = [
+      'You are running inside EvoNexus dashboard chat.',
+      `Current chat session id: ${sessionId}`,
+    ];
+    if (agentName) lines.push(`Current agent slug: ${agentName}`);
+    if (agentName) {
+      const agentDef = loadAgentFile(agentName, cwd);
+      if (agentDef?.prompt) {
+        lines.push('');
+        lines.push('Follow this agent persona strictly:');
+        lines.push(agentDef.prompt);
+      }
+    }
+    lines.push('');
+    lines.push('If this model does not support tool calling, answer directly with best effort.');
+    return lines.join('\n');
+  }
 
+  _extractChatDeltaText(delta) {
+    if (!delta) return '';
+    if (typeof delta.content === 'string') return delta.content;
+    if (Array.isArray(delta.content)) {
+      return delta.content
+        .map((part) => (part?.type === 'text' ? part.text || '' : ''))
+        .join('');
+    }
+    if (typeof delta.reasoning === 'string') return delta.reasoning;
+    return '';
+  }
+
+  async _startOpenAICompatibleSession(sessionId, options, providerConfig) {
+    const {
+      agentName,
+      workingDir,
+      prompt,
+      files,
+      onMessage,
+      onError,
+      onComplete,
+    } = options;
+
+    if (this.sessions.has(sessionId)) {
+      await this.stopSession(sessionId);
+    }
+
+    const abortController = new AbortController();
+    const cwd = workingDir || process.cwd();
+    const env = providerConfig.env_vars || {};
+    const model = resolveProviderModel(providerConfig);
+    const baseUrl = (env.OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/+$/, '');
+    const apiKey = env.OPENAI_API_KEY || env.CODEX_API_KEY || '';
+
+    if (!model) {
+      throw new Error(`Provider "${providerConfig.active}" sem modelo configurado. Defina o campo Model em Providers.`);
+    }
+    if (!apiKey) {
+      throw new Error(`Provider "${providerConfig.active}" sem API key configurada para Chat Completion.`);
+    }
+
+    const runtimePrompt = this._buildChatCompletionSystemPrompt(agentName, cwd, sessionId);
+
+    let finalPrompt = prompt || '';
+    if (files && files.length > 0) {
+      const names = files.map((f) => `- ${f.name}`).join('\n');
+      finalPrompt += `\n\n[Attached files]\n${names}\n`;
+    }
+
+    const session = { active: true, abortController, sdkSessionId: null };
+    this.sessions.set(sessionId, session);
+
+    (async () => {
+      try {
+        const resp = await fetch(`${baseUrl}/chat/completions`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            model,
+            stream: true,
+            messages: [
+              { role: 'system', content: runtimePrompt },
+              { role: 'user', content: finalPrompt },
+            ],
+          }),
+          signal: abortController.signal,
+        });
+
+        if (!resp.ok || !resp.body) {
+          const body = await resp.text().catch(() => '');
+          throw new Error(`Chat Completion falhou (${resp.status}): ${body.slice(0, 240)}`);
+        }
+
+        if (onMessage) {
+          onMessage({ type: 'message_start' });
+          onMessage({ type: 'text_start' });
+        }
+
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (session.active) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+
+          for (const raw of lines) {
+            const line = raw.trim();
+            if (!line.startsWith('data:')) continue;
+            const payload = line.slice(5).trim();
+            if (!payload || payload === '[DONE]') continue;
+            let parsed;
+            try {
+              parsed = JSON.parse(payload);
+            } catch {
+              continue;
+            }
+            const delta = parsed?.choices?.[0]?.delta || {};
+            const text = this._extractChatDeltaText(delta);
+            if (text && onMessage) {
+              onMessage({ type: 'text_delta', text });
+            }
+          }
+        }
+
+        if (onMessage) {
+          onMessage({ type: 'message_stop' });
+          onMessage({ type: 'result', subtype: 'success', isError: false });
+        }
+        session.active = false;
+        this.sessions.delete(sessionId);
+        if (onComplete) onComplete({ sdkSessionId: null });
+      } catch (err) {
+        session.active = false;
+        this.sessions.delete(sessionId);
+        if (err.name === 'AbortError') {
+          if (onComplete) onComplete({ sdkSessionId: null });
+        } else if (onError) {
+          onError(err);
+        }
+      }
+    })();
+
+    return { sessionId, sdkSessionId: null };
+  }
+
+  async startSession(sessionId, options = {}) {
     const {
       agentName,
       workingDir,
@@ -196,6 +349,13 @@ class ChatBridge {
       onError,
       onComplete,
     } = options;
+
+    const providerConfig = loadProviderConfig();
+    if (providerConfig.active !== 'anthropic') {
+      return this._startOpenAICompatibleSession(sessionId, options, providerConfig);
+    }
+
+    const { query: sdkQuery } = await loadSDK();
 
     if (this.sessions.has(sessionId)) {
       await this.stopSession(sessionId);
