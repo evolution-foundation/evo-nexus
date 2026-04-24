@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.30.3] - 2026-04-24
+
+Patch release completing the Docker Hub migration: official images now ship as **multi-arch manifests** (`linux/amd64` + `linux/arm64`) so ARM hosts (Apple Silicon, AWS Graviton, Oracle Cloud ARM, Raspberry Pi, many modern VPS) can pull without platform overrides.
+
+### Added
+
+- **Multi-arch Docker images** — `.github/workflows/docker-publish.yml` now runs `docker/setup-qemu-action@v3` and passes `platforms: linux/amd64,linux/arm64` to `build-push-action`. Every published tag (`latest`, `vX.Y.Z`, `X.Y`, `X.Y.Z`, `main`, `sha-*`) ships a manifest list covering both architectures. The `node-pty` native addon compiles from source via node-gyp inside the arm64 builder, so there's no prebuilt-binary-per-arch concern.
+
+### Removed
+
+- **`evonexus.portainer.stack.yml`** — deleted the personal Portainer template from the repo root. It was a pre-configured stack for a specific host (`advancedbot.com.br`, `network_public` network) pointing at a fork's Docker Hub namespace (`marcelolealhub/*`), which could mislead new users into pulling from the wrong registry. The canonical template remains at [`evonexus.stack.yml`](https://github.com/EvolutionAPI/evo-nexus/blob/main/evonexus.stack.yml), which already supports Portainer/Traefik deployments and points at the official `evoapicloud/evo-nexus-*` images.
+
 ## [0.30.2] - 2026-04-23
 
 Patch release focused on CI/distribution: Docker images now ship from the official `evoapicloud` namespace on Docker Hub (public, no auth required on Swarm managers), and the legacy dashboard-only workflow was removed to unblock the build pipeline.
