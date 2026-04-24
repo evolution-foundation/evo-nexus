@@ -82,6 +82,7 @@ config/workspace.yaml
 config/routines.yaml
 config/triggers.yaml
 config/heartbeats.yaml
+config/smart-router.json
 
 # ── Claude Code session data ─────────────
 .claude/projects/

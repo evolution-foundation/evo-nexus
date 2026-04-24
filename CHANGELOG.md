@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.30.2] - 2026-04-23
+
+Patch release focused on CI/distribution: Docker images now ship from the official `evoapicloud` namespace on Docker Hub (public, no auth required on Swarm managers), and the legacy dashboard-only workflow was removed to unblock the build pipeline.
+
+### Changed
+
+- **Docker images published to Docker Hub under `evoapicloud/`** — the Swarm workflow (`.github/workflows/docker-publish.yml`) now pushes `evo-nexus-runtime` and `evo-nexus-dashboard` to `docker.io/evoapicloud/*` instead of `ghcr.io`. Requires `DOCKERHUB_USERNAME` + `DOCKERHUB_TOKEN` secrets on the repo. The `evonexus.stack.yml` template and `README.swarm.md` were updated to reference the public images — no `OWNER` placeholder to fill in, no `docker login` needed on Swarm managers.
+
+### Removed
+
+- **Redundant `dashboard.yml` workflow** — deleted `.github/workflows/dashboard.yml`, which built a Python+React-only dashboard image (`Dockerfile.dashboard`) that nothing consumes. The Swarm workflow already produces a strict superset (with terminal-server and both CLIs). This also fixes the build failure on `main` caused by a TypeScript peer-dep conflict in the legacy Dockerfile.
+
 ## [0.30.1] - 2026-04-23
 
 Patch release focused on thread UX polish: session now swaps cleanly when switching threads via the sidebar, the agent is briefed explicitly about running inside a persistent thread (not a fresh one-shot session), the assignee dropdown stops hiding agents, and fresh installs no longer inherit Evolution-specific goal seed data.
