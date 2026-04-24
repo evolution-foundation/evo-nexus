@@ -93,10 +93,3 @@ Report saved to workspace/community/reports/daily/
 - **Compare with average** — if previous reports exist in the directory, compare metrics
 - **Empty channels = OK** — if a channel had no activity, do not report as a problem
 
-
-### Notify via Telegram
-
-Upon completion, send a short summary via Telegram to the user:
-- Use the Telegram MCP: `reply(chat_id="YOUR_CHAT_ID", text="...")`
-- Format: emoji + routine name + main result (1-3 lines)
-- If the routine had no updates, send anyway with "no updates"

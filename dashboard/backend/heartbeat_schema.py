@@ -34,6 +34,13 @@ class HeartbeatConfig(BaseModel):
     @field_validator("agent")
     @classmethod
     def agent_must_exist(cls, v: str) -> str:
+        # Sentinel values for heartbeats that run infrastructure scripts
+        # directly (not a Claude session). These don't have a .md file in
+        # .claude/agents/ — they dispatch to a Python worker instead.
+        # Keep this list explicit so typos still raise.
+        SYSTEM_SENTINELS = {"system"}
+        if v in SYSTEM_SENTINELS:
+            return v
         agents_dir = WORKSPACE / ".claude" / "agents"
         agent_file = agents_dir / f"{v}.md"
         if not agent_file.exists():
@@ -90,7 +97,7 @@ def load_heartbeats_yaml(path: Path | None = None) -> HeartbeatsFile:
         else:
             return HeartbeatsFile(heartbeats=[])
 
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         raw = yaml.safe_load(f) or {}
 
     return HeartbeatsFile.model_validate(raw)
@@ -112,7 +119,7 @@ def save_heartbeats_yaml(data: HeartbeatsFile, path: Path | None = None) -> None
     }
 
     tmp_path = path.with_suffix(".yaml.tmp")
-    with open(tmp_path, "w") as f:
+    with open(tmp_path, "w", encoding="utf-8") as f:
         yaml.dump(raw, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
 
     os.rename(tmp_path, path)

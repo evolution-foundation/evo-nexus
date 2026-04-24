@@ -22,7 +22,7 @@ If any of these files don't exist yet (the user might be very new), that's fine 
 Before building the recap, gather live data silently (don't narrate each step):
 
 1. **Agenda do dia** — use `/gog-calendar` to list today's events. Note meetings, times, people, and free blocks.
-2. **Emails importantes** — use `/gog-email-triage` to check unread emails. Filter only those needing action or attention.
+2. **Emails importantes** — use the Gmail MCP directly (`list_emails` then `get_email` for each relevant one) to check unread emails needing action or attention. Do NOT invoke `/gog-email-triage` as a sub-skill — it sends its own Telegram notification and would cause a duplicate.
 3. **Tarefas de hoje** — run `todoist today` to list today's and overdue tasks from Todoist.
 
 ## Step 3 — Brief recap
@@ -64,10 +64,3 @@ Create the `workspace/daily-logs/` directory if it does not exist.
 ## Tone
 
 Keep the morning briefing conversational and brief. The user is starting their day — they don't need a wall of text. Punchy bullets, one clear recommendation, then move into action.
-
-### Notify via Telegram
-
-Upon completion, send a short summary via Telegram to the user:
-- Use the Telegram MCP: `reply(chat_id="YOUR_CHAT_ID", text="...")`
-- Format: emoji + routine name + main result (1-3 lines)
-- If the routine had no updates, send anyway with "no updates"

@@ -75,10 +75,12 @@ long-running service. External REST APIs do not.
   resolver called `letsencryptresolver` (rename in the stack labels if
   your resolver has a different name).
 - A DNS A record pointing `evonexus.<yourdomain>` to the Swarm ingress.
-- Docker images published to a registry (the included GitHub Actions
-  workflow publishes to `ghcr.io/<owner>/evo-nexus-{dashboard,runtime}`).
-- Either make the ghcr.io packages public, or run `docker login ghcr.io`
-  on every Swarm manager before deploying.
+- Docker images are pulled from Docker Hub at
+  `evoapicloud/evo-nexus-{dashboard,runtime}` (published by the included
+  GitHub Actions workflow on every version tag and push to `main`).
+- The images are public, so no `docker login` is needed on the Swarm
+  managers. If you fork the project and publish to your own namespace,
+  update the `image:` lines in `evonexus.stack.yml`.
 
 ### Steps
 
@@ -90,9 +92,10 @@ long-running service. External REST APIs do not.
 2. **Open Portainer → Stacks → Add stack.**
    - Name: `evonexus`
    - Paste the contents of `evonexus.stack.yml`
-   - Replace the three placeholders: `OWNER` (your ghcr.io namespace),
-     `evonexus.example.com` (your hostname, two places), and
-     `traefik-public` (your Traefik overlay network name, several places)
+   - Replace the placeholders: `evonexus.example.com` (your hostname,
+     two places) and `traefik-public` (your Traefik overlay network
+     name, several places). The images already point at the official
+     `evoapicloud/evo-nexus-*` namespace on Docker Hub.
    - Click **Deploy**
 
 3. **Watch the containers come up.** `evonexus_dashboard` serves the SPA

@@ -110,7 +110,7 @@ def _load_yaml_routines(entries: list):
         return
 
     try:
-        with open(config_path) as f:
+        with open(config_path, encoding="utf-8") as f:
             config = yaml.safe_load(f)
         if not config:
             return

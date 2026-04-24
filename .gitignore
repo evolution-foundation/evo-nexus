@@ -23,6 +23,11 @@ workspace/projects/*/
 
 # ── Agent memory (runtime, personal) ──────
 .claude/agent-memory/
+# Catch nested .claude/ folders that agents may accidentally create when
+# running from subdirectories (e.g. cd dashboard/frontend && claude ...).
+# The canonical .claude/ lives at the repo root; everything nested is noise.
+**/.claude/agent-memory/
+dashboard/*/.claude/
 memory/**
 !memory/.gitkeep
 
@@ -44,11 +49,11 @@ config/providers.json
 # ── Runtime data & logs ───────────────────
 backups/
 ADWs/logs/
-dashboard/data/*.db
-dashboard/data/*.db-shm
-dashboard/data/*.db-wal
-dashboard/data/.secret_key
-dashboard/data/mempalace/
+# Runtime DBs may be created in repo root, dashboard/data/ or dashboard/backend/
+*.db
+*.db-shm
+*.db-wal
+dashboard/data/
 dashboard/backend/*.db
 dashboard/backend/*.db-shm
 dashboard/backend/*.db-wal
@@ -77,6 +82,7 @@ config/workspace.yaml
 config/routines.yaml
 config/triggers.yaml
 config/heartbeats.yaml
+config/smart-router.json
 
 # ── Claude Code session data ─────────────
 .claude/projects/
@@ -108,3 +114,5 @@ site/lib/
 mempalace.yaml
 entities.json
 .claude/worktrees/
+
+memory/raw-transcripts/

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { useConfirm } from './ConfirmDialog'
 import {
   MessageSquare,
   Plus,
@@ -62,6 +63,7 @@ export default function ChatSessionList({
   onArchive,
   onDelete,
 }: ChatSessionListProps) {
+  const confirm = useConfirm()
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editName, setEditName] = useState('')
@@ -136,9 +138,15 @@ export default function ChatSessionList({
     if (onArchive) onArchive(session.id, !session.archived)
   }
 
-  function handleDelete(session: ChatSession) {
+  async function handleDelete(session: ChatSession) {
     setContextMenu(null)
-    if (!window.confirm(`Deletar a conversa "${session.name}"? Esta ação não pode ser desfeita.`)) return
+    const ok = await confirm({
+      title: 'Deletar conversa',
+      description: `Deletar a conversa "${session.name}"? Esta ação não pode ser desfeita.`,
+      confirmText: 'Deletar',
+      variant: 'danger',
+    })
+    if (!ok) return
     if (onDelete) onDelete(session.id)
   }
 

@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from functools import wraps
 from flask import Blueprint, request, jsonify, abort
 from flask_login import login_user, logout_user, login_required, current_user
-from models import db, User, AuditLog, Role, has_permission, audit, needs_setup, get_role_permissions, get_role_agent_access, get_role_workspace_folders, ALL_RESOURCES, AGENT_LAYERS
+from models import db, User, AuditLog, Role, BrainRepoConfig, has_permission, audit, needs_setup, needs_onboarding, get_role_permissions, get_role_agent_access, get_role_workspace_folders, ALL_RESOURCES, AGENT_LAYERS
 
 bp = Blueprint("auth", __name__)
 
@@ -104,7 +104,7 @@ def _save_workspace_config(ws: dict):
             "owner": ws.get("owner_name", ""),
             "company": ws.get("company_name", ""),
             "timezone": ws.get("timezone", "UTC"),
-            "language": ws.get("language", "en"),
+            "language": ws.get("language", "pt-BR"),
         },
         "agents": {a: True for a in ws.get("agents", [])},
         "integrations": {i: True for i in ws.get("integrations", [])},
@@ -112,7 +112,10 @@ def _save_workspace_config(ws: dict):
     }
 
     yaml_path = config_dir / "workspace.yaml"
-    with open(yaml_path, "w") as f:
+    # encoding="utf-8" is required — otherwise on Windows Python defaults to
+    # cp1252 and mangles accented characters in owner/company names
+    # (e.g. "João" becomes "Jo?o" on read).
+    with open(yaml_path, "w", encoding="utf-8") as f:
         yaml.dump(config, f, default_flow_style=False, allow_unicode=True)
 
     # Generate CLAUDE.md inline (no template needed)
@@ -126,7 +129,8 @@ def _save_workspace_config(ws: dict):
             f"**Name:** {ws['owner']}\n"
             f"**Company:** {ws['company']}\n"
             f"**Timezone:** {ws['timezone']}\n\n"
-            f"## Language\n\nAlways respond in **{ws['language']}**.\n"
+            f"## Language\n\nAlways respond in **{ws['language']}**.\n",
+            encoding="utf-8",
         )
 
     # Create workspace folders
@@ -447,6 +451,29 @@ def delete_role(role_id):
     db.session.commit()
     audit(current_user, "role_deleted", f"role:{name}")
     return jsonify({"message": f"Role '{name}' deleted"})
+
+
+# ── Onboarding state ────────────────────────────────
+
+@bp.route("/api/auth/needs-onboarding")
+def check_onboarding():
+    if needs_setup():
+        return jsonify({"needs_onboarding": False, "onboarding_state": None})
+    # For unauthenticated requests (checking before login redirect)
+    from flask_login import current_user
+    if not current_user.is_authenticated:
+        return jsonify({"needs_onboarding": False, "onboarding_state": None})
+    return jsonify({
+        "needs_onboarding": needs_onboarding(current_user),
+        "onboarding_state": current_user.onboarding_state,
+    })
+
+@bp.route("/api/auth/mark-agents-visited", methods=["POST"])
+@login_required
+def mark_agents_visited():
+    current_user.onboarding_completed_agents_visit = True
+    db.session.commit()
+    return jsonify({"ok": True})
 
 
 # ── License Status (admin only) ─────────────

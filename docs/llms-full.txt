@@ -1810,6 +1810,201 @@ This enables Claude to query your knowledge base directly during conversations.
 
 ---
 
+# Knowledge Base (pgvector)
+
+The Knowledge Base page provides **multi-server hybrid search** (vector + BM25) over your documents with OCR, chunking, and async classification. It is powered by **pgvector** on Postgres — Bring Your Own Database (BYO).
+
+> Different from [MemPalace](knowledge-base.md): MemPalace is offline/local for personal notes; Knowledge is multi-tenant, API-first, for teams and external integrations (Evo Academy, client knowledge bases).
+
+## Architecture at a glance
+
+```
+EvoNexus (client-only)
+  ├── SQLite local: knowledge_connections (credentials encrypted at rest)
+  ├── Flask API: /api/knowledge/*  (internal) + /api/knowledge/v1/*  (external, API keys)
+  ├── Worker subprocess: parse → chunk → embed → enqueue classify
+  ├── Classify worker: async LLM classification (content_type, difficulty, topics)
+  └── Skills: knowledge-{query,summarize,ingest,reindex,browse,organize,admin}
+
+Your Postgres (not managed by EvoNexus)
+  ├── pgvector extension
+  ├── Tables: knowledge_{config,spaces,units,documents,chunks,api_keys,api_usage,classify_queue}
+  └── Alembic-managed schema
+```
+
+**EvoNexus does NOT install or run Postgres.** You bring your own (Supabase, Neon, RDS, self-hosted). EvoNexus connects, auto-migrates the schema, and uses it.
+
+## First-time setup
+
+### 1. Encryption key (auto-generated)
+
+Since v0.26.0, `KNOWLEDGE_MASTER_KEY` is generated automatically on first setup (`make setup` wizard) and on Docker first boot (`entrypoint.sh`). You do NOT need to run `make init-key` manually on fresh installs.
+
+**Back up your `.env`** — losing `KNOWLEDGE_MASTER_KEY` loses access to all encrypted credentials.
+
+> Legacy: if you need to regenerate (lost key, rotated secrets), the CLI is still available: `make init-key` / `evonexus init-key`. Idempotent — preserves an existing key.
+
+### 2. Prepare your Postgres
+
+You need:
+
+- **Postgres ≥ 14**
+- **pgvector ≥ 0.5** extension installed (`CREATE EXTENSION vector;`)
+- A **database** already created
+- A user with `CONNECT`, `CREATE`, and ideally `CREATE EXTENSION` permissions
+
+EvoNexus does NOT create databases — you must create the DB first.
+
+### 3. Connect via UI or skill
+
+**UI:** navigate to `/knowledge` → Connections → **+ New Connection** → fill credentials → **Connect & Configure**.
+
+**Skill:**
+
+```
+/knowledge-admin action=connect
+```
+
+The skill walks you through the wizard interactively.
+
+### 4. Create a space
+
+Spaces are logical groupings inside a connection (e.g., "academy", "support-kb", "sales-playbook"). Create via UI or:
+
+```
+/knowledge-organize action=create space_id=<space_id> slug=<slug> title="..."
+```
+
+## Concepts
+
+| Concept | Description |
+|---|---|
+| **Connection** | One Postgres + pgvector server. You can have many. |
+| **Space** | Logical grouping inside a connection (ex: "academy", "community"). |
+| **Unit** | Learning unit / module grouping documents (ex: "Module 3 — WhatsApp"). |
+| **Document** | Uploaded file (PDF, DOCX, etc.) — gets parsed, chunked, embedded. |
+| **Chunk** | Content piece (~500 tokens) with embedding, used for search. |
+
+## Parser
+
+**Marker** (MIT, ~500MB model bundle) is the default parser. Supports PDF, DOCX, PPTX, XLSX, HTML, EPUB, images (with OCR).
+
+First use: click **Install Parser Models** in UI or run:
+
+```
+/knowledge-admin action=install-parser
+```
+
+Download takes a few minutes. Idempotent — re-running is a no-op.
+
+**LlamaParse** (optional, cloud API) available if you set `LLAMAPARSE_API_KEY`.
+
+## Embedder
+
+- **local** (default, 768 dim): `sentence-transformers/paraphrase-multilingual-mpnet-base-v2`. Free, offline, pt-BR native.
+- **openai** (opt-in, 1536 dim): `text-embedding-3-small`. Costs ~$0.02 / 1M tokens. Requires `OPENAI_API_KEY`.
+- **gemini** (opt-in, 768 / 1536 / 3072 dim via MRL): `gemini-embedding-001` (stable, text-only, task-type aware) or `gemini-embedding-2-preview` (multimodal, 8192-token input). Requires `GEMINI_API_KEY` (free tier on [aistudio.google.com/apikey](https://aistudio.google.com/apikey)). Default dim is 768 to align storage cost with `local`.
+
+**Embedder is GLOBAL per EvoNexus instance.** Changing it after you have data requires removing all connections and recreating them (reindex skill planned for v0.25.1).
+
+## Search: hybrid + metadata boost
+
+Query combines **3 signals** via Reciprocal Rank Fusion (RRF):
+
+1. **Vector similarity** (HNSW cosine)
+2. **BM25** (Postgres `tsvector` em português)
+3. **Content-type boost** (configurable per space):
+
+| content_type | default boost |
+|---|---|
+| faq | 1.20 |
+| reference | 1.15 |
+| lesson | 1.10 |
+| tutorial | 1.05 |
+| article | 1.00 |
+| decision | 1.00 |
+| note | 0.90 |
+| transcript | 0.80 |
+
+Override boosts per space via `content_type_boosts` JSONB column.
+
+## Skills
+
+| Skill | Group | Purpose |
+|---|---|---|
+| [knowledge-query](../../.claude/skills/knowledge-query/SKILL.md) | Consumo | Hybrid search + optional RAG answer |
+| [knowledge-summarize](../../.claude/skills/knowledge-summarize/SKILL.md) | Consumo | TL;DR of document or unit |
+| [knowledge-ingest](../../.claude/skills/knowledge-ingest/SKILL.md) | Ingestão | Upload file or URL |
+| knowledge-reindex | Ingestão | Re-parse/re-embed (single or bulk) — deferred to v0.25.1 |
+| [knowledge-browse](../../.claude/skills/knowledge-browse/SKILL.md) | Curadoria | List/filter docs + units |
+| [knowledge-organize](../../.claude/skills/knowledge-organize/SKILL.md) | Curadoria | Units: create/move/reorder/link |
+| [knowledge-admin](../../.claude/skills/knowledge-admin/SKILL.md) | Admin | Connections, health, stats, export, parser install |
+
+All skills auto-use the first `ready` connection. Pass `connection="slug"` to target a specific one.
+
+## Authentication
+
+Two modes — clear separation:
+
+- **`DASHBOARD_API_TOKEN`** (existing, in `.env`) → internal use by skills, heartbeats, routines. **Bypasses rate limit.**
+- **`knowledge_api_keys`** → external use (Academy app, webhooks, third-party). Scoped by `connection_id` + `space_ids`. Rate-limited (fixed window).
+
+Create API keys via UI (`/knowledge/api-keys`) or via the REST API.
+
+### Example (external — Evo Academy calling Knowledge)
+
+```bash
+curl -H "Authorization: Bearer evo_k_abc.xyz..." \
+     -H "Content-Type: application/json" \
+     -H "X-Knowledge-Connection: academy" \
+     -d '{"query": "how does onboarding work?", "space": "aulas-2026"}' \
+     https://evonexus.local/api/knowledge/v1/search
+```
+
+## Permissions
+
+| Permission | Who has it | What it allows |
+|---|---|---|
+| `knowledge:view` | admin, operator, viewer | View connections, spaces, search |
+| `knowledge:manage` | admin | Create connections, upload, delete, generate API keys |
+
+## API endpoints
+
+### Internal (UI-only, session auth)
+
+| Method | Endpoint | Description |
+|---|---|---|
+| GET/POST | `/api/knowledge/connections` | List/create connections |
+| POST | `/api/knowledge/connections/:id/configure` | Run auto-migration |
+| GET | `/api/knowledge/connections/:id/health` | Health check |
+| CRUD | `/api/knowledge/api-keys` | Manage tokens |
+| GET/PUT | `/api/knowledge/settings` | Embedder + parser globals |
+
+### Public v1 (Bearer token)
+
+| Method | Endpoint | Description |
+|---|---|---|
+| CRUD | `/api/knowledge/v1/spaces` | Spaces |
+| CRUD | `/api/knowledge/v1/units` | Learning units |
+| CRUD | `/api/knowledge/v1/documents` | Documents (upload multipart) |
+| POST | `/api/knowledge/v1/search` | Hybrid search |
+| GET | `/api/knowledge/v1/documents/:id/status` | Ingestion progress |
+
+## Troubleshooting
+
+**"PgBouncer detected"** — Supabase pooler (port 6543) is not supported. Use direct connection (port 5432). Same for AWS RDS Proxy.
+
+**Connection status `needs_migration`** — EvoNexus was upgraded and remote schema is old. Click **Run migrations** in UI or `POST /connections/:id/migrate`.
+
+**Marker timeout on large PDFs** — default 10min. Adjust `MARKER_TIMEOUT_SECONDS` in `.env`.
+
+**Classify queue stuck** — check if `ANTHROPIC_API_KEY` or `GEMINI_API_KEY` is set. Without either, classification is skipped (not fatal).
+
+**Embedder provider locked** — you have data using current dim. To change the provider, remove all connections and recreate them. Reindex skill is planned for v0.25.1.
+
+
+---
+
 # Dashboard Overview
 
 The EvoNexus web dashboard is a React + Flask application that gives you a visual interface to manage agents, routines, integrations, memory, and more.
@@ -2209,7 +2404,17 @@ View the full audit log at **Audit Log** in the sidebar (requires `audit:view`).
 
 # Getting Started with EvoNexus
 
-## Prerequisites
+## Choose your install method
+
+| Method | Best for | Requires |
+|---|---|---|
+| **[Docker](guides/docker-install.md)** | Anyone who wants a one-command install that works the same on every OS (Linux, macOS, Windows+WSL2, VPS) | Docker Engine 24+ |
+| **CLI (`npx`)** | Users who want to run EvoNexus alongside their existing Claude Code CLI | Claude Code, Python 3.11+, Node 18+, uv |
+| **Manual clone** | Developers who want to modify source | git, Claude Code, Python 3.11+, Node 18+, uv |
+
+Pick the Docker flow if you're unsure. Keep reading for the CLI flow.
+
+## Prerequisites (CLI flow only)
 
 - **Claude Code CLI** — [Install Claude Code](https://claude.ai/claude-code)
 - **Python 3.11+** with [uv](https://docs.astral.sh/uv/)
@@ -2218,7 +2423,19 @@ View the full audit log at **Audit Log** in the sidebar (requires `audit:view`).
 
 ## Installation
 
-### 1. Quick Install (recommended)
+### Option A — Docker (fastest)
+
+Pulls the official multi-arch images and runs the wizard at http://localhost:8080. Full guide: [Installing with Docker](guides/docker-install.md).
+
+```bash
+curl -O https://raw.githubusercontent.com/EvolutionAPI/evo-nexus/main/docker-compose.hub.yml
+docker compose -f docker-compose.hub.yml up -d
+open http://localhost:8080
+```
+
+Skip to [Start with /oracle](#6-use-claude-code--start-with-oracle) after the wizard completes.
+
+### Option B — `npx` (CLI flow)
 
 ```bash
 npx @evoapi/evo-nexus
@@ -2226,7 +2443,7 @@ npx @evoapi/evo-nexus
 
 This downloads and runs the interactive setup wizard automatically.
 
-### Alternative: Manual Clone
+### Option C — Manual clone
 
 ```bash
 git clone --depth 1 https://github.com/EvolutionAPI/evo-nexus.git
@@ -3643,6 +3860,294 @@ See [Creating Routines](creating-routines.md) for details on the schedule and cu
 
 ---
 
+# Installing EvoNexus with Docker
+
+The fastest way to run EvoNexus on any machine — Linux, macOS (Intel or Apple Silicon), Windows with WSL2, or a bare VPS. Pulls official images from Docker Hub, no source checkout or build step required.
+
+## TL;DR
+
+```bash
+curl -O https://raw.githubusercontent.com/EvolutionAPI/evo-nexus/main/docker-compose.hub.yml
+docker compose -f docker-compose.hub.yml up -d
+open http://localhost:8080
+```
+
+The setup wizard on first boot asks for a provider key (Anthropic, OpenAI or Codex). Everything else — integrations, Telegram, Stripe, Omie, Bling, Asaas, etc. — is configured through the UI.
+
+---
+
+## Prerequisites
+
+- **Docker Engine 24+** with Docker Compose v2. [Install on Mac / Windows / Linux](https://docs.docker.com/engine/install/).
+- **4 GB RAM minimum** (8 GB recommended — the Claude CLI and embedding models can be hungry).
+- **2 GB free disk** for images + a few hundred MB for data volumes.
+- An **Anthropic API key** (or OpenAI / ChatGPT Codex account) — you'll paste this into the wizard on first boot.
+
+No Node.js, Python, or any SDK needs to be installed on the host. The images ship everything.
+
+### Multi-arch — ARM64 works out of the box
+
+Images are published as multi-arch manifests (`linux/amd64` + `linux/arm64`), so:
+
+- **Apple Silicon** (M1/M2/M3 Macs) — pulls `arm64` natively, no Rosetta overhead.
+- **AWS Graviton**, **Oracle Cloud ARM free tier**, **Raspberry Pi 4/5** — pulls `arm64` natively.
+- **Traditional x86_64 servers** — pulls `amd64` as usual.
+
+You never pass `--platform`. Docker picks the right arch from the manifest list.
+
+---
+
+## Step 1 — Get the compose file
+
+Download the ready-to-run compose file. It pulls images from `evoapicloud/evo-nexus-{dashboard,runtime}` on Docker Hub — no git clone required.
+
+```bash
+curl -O https://raw.githubusercontent.com/EvolutionAPI/evo-nexus/main/docker-compose.hub.yml
+```
+
+Open it — it's commented and self-explanatory. Key things to know:
+
+- **3 services**: `dashboard` (Flask + React + terminal), `telegram` (bot listener), `scheduler` (automated routines). Telegram and scheduler are optional — remove them from the file if you don't need them.
+- **Ports exposed**: `8080` (dashboard UI + API) and `32352` (terminal WebSocket).
+- **Volumes**: 6 named volumes that survive `docker compose down` and hold everything the UI configures.
+
+---
+
+## Step 2 — Start the stack
+
+```bash
+docker compose -f docker-compose.hub.yml up -d
+```
+
+First run downloads the images (~800 MB total, a few minutes depending on your connection). Subsequent boots are instant.
+
+Check that all 3 services are up:
+
+```bash
+docker compose -f docker-compose.hub.yml ps
+```
+
+You should see:
+
+```
+NAME                   STATUS
+evonexus-dashboard     Up (healthy)
+evonexus-telegram      Up
+evonexus-scheduler     Up
+```
+
+If the dashboard takes longer than 30 seconds to go healthy, check logs:
+
+```bash
+docker compose -f docker-compose.hub.yml logs -f dashboard
+```
+
+---
+
+## Step 3 — Open the UI and run the setup wizard
+
+Open **http://localhost:8080** in your browser. You'll see the first-boot wizard:
+
+1. **Create admin user** — username + password for the dashboard itself.
+2. **Pick a provider** — paste your Anthropic API key, OpenAI key, or click "Login with ChatGPT" for Codex OAuth.
+3. **Optional integrations** — Telegram bot token, Stripe, Omie, etc. Everything else is optional and can be added later.
+
+Once you save a provider key, the `telegram` and `scheduler` services (which were waiting in a 30s poll loop) pick it up and start working. No restart needed.
+
+---
+
+## Step 4 — Everyday commands
+
+| Action | Command |
+|---|---|
+| View logs | `docker compose -f docker-compose.hub.yml logs -f` |
+| Restart | `docker compose -f docker-compose.hub.yml restart` |
+| Stop | `docker compose -f docker-compose.hub.yml down` |
+| Stop + wipe data | `docker compose -f docker-compose.hub.yml down -v` ⚠️ |
+| Update to latest | See [Updating](#updating) below |
+
+---
+
+## Updating
+
+### Pull the latest stable image
+
+```bash
+docker compose -f docker-compose.hub.yml pull
+docker compose -f docker-compose.hub.yml up -d
+```
+
+Your data volumes are preserved — everything you configured through the UI stays intact.
+
+### Pin to a specific version
+
+Edit `docker-compose.hub.yml` and replace `:latest` with `:vX.Y.Z` (e.g. `:v0.30.4`). Available tags: https://hub.docker.com/r/evoapicloud/evo-nexus-dashboard/tags
+
+Rolling back is just bumping the tag down and running `pull && up -d`.
+
+---
+
+## Backup and restore
+
+Your configuration, workspace files, memory, and agent state live in 6 named volumes. To snapshot them all:
+
+```bash
+# Backup
+mkdir -p evonexus-backup
+for vol in config workspace dashboard_data memory adw_logs agent_memory; do
+  docker run --rm \
+    -v evonexus_${vol}:/src:ro \
+    -v "$PWD/evonexus-backup":/dst \
+    alpine tar czf /dst/${vol}.tgz -C /src .
+done
+
+# Restore on a fresh host
+for vol in config workspace dashboard_data memory adw_logs agent_memory; do
+  docker volume create evonexus_${vol}
+  docker run --rm \
+    -v evonexus_${vol}:/dst \
+    -v "$PWD/evonexus-backup":/src:ro \
+    alpine tar xzf /src/${vol}.tgz -C /dst
+done
+```
+
+---
+
+## Advanced: passing secrets via environment variables
+
+The default flow is "configure everything through the UI, which writes to a persisted `.env` inside the `evonexus_config` volume." Most users should stick with that.
+
+If you prefer to keep secrets out of the volume (for CI/CD, Vault, Doppler, or immutable infra), you can pass any env var directly in the compose file. They **take precedence** over the volume's `.env`:
+
+```yaml
+services:
+  dashboard:
+    image: evoapicloud/evo-nexus-dashboard:latest
+    environment:
+      - TZ=America/Sao_Paulo
+      - EVONEXUS_PORT=8080
+      # Bypass the UI — pass keys directly
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}      # read from shell or .env.compose
+      - EVONEXUS_SECRET_KEY=${EVONEXUS_SECRET_KEY}
+      - KNOWLEDGE_MASTER_KEY=${KNOWLEDGE_MASTER_KEY}
+    env_file:
+      - ./secrets.env   # or load from a file — this file is NOT inside the volume
+```
+
+Tradeoffs:
+
+- **Pro**: secrets live with the infrastructure, not the user-editable volume. Rotate by redeploying.
+- **Con**: the Providers page in the UI will still work (and will write to the volume's `.env`), but any value you pass via `environment:` wins. This can be confusing for non-technical users.
+
+For the absolutely purist flow, pass `REQUIRE_ANTHROPIC_KEY=0` on the telegram and scheduler services so they don't wait for a UI-saved key — they'll just use whatever is in `environment:`.
+
+---
+
+## Advanced: Docker Secrets
+
+Every env var also supports a `_FILE` counterpart. Point it at a file, and the entrypoint reads the content into the var at boot. This works natively with Docker Secrets in Swarm mode:
+
+```yaml
+services:
+  dashboard:
+    environment:
+      - ANTHROPIC_API_KEY_FILE=/run/secrets/anthropic_key
+    secrets:
+      - anthropic_key
+
+secrets:
+  anthropic_key:
+    external: true
+```
+
+Additionally, every file under `/run/secrets/` is auto-discovered: `/run/secrets/anthropic_api_key` → sets `ANTHROPIC_API_KEY` if it's not already set.
+
+---
+
+## Running on a VPS with a public domain
+
+For production on a single-host VPS (not a Swarm cluster), put a reverse proxy in front of `docker-compose.hub.yml`. The simplest path is Caddy:
+
+```yaml
+# Caddyfile next to docker-compose.hub.yml
+evonexus.example.com {
+    reverse_proxy /terminal/* localhost:32352
+    reverse_proxy localhost:8080
+}
+```
+
+Then `caddy run` and you have HTTPS with automatic Let's Encrypt certificates pointing at your EvoNexus stack.
+
+For Docker Swarm with Traefik, see [README.swarm.md](https://github.com/EvolutionAPI/evo-nexus/blob/main/README.swarm.md) and [`evonexus.stack.yml`](https://github.com/EvolutionAPI/evo-nexus/blob/main/evonexus.stack.yml).
+
+---
+
+## Troubleshooting
+
+### Dashboard port 8080 is already in use
+
+Another service on your host is bound to 8080. Change the host port in the compose file:
+
+```yaml
+ports:
+  - "9090:8080"     # host 9090 → container 8080
+```
+
+Then open `http://localhost:9090`.
+
+### Telegram / scheduler logs say "waiting for ANTHROPIC_API_KEY"
+
+Expected. These services poll `.env` every 30s. Configure a provider key in **Dashboard → Providers** and they'll pick it up automatically — no restart needed.
+
+### Services keep restarting after `up -d`
+
+Check logs:
+
+```bash
+docker compose -f docker-compose.hub.yml logs --tail=50 <service>
+```
+
+99% of the time this is either (a) port conflict, (b) volume mount permission issue (rare, usually only on SELinux-enabled hosts — add `:Z` to volume mounts), or (c) disk full.
+
+### Fresh install doesn't show any agents / skills on `/agents` or `/skills`
+
+On a brand-new volume, the APIs return `{"error": "Setup required", "needs_setup": true}` until the wizard completes. Open http://localhost:8080 and complete the wizard first.
+
+### Want to see what's inside the running container
+
+```bash
+docker compose -f docker-compose.hub.yml exec dashboard bash
+```
+
+Useful paths inside the container:
+
+- `/workspace/config/.env` — everything the UI saves (ports, keys, integrations)
+- `/workspace/workspace/` — generated artifacts (reports, dashboards, daily logs)
+- `/workspace/memory/` — long-term memory the agents write
+- `/workspace/.claude/agent-memory/` — per-agent persistent state
+- `/workspace/ADWs/logs/` — routine execution logs (JSONL)
+
+---
+
+## Uninstall
+
+```bash
+docker compose -f docker-compose.hub.yml down -v
+```
+
+The `-v` flag also deletes the named volumes — **all your configuration and data is gone**. Skip the flag to keep volumes around for a future reinstall.
+
+---
+
+## See also
+
+- [Updating EvoNexus](./updating.md) — version bumps across all install methods
+- [README.swarm.md](https://github.com/EvolutionAPI/evo-nexus/blob/main/README.swarm.md) — production Swarm / Portainer deployments with Traefik
+- [Environment variables reference](../reference/env-variables.md) — every variable the image recognizes
+
+
+---
+
 # Initial Setup and Onboarding
 
 The `initial-setup` skill gives you a guided tour of EvoNexus when you first start using it.
@@ -3764,9 +4269,41 @@ kill $(lsof -ti :8080) 2>/dev/null
 python app.py &
 ```
 
-## Update via Docker
+## Update via Docker (published images)
 
-If you're running EvoNexus with Docker Compose:
+Starting with **v0.30.2**, official multi-arch images (amd64 + arm64) are published to Docker Hub under the `evoapicloud` namespace:
+
+- `evoapicloud/evo-nexus-dashboard` — Flask + React + embedded terminal + Claude CLI
+- `evoapicloud/evo-nexus-runtime` — Node/Python runtime for the Telegram bot and the scheduler
+
+The images are public — no `docker login` required.
+
+### docker compose (single host, from Docker Hub)
+
+If you deployed with [`docker-compose.hub.yml`](https://github.com/EvolutionAPI/evo-nexus/blob/main/docker-compose.hub.yml) (the recommended flow documented in [Installing with Docker](./docker-install.md)):
+
+```bash
+docker compose -f docker-compose.hub.yml pull
+docker compose -f docker-compose.hub.yml up -d
+```
+
+Named volumes are preserved — all your configuration, providers, integrations, and memory stay intact.
+
+### Docker Swarm / Portainer
+
+Bump the image tag in your stack (or leave `:latest` and force a redeploy). Example:
+
+```bash
+docker service update --image evoapicloud/evo-nexus-dashboard:v0.30.4 evonexus_evonexus_dashboard
+docker service update --image evoapicloud/evo-nexus-runtime:v0.30.4   evonexus_evonexus_telegram
+docker service update --image evoapicloud/evo-nexus-runtime:v0.30.4   evonexus_evonexus_scheduler
+```
+
+See [`README.swarm.md`](https://github.com/EvolutionAPI/evo-nexus/blob/main/README.swarm.md) for the full Swarm / Portainer deployment guide and the `evonexus.stack.yml` template.
+
+### Local docker compose (building from source)
+
+If you're running `docker-compose.yml` locally (building the image from source instead of pulling from Docker Hub):
 
 ```bash
 cd /path/to/your/workspace
@@ -4368,6 +4905,161 @@ Your refresh token is probably stale because some other process bypassed `bling_
 
 ### State mismatch error
 The CLI refused the callback because of a CSRF check failure (very rare — usually means the browser returned an old callback). Re-run `make bling-auth`.
+
+
+---
+
+# Databases — Postgres & MySQL (v0.28+)
+
+Configure one or more databases via `.env` and query them from any agent via the `db-postgres` / `db-mysql` skills. Same pattern as the social integrations (`SOCIAL_YOUTUBE_N_*`, etc.) — numbered blocks, `.env` is gitignored, no extra infra.
+
+## TL;DR
+
+```env
+DB_POSTGRES_1_LABEL=msgops-dev
+DB_POSTGRES_1_HOST=db.dev.internal
+DB_POSTGRES_1_PORT=5432
+DB_POSTGRES_1_DATABASE=msgops
+DB_POSTGRES_1_USER=agent_readonly
+DB_POSTGRES_1_PASSWORD=***
+DB_POSTGRES_1_SSL_MODE=require
+```
+
+```bash
+# one-time
+uv pip install psycopg2-binary
+
+# query
+python3 .claude/skills/db-postgres/scripts/db_client.py \
+  query msgops-dev "SELECT count(*) FROM users"
+```
+
+Writes are refused unless the connection opts in:
+
+```env
+DB_POSTGRES_1_ALLOW_WRITE=true
+```
+
+## Supported flavors (v1)
+
+| Flavor | Skill | Driver | Default port |
+|---|---|---|---|
+| PostgreSQL | `db-postgres` | `psycopg2-binary` | 5432 |
+| MySQL / MariaDB | `db-mysql` | `pymysql` | 3306 |
+
+Mongo and Redis are planned for v2 — same env-block pattern, different verbs.
+
+## Env block reference
+
+### Postgres
+
+| Key | Required | Default | Notes |
+|---|---|---|---|
+| `DB_POSTGRES_<N>_LABEL` | yes | — | Human name, how agents pick the connection. Case-insensitive match. |
+| `DB_POSTGRES_<N>_HOST` | yes* | — | *unless `DSN` is set |
+| `DB_POSTGRES_<N>_PORT` | no | 5432 | |
+| `DB_POSTGRES_<N>_DATABASE` | yes* | — | *unless `DSN` is set |
+| `DB_POSTGRES_<N>_USER` | yes* | — | *unless `DSN` is set |
+| `DB_POSTGRES_<N>_PASSWORD` | no | — | Omit for password-less local dev |
+| `DB_POSTGRES_<N>_SSL_MODE` | no | — | `disable`, `require`, `verify-ca`, `verify-full` |
+| `DB_POSTGRES_<N>_SSL_CA_PATH` | no | — | Path to CA cert (for `verify-*` modes) |
+| `DB_POSTGRES_<N>_DSN` | no | — | Full `postgresql://...` URI. Wins over components. |
+| `DB_POSTGRES_<N>_ALLOW_WRITE` | no | `false` | Set `true` to permit write verbs. |
+| `DB_POSTGRES_<N>_QUERY_TIMEOUT` | no | `30` | Seconds. Applied via `SET statement_timeout`. |
+| `DB_POSTGRES_<N>_MAX_ROWS` | no | `1000` | Rows returned inline; full result spills to CSV when truncated. |
+
+### MySQL / MariaDB
+
+| Key | Required | Default | Notes |
+|---|---|---|---|
+| `DB_MYSQL_<N>_LABEL` | yes | — | Human name, how agents pick the connection. |
+| `DB_MYSQL_<N>_HOST` | yes* | — | *unless `DSN` is set |
+| `DB_MYSQL_<N>_PORT` | no | 3306 | |
+| `DB_MYSQL_<N>_DATABASE` | yes* | — | *unless `DSN` is set |
+| `DB_MYSQL_<N>_USER` | yes* | — | *unless `DSN` is set |
+| `DB_MYSQL_<N>_PASSWORD` | no | — | |
+| `DB_MYSQL_<N>_SSL_CA_PATH` | no | — | Enables TLS verification when set |
+| `DB_MYSQL_<N>_DSN` | no | — | Full `mysql://...` URI. Wins over components. |
+| `DB_MYSQL_<N>_ALLOW_WRITE` | no | `false` | Set `true` to permit write verbs. |
+| `DB_MYSQL_<N>_QUERY_TIMEOUT` | no | `30` | Seconds. Applied via `SET SESSION MAX_EXECUTION_TIME`. |
+| `DB_MYSQL_<N>_MAX_ROWS` | no | `1000` | Rows returned inline; full result spills to CSV when truncated. |
+
+## How agents pick a connection
+
+- **By label** (case-insensitive exact match): `query msgops-dev "SELECT ..."`.
+- **By index** (the `N` in the env key): `query 1 "SELECT ..."`.
+- If the label matches two blocks (user error — labels should be unique), the agent gets an `ambiguous` error and has to use the index.
+
+## Commands (same surface across flavors)
+
+```bash
+# List configured connections — returns label, host, port, database, guardrails
+db_client.py accounts
+
+# RTT + 'SELECT 1' roundtrip, ~10s timeout
+db_client.py test <label|index>
+
+# Run a query, streamed result (max MAX_ROWS inline, rest spilled to CSV)
+db_client.py query <label|index> "<sql>"
+
+# List tables (excluding system schemas)
+db_client.py tables <label|index>
+
+# Describe a single table (columns, types, nullability, defaults)
+db_client.py describe <label|index> <table>
+db_client.py describe <label|index> <schema>.<table>
+```
+
+All commands output one JSON line on stdout, safe to pipe. Errors go to stderr as JSON and exit non-zero.
+
+## Guardrails
+
+- **Read-only by default.** Write verbs — `DELETE | UPDATE | INSERT | REPLACE | TRUNCATE | DROP | ALTER | CREATE | GRANT | REVOKE | ...` — are refused unless `ALLOW_WRITE=true` on that specific connection.
+- **One statement per call.** Multi-statement SQL (extra `;` with content after) is refused in v1.
+- **Timeouts are enforced server-side** (`statement_timeout` for Postgres, `MAX_EXECUTION_TIME` for MySQL 5.7.4+) — a runaway query hits the DB's own cancellation, not just a client-side timer.
+- **Row cap** — `MAX_ROWS` is a soft cap on what's returned inline. When exceeded, the script persists the full result to `ADWs/logs/db-queries/<query_id>.csv` and signals `truncated: true` + `full_result_path` so the agent can read the file directly instead of re-running with a larger limit.
+- **Credentials stay in `.env`.** They never transit through the dashboard's process memory (unless you use the `/integrations/databases` Test button, which only reads them transiently for the test RTT), never get logged, and never enter the agent's context beyond the subprocess that executes the query with those env vars set.
+
+## Error codes
+
+| Code | Meaning |
+|---|---|
+| `no_connections` | No `DB_<FLAVOR>_N_*` blocks in `.env` |
+| `not_found` | Label/index doesn't match any block |
+| `ambiguous` | Multiple blocks share the same label — use the index |
+| `config_error` | A block exists but `LABEL` is missing |
+| `driver_missing` | `psycopg2`/`pymysql` not installed |
+| `connection_failed` | Network, auth, TLS, or timeout tripped |
+| `write_blocked` | Write verb detected on a `ALLOW_WRITE=false` connection |
+| `multi_statement` | More than one statement in a single call |
+| `usage` | Wrong CLI args |
+
+## Rotating a password
+
+1. Edit `.env` — replace the old value in the relevant block.
+2. Restart the dashboard (or just source `.env` again in the shell you run agents from).
+3. The next `db_client.py` call reads the new value — no restart of individual agents needed.
+
+## FAQ
+
+**Why not a SQLite registry + encrypted credentials?**
+We considered it, chose `.env` for consistency with every other integration (Stripe, Omie, Social) and because it already solves the problem: `.env` is gitignored, editable in plain text, and there's an in-product env editor at `/integrations/env-editor` for dashboard-only flows. Zero new infra, no new master key, no new table.
+
+**What about DBs behind Auth0 / OIDC proxies?**
+v1 assumes a static password or DSN is enough. If a DB requires token-exchange, the current workaround is to set a service token as `PASSWORD` and let the proxy handle exchange. Native OIDC support is deferred.
+
+**Can I use this for the workspace's own SQLite DB (`dashboard.db`)?**
+Not in v1 — the `db-*` skills target network-attached SQL services. For `dashboard.db` introspection, keep using `data-analyze` / `data-write-query` which already know that shape.
+
+**Is the `/integrations/databases` page the source of truth?**
+No. `.env` is. The page is a read-only convenience view — it lists what's parsed from `.env`, offers a Test button, and can copy a block template to the clipboard. It never persists passwords.
+
+## See also
+
+- [`db-postgres` SKILL.md](../../.claude/skills/db-postgres/SKILL.md) — full command reference + deep-dive references
+- [`db-mysql` SKILL.md](../../.claude/skills/db-mysql/SKILL.md) — full command reference + deep-dive references
+- [`data-write-query`](../skills/data-write-query.md) — SQL authoring skill (can compose with `db-*` via `--connection <label>` flag — coming in PR 2)
+- Upstream reference content: [planetscale/database-skills](https://github.com/planetscale/database-skills) (MIT)
 
 
 ---
@@ -6705,6 +7397,26 @@ These are populated automatically when you connect accounts through the dashboar
 | Daily backup (S3) | `BACKUP_S3_BUCKET`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` |
 
 Google Calendar and Gmail are connected via MCP servers configured in Claude Code settings, not through `.env` variables.
+
+## Knowledge Base (pgvector)
+
+| Variable | Required For | Description |
+|----------|-------------|-------------|
+| `KNOWLEDGE_MASTER_KEY` | Knowledge Base | Fernet key used to encrypt connection credentials. **Auto-generated on first setup / Docker first boot** (v0.26.0+) — you don't set it manually. Back up your `.env`, losing this key loses access to all connections. |
+| `KNOWLEDGE_EMBEDDER_PROVIDER` | Optional | `local` (default), `openai`, or `gemini` |
+| `KNOWLEDGE_DEFAULT_PARSER` | Optional | `marker` (default) or `llamaparse` |
+| `OPENAI_API_KEY` | `openai` embedder | OpenAI key (starts with `sk-...`) |
+| `KNOWLEDGE_OPENAI_MODEL` | Optional | `text-embedding-3-small` (default) / `-3-large` / `ada-002` |
+| `GEMINI_API_KEY` | `gemini` embedder | Google AI Studio key (starts with `AIzaSy...`) |
+| `KNOWLEDGE_GEMINI_MODEL` | Optional | `gemini-embedding-001` (default) or `gemini-embedding-2-preview` |
+| `KNOWLEDGE_GEMINI_DIM` | Optional | MRL output dim: `768` (default, aligns with local), `1536`, or `3072` |
+| `LLAMAPARSE_API_KEY` | `llamaparse` parser | LlamaParse cloud API key |
+
+**How to get**:
+- **OpenAI**: [platform.openai.com](https://platform.openai.com) > API Keys.
+- **Gemini**: [aistudio.google.com/apikey](https://aistudio.google.com/apikey) (generous free tier).
+
+Configure via the dashboard at `/knowledge/settings` — the provider is locked once the first connection is created (changing it after ingestion requires removing and recreating all connections).
 
 ## AI Image Creator
 

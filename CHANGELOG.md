@@ -5,6 +5,256 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.31.0] - 2026-04-24
+
+Minor release introducing the **Brain Repo** — automatic GitHub versioning of workspace memory and customizations — plus a full onboarding wizard and a unified `/backups` page covering Local, S3 and Brain Repo destinations.
+
+### Added
+
+- **Brain Repo — GitHub versioning of `memory/`, `workspace/`, `customizations/` and `config-safe/`** — a dedicated private repo (`evo-brain-<username>`) is created or detected per user. A file watcher with 30s debounce persists every change to GitHub; daily, weekly and milestone snapshots can be restored via a streaming SSE engine. GitHub tokens are Fernet-encrypted at rest with `BRAIN_REPO_MASTER_KEY` (auto-generated at first boot); `connect`/`sync` endpoints return `500 CRYPTO_UNAVAILABLE` when encryption is unavailable — plaintext fallback was explicitly removed. A 21-pattern secrets scanner runs before every push (AWS / GitHub / Anthropic / OpenAI / Stripe / JWT / SSH, etc.) — matched files are deleted and never leave the machine.
+- **Onboarding wizard** — post-account-creation flow replacing the cold-drop into Overview. First-time users pick an AI provider (Anthropic / OpenAI / OpenRouter / Codex OAuth) with per-provider sub-flows and optionally connect a brain repo; returning users can restore from any snapshot via a type-to-confirm safety gate. Includes an `OracleWelcomeBanner` on `/agents` (one-time, dismissable).
+- **Unified `/backups` page** — single surface for Local ZIPs, S3 and Brain Repo with 3 destination cards, tabs (counts per source), import dropdown (upload `.zip` + pull from Brain Repo), contextual restore modal with SSE progress and a danger state when crypto is broken. 30s visibility-aware polling keeps watcher results fresh.
+- **Brain Repo settings page** — `/settings/brain-repo` with status card (connected / pending / last_error / crypto danger), Sync-now, Create-milestone and Disconnect actions, fully i18n'd.
+- **i18n** — ~270 new keys across `onboarding.*`, `restore.*`, `brainRepoSettings.*`, `backups.*`, `agents.welcomeBanner.*` (en-US / pt-BR / es), with identical key trees and natural translations.
+- **CLI** — `setup.py` now prompts for brain-repo during initial setup and collects the PAT; `backup.py --target github` pushes a manual sync through the dashboard's own code path.
+- **Dev environment** — `docker-compose.dev.yml` with live-reload backend + named volumes, `Dockerfile.dev` with `--legacy-peer-deps` and globally-installed `@anthropic-ai/claude-code` + `@gitlawb/openclaude`, CRLF-safe entrypoint scripts, and a step-by-step `DEV-SETUP.md`.
+
+### Changed
+
+- **`/api/backups/config`** extended with `brain_repo_configured`, `brain_repo` and `brain_crypto_ready` so the tabs UI renders in one round-trip.
+- **`lib/api.ts`** — `buildError()` now extracts the JSON `error` / `description` / `message` from non-OK responses while preserving the status-code prefix, so existing `.includes('401')` callers keep working.
+- **`useGlobalNotifications`** — HTTP health-probe before WS + visibility guard, eliminating the `WebSocket connection failed` console spam on pages that don't use the terminal.
+- **`App.tsx`** — onboarding guard treats `null` state as "needs onboarding" and redirects accordingly.
+
+### Fixed
+
+- **Restore SSE crash on `execute_restore(install_dir=...)`** — call-site kwargs now match the function signature `(repo_url, ref, token, install_dir, include_kb, kb_key_matches)` 1:1; `install_dir` resolves to the workspace root (where the SWAP_DIRS are replaced), not the brain-repo clone. A new import-time signature check in `brain_repo/__init__.py` emits a CRITICAL log on drift so future regressions are visible at startup.
+- **Watcher no-op on workspace changes** — `sync_force`, `tag_milestone` and the watcher now mirror `memory/workspace/customizations/config-safe` from workspace → brain-repo clone *before* `git add`, so `commit_all` actually sees the new files.
+- **`start_brain_watcher` circular import** — now accepts the Flask app explicitly instead of importing it, eliminating the startup "current Flask app is not registered with this 'SQLAlchemy' instance" warning that silently disabled auto-sync.
+
+## [0.30.4] - 2026-04-24
+
+Patch release with a **P0 race-condition fix** in the container entrypoint plus a complete Docker install experience (ready-to-run compose + full tutorial).
+
+### Fixed
+
+- **Race condition on shared `/workspace/config` volume (P0)** — when `dashboard`, `telegram` and `scheduler` boot in parallel against the same named volume (the canonical Docker / Swarm / Portainer deploy pattern), the first-boot bootstrap raced on four operations:
+  - `[ ! -f .env ] && cp .env.example .env` — one container wins, others crash with `File exists`. Scheduler died visibly on every fresh v0.30.3 deploy.
+  - `[ ! -f ] && cp` for `providers.json` / `heartbeats.yaml` — same race.
+  - `grep -q EVONEXUS_SECRET_KEY || echo … >> .env` — two processes both see "not found" and append **two different keys**; Flask picks one at random per request, invalidating sessions silently.
+  - Same pattern for `KNOWLEDGE_MASTER_KEY` — silently corrupted Knowledge Base encryption, losing all configured DB connections on second boot.
+
+  Fix: wrap the whole bootstrap in `flock` on a lockfile inside the shared volume, serializing all containers regardless of start order. Also added `cp -n` (no-clobber) as belt-and-suspenders. `flock` is part of `util-linux`, already present in both base images.
+
+### Added
+
+- **`docker-compose.hub.yml`** — ready-to-run compose file that pulls `evoapicloud/evo-nexus-*` from Docker Hub instead of building from source. Uses `depends_on: condition: service_healthy` to order the boot (dashboard first, then telegram/scheduler) — defense-in-depth on top of the flock fix. This is the recommended install for end users: `curl -O …docker-compose.hub.yml && docker compose -f docker-compose.hub.yml up -d`.
+- **`docs/guides/docker-install.md`** — complete Docker install guide. Prerequisites (Docker Engine 24+ is the only requirement — image ships everything), one-command boot, first-boot wizard walkthrough, update flow (`docker compose pull && up -d`), backup/restore recipes, advanced section documenting how to pass secrets via `environment:` or Docker Secrets (for CI/CD and immutable-infra users who prefer to keep secrets out of the `.env` volume), running behind Caddy for public HTTPS, troubleshooting table.
+- **Install method chooser in `docs/getting-started.md`** — table at the top comparing Docker vs CLI (`npx`) vs manual clone, with clear guidance on which to pick.
+
+### Changed
+
+- **`README.md`** — Docker promoted to Method 1 in Quick Start. Prerequisites split into two tracks (Docker-only vs CLI-flow), reflecting that the Docker image ships Claude Code, Python, Node, uv and `gh` baked in.
+- **`docs/guides/updating.md`** — new `docker compose -f docker-compose.hub.yml pull && up -d` section documenting the Docker Hub upgrade path. Swarm examples bumped to `v0.30.4`.
+
+## [0.30.3] - 2026-04-24
+
+Patch release completing the Docker Hub migration: official images now ship as **multi-arch manifests** (`linux/amd64` + `linux/arm64`) so ARM hosts (Apple Silicon, AWS Graviton, Oracle Cloud ARM, Raspberry Pi, many modern VPS) can pull without platform overrides.
+
+### Added
+
+- **Multi-arch Docker images** — `.github/workflows/docker-publish.yml` now runs `docker/setup-qemu-action@v3` and passes `platforms: linux/amd64,linux/arm64` to `build-push-action`. Every published tag (`latest`, `vX.Y.Z`, `X.Y`, `X.Y.Z`, `main`, `sha-*`) ships a manifest list covering both architectures. The `node-pty` native addon compiles from source via node-gyp inside the arm64 builder, so there's no prebuilt-binary-per-arch concern.
+
+### Removed
+
+- **`evonexus.portainer.stack.yml`** — deleted the personal Portainer template from the repo root. It was a pre-configured stack for a specific host (`advancedbot.com.br`, `network_public` network) pointing at a fork's Docker Hub namespace (`marcelolealhub/*`), which could mislead new users into pulling from the wrong registry. The canonical template remains at [`evonexus.stack.yml`](https://github.com/EvolutionAPI/evo-nexus/blob/main/evonexus.stack.yml), which already supports Portainer/Traefik deployments and points at the official `evoapicloud/evo-nexus-*` images.
+
+## [0.30.2] - 2026-04-23
+
+Patch release focused on CI/distribution: Docker images now ship from the official `evoapicloud` namespace on Docker Hub (public, no auth required on Swarm managers), and the legacy dashboard-only workflow was removed to unblock the build pipeline.
+
+### Changed
+
+- **Docker images published to Docker Hub under `evoapicloud/`** — the Swarm workflow (`.github/workflows/docker-publish.yml`) now pushes `evo-nexus-runtime` and `evo-nexus-dashboard` to `docker.io/evoapicloud/*` instead of `ghcr.io`. Requires `DOCKERHUB_USERNAME` + `DOCKERHUB_TOKEN` secrets on the repo. The `evonexus.stack.yml` template and `README.swarm.md` were updated to reference the public images — no `OWNER` placeholder to fill in, no `docker login` needed on Swarm managers.
+
+### Removed
+
+- **Redundant `dashboard.yml` workflow** — deleted `.github/workflows/dashboard.yml`, which built a Python+React-only dashboard image (`Dockerfile.dashboard`) that nothing consumes. The Swarm workflow already produces a strict superset (with terminal-server and both CLIs). This also fixes the build failure on `main` caused by a TypeScript peer-dep conflict in the legacy Dockerfile.
+
+## [0.30.1] - 2026-04-23
+
+Patch release focused on thread UX polish: session now swaps cleanly when switching threads via the sidebar, the agent is briefed explicitly about running inside a persistent thread (not a fresh one-shot session), the assignee dropdown stops hiding agents, and fresh installs no longer inherit Evolution-specific goal seed data.
+
+### Fixed
+
+- **Thread switch leaked previous conversation** — switching threads via the sidebar kept `threadSessionId` pinned to the old ticket and `<AgentChat>` kept rendering the old messages until a full page reload (or going back to `/topics` and entering again). Two fixes in `TicketDetail.tsx`: (1) a new effect resets `threadSessionId` whenever `ticket?.id` changes so the auto-init re-runs for the new ticket; (2) `<AgentChat key={ticket.id}>` forces a full remount so the WebSocket, message buffer and internal effects restart cleanly.
+- **Topics assignee dropdown hid 18 of 38 agents** — the Assign-to-agent combobox in `/topics` sliced the filtered list at 20 items (`filteredAgents.slice(0, 20)`), silently dropping agents whose slugs come later alphabetically (from `m` onward). Removed the slice and bumped `max-h-48` to `max-h-72` so ~12 agents are visible at once without scrolling and all 38 are reachable.
+- **Goals: Evolution-specific seed leaking into open-source installs** — `dashboard/backend/app.py` was seeding a hardcoded "Evolution Revenue $1M Q4 2026" mission with 3 projects (evo-ai, evo-summit, evo-academy) and 5 goals on first boot. Removed the seed block so new instances start empty. The `/goals` empty state now points users at the `/create-goal` skill instead of the misleading "Run the backend migration to seed initial data" message. Existing installations with the seed applied can clean it with `DELETE FROM goal_tasks; DELETE FROM goals; DELETE FROM projects; DELETE FROM missions;`.
+
+### Changed
+
+- **Thread context now always injected into the agent's system prompt** — when a thread session initialises, `TicketDetail.initThreadSession` always builds a "Thread Context" block explaining that the agent is running inside a persistent thread (not a fresh session): the thread title, description, assigned agent slug, default workspace folder, memory file path, summarization cadence, and resume behaviour. It also tells the agent **not** to re-invoke itself via the `Agent` tool (which was causing confusing `@zara-cs` calling `@zara-cs` patterns). Memory.md content is appended when present, so empty threads still get the full context and populated threads still surface prior-session knowledge. Respects the existing `!sdkSessionId` guard in `chat-bridge.js` — only injected on fresh sessions, not on `--resume`.
+
+## [0.30.0] - 2026-04-23
+
+Minor release adding a unified Activity Log — a single page aggregating execution history across routines, heartbeats and triggers so the user can answer "what did the system just do?" without visiting three separate pages.
+
+### Added
+
+- **`/activity` — Unified Activity Timeline** — new page aggregating execution history across all three automation primitives: scheduler routines, agent heartbeats, and event-based triggers. Presented as a reverse-chronological timeline (Linear / Vercel Logs / GitHub Actions style). Each row shows name + type badge + status pill (success / error / running) + duration + relative time. Click opens a right-side drawer (480px) with full output, metadata (started / finished / exit code / cost / tokens), and a "Open in dedicated page" link.
+  - **Filters:** multi-select type chips (Routines / Heartbeats / Triggers), status dropdown (All / Success / Error / Running), period tabs (Today / 7d / 30d / All), debounced search (300ms, client-side).
+  - **Auto-refresh:** 30s interval, paused automatically when the browser tab is in background (`visibilitychange`).
+  - **Load more:** client-side pagination at 50 items per page.
+  - **Accessibility:** drawer is `role="dialog"` `aria-modal="true"`, Escape closes, click-outside closes.
+  - **Nav:** new sidebar item "Activity" (`Atividade` pt-BR / `Actividad` es) under the operations group. `View all →` on the Overview Routines card now points to `/activity` for a unified journey.
+  - **Data sources:** reuses existing backend endpoints — `GET /api/routines/logs`, `GET /api/heartbeats/{id}/runs`, `GET /api/triggers/{id}`. Client-side aggregation (N+1 fetches via `Promise.all`) — acceptable for v1 volume; server-side aggregated endpoint can come later if needed.
+
+### Fixed (same release)
+
+- **Activity parser — real routine log shape** — initial parser was looking for `log.name` / `log.routine_name` / `log.status` / `log.exit_code`, which don't exist in `ADWs/logs/YYYY-MM-DD.jsonl`. Real shape is `{ timestamp, run, prompt, returncode, duration_seconds, input_tokens, output_tokens, cost_usd }`. Parser now reads `run` as the routine name (so rows show `good-morning`, `end-of-day`, etc. instead of `Unknown Routine`), derives status from `returncode`, and surfaces `cost_usd` / token counts / prompt preview in the drawer.
+
+### Known limitations (v1)
+
+- `/api/routines/logs` only accepts `?date=`, so the period filter (7d / 30d / All) affects heartbeats and triggers only — routines always show today. The routine log endpoint will need `from`/`to` params to honor longer periods; deferred to a follow-up.
+- Client-side aggregation means timeline loads can do up to `1 + N + M` requests (1 for routines today, N for each heartbeat's last 10 runs, M for each trigger's detail). Fine under ~20 heartbeats/triggers, may need batching later.
+
+## [0.29.3] - 2026-04-23
+
+Patch release: fix the infinite page scroll in thread mode so the embedded chat behaves exactly like the agent chat (fixed input at the bottom, messages scroll inside the container), and harden `.gitignore` against nested `.claude/` folders that agents were accidentally creating from subdirectory cwds.
+
+### Fixed
+
+- **Thread mode — infinite page scroll** — `TicketDetail` in thread mode used `h-full` but the parent `<main>` in `App.tsx` only applied `h-screen overflow-hidden` for `/agents/:id` and `/workspace/*` routes. Any route falling into the default branch used `overflow-auto` without a fixed height, so the embedded `AgentChat` grew with its message list and pushed the input field off-screen. Fix: add `isTicketDetail` matcher to `App.tsx` so `/tickets/:id` joins the fixed-viewport branch; in `TicketDetail.tsx` the non-thread (document) view gains its own `h-full overflow-auto` wrapper with the original padding to preserve its vertical-document layout. Thread mode now mirrors the agent chat exactly.
+
+### Changed
+
+- **`.gitignore` hardening — nested `.claude/` in subdirectories** — agents running from `dashboard/frontend/` (e.g., `cd dashboard/frontend && npm run build`) were creating `dashboard/frontend/.claude/agent-memory/` relative to cwd instead of writing to the canonical `.claude/` at the repo root. Content was already ignored by the existing `.claude/agent-memory/` rule, but the `.claude/` folder itself showed up untracked in editors. Added `**/.claude/agent-memory/` and `dashboard/*/.claude/` patterns to block this at any depth.
+
+## [0.29.2] - 2026-04-23
+
+Patch release: in-app toasts and confirm dialogs replacing 47 native `alert()`/`confirm()` calls, agent avatars in the Topics list, plus fixes for PR #30 (provider routing + docker) and the archive endpoint.
+
+### Added
+
+- **In-app Toast system (`useToast`)** — stackable notifications in the bottom-right corner (max 5), auto-dismiss 4s, variants `success` / `error` / `warning` / `info`. Replaces all `window.alert()` usage in the dashboard with a consistent, non-blocking pattern in the EvoNexus dark tone. Zero new dependencies (pure CSS keyframes + Context API).
+- **In-app Confirm dialog (`useConfirm`)** — promise-based modal with `default` / `danger` variants, keyboard support (Enter confirms, Escape cancels), focus on Cancel for danger variant (safer default). Replaces all `window.confirm()` usage.
+- **Agent avatars in `/topics` list** — threads now show the assigned agent's avatar (24px, same as the sidebar) instead of a generic green chat icon, matching the visual language of `ThreadsSidebar`. Shared `AgentIcon` component extracted from the sidebar for reuse.
+
+### Changed
+
+- **47 UX call sites migrated from native dialogs to in-app components** across `AgentChat`, `ChatSessionList`, `Backups`, `Heartbeats`, `Roles`, `Scheduler`, `Systems`, `Tasks`, `TicketDetail`, `Topics`, `Triggers`, `Users`. All messages translated to pt-BR where they were in English.
+- **Provider config centralized** (PR #30) — shared `provider-config.js` helper in the terminal-server centralizes loading, env var allow-listing, and model capability detection (`code` vs `chat`). Reduces duplication between `chat-bridge.js` and `claude-bridge.js`.
+- **Chat uses OpenAI-compatible streaming for non-Anthropic providers** (PR #30) — `/chat/completions` streaming so chat-completion style models (GPT, Gemini, custom OmniRouter) work in dashboard Chat. Anthropic keeps the existing Agent SDK flow.
+- **Terminal enforces code-only models for non-Anthropic providers** (PR #30) — chat-completion models are now blocked in the Terminal with a clear error directing the user to the Chat instead.
+- **Telegram notification helper for ADW routines** (PR #30) — `run_skill(..., notify_telegram=True)` appends a deterministic notification instruction to the skill prompt so end-of-day and good-morning routines emit exactly one Telegram message via the MCP `reply()` call. `ADWs/runner.py` also exposes a `send_telegram()` helper that posts directly via Bot API as a fallback.
+
+### Fixed
+
+- **Archive thread endpoint — 500 on re-archive** — `shutil.move` was raising `OSError` when `memory/threads/_archive/{ticket_id}/` already existed from a previous partial archive. Now checks for existing path and falls back to a timestamped suffix; tombstone write is best-effort and wrapped in try/except; the endpoint surfaces a proper JSON error instead of a bare 500.
+- **Docker dashboard container starts reliably** (PR #30) — `npm install --legacy-peer-deps` in `Dockerfile.swarm.dashboard` avoids peer-dep install failures on fresh rebuilds (same pin already applied to the non-Docker install).
+
+## [0.29.1] - 2026-04-23
+
+Patch iterating on the v0.29.0 thread-areas feature: UI rebrand, navigation polish, and fixes identified by the post-release verification pass.
+
+### Changed
+
+- **Renamed "Issues" → "Topics" across the UI** — the feature evolved from a pure issue tracker into a container for both tasks and persistent chat threads, so the label no longer fit. Page file renamed `Issues.tsx` → `Topics.tsx`, route moved `/issues` → `/topics` with a 302 redirect preserving old bookmarks, sidebar nav item updated, breadcrumb `Topics / {title}`, i18n updated across 3 locales: en `Topics`, pt-BR `Tópicos`, es `Temas`. Backend (`tickets` table, `/api/tickets/*` endpoints, `Ticket` model) intentionally unchanged — pure UX rebranding, zero data migration.
+
+### Added
+
+- **Threads sidebar — navigate between chat threads without leaving the conversation** — when viewing a ticket in thread mode, a 280px sidebar now appears on the left listing all threads, grouped by agent (Clawdia, Kai, Flux…), with active/archived split. Active thread is highlighted with a green left border. Toggle button collapses to 48px (persisted in localStorage). Each item shows title + relative time (`há 2h`, `ontem`, `3d`). On mobile (<768px), sidebar becomes a slide-in drawer triggered by a `PanelLeft` icon — 85vw from the left with backdrop, Escape/click-outside/close to dismiss, `role=dialog` accessibility. Desktop and mobile share the same `ThreadsSidebar` component via an `asDrawer` prop; drawer lazy-mounts to avoid double-fetch. Pure CSS transitions, zero new dependencies.
+- **Create workspace folders from the Convert to Thread modal** — `+ Nova pasta` button inline in the folder dropdown opens an input accepting `[a-z0-9-]+` names (2-50 chars). Pressing Enter or clicking Create fires `POST /api/workspace/subfolders`; new folder appears in the dropdown pre-selected, no page reload. Backend validates name pattern, defends against path traversal, returns 409 if folder exists, 201 with `{name, path, full_path}` on success.
+
+### Fixed
+
+- **`convert-to-thread` is now idempotent** — calling the endpoint on a ticket that is already a thread returns 200 with the current ticket state instead of 409. Workspace path conflict (different path supplied) still returns 409 `workspace_path_conflict` with both paths in the error body. Prevents spurious errors when the UI double-fires the conversion.
+- **`turn-completed` is now race-safe monotonic** — uses `UPDATE ... WHERE message_count < :n` with `n = current + 1`, so concurrent calls with the same base value only increment once (second call is a silent no-op). Implements option (a) from the summary-trigger ADR without extra IO.
+- **Convert to Thread modal warns about agent immutability** — orange warning banner before the Convert button: "Após converter, o agente desta thread não poderá ser alterado. Crie uma thread nova para trocar de agente." Consistent with the existing `archived` badge style.
+- **Archived threads are read-only in the UI** — when a thread's status is `archived`, the `TicketDetail` shows a "📦 Thread arquivada — read-only. [Unarchive]" banner above the chat, disables interaction on the embedded `AgentChat` via `pointer-events-none opacity-60`, and the Unarchive button calls `POST /api/tickets/:id/unarchive-thread` to reactivate. Previously the UI allowed typing and only the backend rejected it.
+
+## [0.29.0] - 2026-04-23
+
+### Added
+
+- **Thread Areas — persistent chat threads with isolated memory** — tickets can be converted to "thread mode", turning them into a chat surface embedded in `TicketDetail` (via `AgentChat`). Each thread has a dedicated agent (immutable after conversion), a default `workspace_path`, and a curated `memory.md` at `memory/threads/{ticket_id}/memory.md` that persists across sessions. Solves context degradation in long conversations: fixed scope (1 agent × 1 area) + periodic summarization + `--resume` to keep conversation alive across days. Canonical use case: 1 financial agent × N companies, each as an isolated thread. Zero new tables — extends `tickets` with 5 columns (`workspace_path`, `memory_md_path`, `thread_session_id`, `message_count`, `last_summary_at_message`). New endpoints: `PATCH /api/tickets/:id/convert-to-thread` (idempotent), `POST /api/tickets/:id/turn-completed` (monotonic with `UPDATE WHERE message_count < :n`), `POST /api/tickets/:id/archive-thread` and `/unarchive-thread`, `GET /api/tickets/counts`, `GET /api/workspace/subfolders`, plus `display_mode` filter on list. UI: `/issues` splits into "Threads" (💬) and "Issues" sections; `TicketDetail` renders `AgentChat` when the ticket is a thread; modal guards agent immutability; archived threads show read-only banner with Unarchive action. Summary subsystem: `summary_worker.py` generates a new dated section in `memory.md` every 20 turns; `summary_watcher.py` heartbeat safety net (disabled by default) recovers turns missed when the browser tab closes mid-conversation (Option D + B hybrid per ADR).
+- **Database integrations — Postgres, MySQL, MongoDB, Redis** — four new skills (`db-postgres`, `db-mysql`, `db-mongo`, `db-redis`) let the user query and explore databases configured via `.env` (`DB_POSTGRES_N_*`, `DB_MYSQL_N_*`, `DB_MONGO_N_*`, `DB_REDIS_N_*`). Integrations UI gains a full-page database section for connection management. Backend route `dashboard/backend/routes/databases.py` wires the dashboard to the skills. Documented in `docs/integrations/databases.md`.
+
+### Fixed
+
+- **Heartbeats — accept `system` sentinel for infra-only heartbeats** — allows heartbeats without an assigned agent (e.g., `summary-watcher`) to register without tripping validation.
+- **VPS install — survive first reboot** — scheduler, start-services and firewall now persist across reboots on fresh VPS installs; prior setups would silently fail to come back up.
+
+## [0.28.0] - 2026-04-22
+
+### Added
+
+- **Landing page reframe — work narrative over feature inventory** — hero rewritten across all three locales: EN `"Your AI team, pre-assembled."` / PT `"Seu time de IA, já montado."` / ES `"Tu equipo de IA, ya armado."`. New section "How Work Gets Done" with 4-beat narrative (Set the goal → Agents that know their lane → Docs your agents actually read → Every action, traceable). New standalone sections for **Knowledge Base** (hybrid RAG + BYO Postgres) and **Heartbeats** (cron for agents, with guardrails) — surfacing v0.25+v0.27 features that had been invisible on the LP. Full proposal doc in `workspace/marketing/[C]lp-reframe-v1.md` (gitignored).
+- **Setup wizard i18n (pt-BR / en-US / es)** (#25) — `make setup` now asks for wizard language first (1=EN / 2=PT / 3=ES), then translates every user-visible message: banner, section headers, field prompts, progress lines, success/failure, final next-steps. Non-interactive contexts (`EVO_NEXUS_AUTO_INSTALL=1`, CI, pip backend) silently keep `en-US`. 153 keys per bundle, exact parity verified.
+- **Auto-relocate install for non-root service user** (#25) — detects when `SUDO_USER` cannot read+enter the install dir via `su - <user> -c 'test -x ... && test -r setup.py'`. If not, copies project to `/home/<user>/evo-nexus`, chowns, updates the global `WORKSPACE`, and `chdir`s there. Every later step (uv sync, npm install, systemd `WorkingDirectory`, ownership fix) sees the new location automatically. Fixes the regression where direct-to-root installs with `SUDO_USER=ubuntu` silently failed on systemd unit start.
+- **Tool bootstrap for non-root service user** (#25) — new `_ensure_user_has_tools(user)` bootstraps `uv`, `claude`, `openclaude` into `~/.local/` for any non-root service user (mirrors what the `evonexus` auto-created branch already did). Idempotent — skips tools already present.
+
+### Changed
+
+- **Image optimization — 265 KB saved across 50 assets** (#25) — PNG brand assets converted to WebP (quality 85, method 6), existing WebP avatars re-encoded at quality 82. Sweep over `dashboard/frontend/public/`, `public/`, `site/public/`. Before: 2,302 KB. After: 2,037 KB. Favicons intentionally kept as PNG (cross-browser WebP favicon support still patchy; files already 4 KB).
+- **`dashboard/frontend/.npmrc`** (#25) — `legacy-peer-deps=true` with explanatory comment, so `npm install --silent` inside `setup.py` returns 0 despite `react-i18next@15` declaring peer `typescript@^5` while the dashboard pins `typescript@~6`.
+- **Landing page section reorder** — hero → How Work Gets Done → Agents → Knowledge → Heartbeats → Screenshots → Integrations → Quick Start. Removed the 10-card "Features Grid" and the 6-card "Why EvoNexus?" section (dead post-reframe — the same arguments now live as prose in "How Work Gets Done"). Merged the 3-step "How It Works" into the Quick Start section above the terminal block. Removed the redundant Social Proof stats bar (numbers already in hero stats pills).
+- **Hardcoded counts updated** — README, LP, and dashboard stats now show **190+ skills** (was 175+) and **25 integrations** (was 23-24 depending on location — inconsistent). Numbers verified against `ls .claude/skills/` (190 dirs) and `.claude/rules/integrations.md` (25 entries).
+- **Landing page copy — editorial pass in pt-BR / en / es** — rewrote every user-facing string as if each locale were the original language, not a translation. Replaced abstract nouns with active verbs, dropped anglicisms (`pré-montado` → `já montado`; `pre-ensamblado` → `ya armado`), killed SaaS clichés (`never sleeps` → `never left hanging` / `nunca fica sem resposta` / `nunca se queda sin respuesta`). Heartbeats section renamed from `Agents that wake on schedule` → `Agents on autopilot` across all three locales.
+- **5 placeholder integration icons removed from LP** — LinkedIn, Amplitude, DocuSign, Bling, Asaas were rendering as generic Lucide `<Activity>`, `<FileText>`, `<Workflow>`, `<Zap>` (and LinkedIn+Amplitude shared the same icon). `react-icons/si` has no match for these brands; showing a wrong icon was worse than omitting. Integration count stays 25 in copy (real count from `integrations.md`) — logos on home just show the most recognizable.
+- **iMessage channel clarified** — `features.channels.desc` across all locales now appends `(macOS)` qualifier, since iMessage ships via the `@claude-plugins-official` plugin and depends on Messages.app being open on macOS. No behavior change, just accuracy.
+
+### Fixed
+
+- **`start-services.sh` self-discovering install dir** (#27) — replaced hard-coded `/home/evonexus/evo-nexus` with `SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"` so the same script works for any service user at any path. Fixes silent systemd failure where the unit reported `active (exited)` but no processes were running — triggered when `SUDO_USER` was set to something other than the auto-created `evonexus` user (typical VPS pattern: clone into `/root/*` while `SUDO_USER=ubuntu` is preserved by `sudo -i`). `install-service.sh` no longer regenerates `start-services.sh` via heredoc; just `chmod` + `chown` the checked-in version. Added `mkdir -p logs` and `cd ... || exit 1` guards so fresh installs and dir-less reboots fail loudly instead of silently running from the wrong cwd.
+
+## [0.27.0] - 2026-04-22
+
+### Added
+
+- **Frontend i18n — pt-BR, en-US, es** (#24) — `react-i18next` + three locale bundles with 539 structurally identical keys each (validated via AST walker). Sidebar, Setup wizard (every label + validation string, live-switches as the user picks a language on step 1), Login, Settings, and 25+ page headers (Overview, Agents, Skills, Memory, Heartbeats, Goals, Providers, Integrations, Backups, Issues, Audit, Costs, Roles, Reports, MemPalace, Systems, Templates, Scheduler, Routines, Tasks, Knowledge layout, Knowledge Settings, API Keys, Connections) now render in the workspace's chosen language. Resolution order: `workspace.language` (backend) → `localStorage.evo_lang` → `navigator.language` → `en-US` fallback. Legacy codes (`ptBR`, `pt_BR`, `pt`, `enUS`, `en_US`) normalize to canonical BCP-47 transparently on both frontend and backend.
+- **`dashboard/frontend/.npmrc`** — `legacy-peer-deps=true` so `make dashboard-app` installs cleanly despite `i18next@24`/`react-i18next@15` declaring `typescript@^5` as peer while the frontend is on TS 6.
+
+### Changed
+
+- **Backend UTF-8 everywhere** — every Python I/O path that persists or reads user-facing content now uses explicit `encoding="utf-8"`: `workspace.yaml` + `CLAUDE.md` (auth_routes), `.env` editor (config), `routines.yaml` (goals, scheduler), `triggers.yaml`, `heartbeats.yaml`, ADW script docstring parsing, secret key file, port read, and Knowledge CLI env round-trip. Flask JSON responses emit real UTF-8 (`ensure_ascii = False`, `Content-Type: application/json; charset=utf-8`) instead of `\uXXXX` escapes. Accented content (`João`, `Leilões`) now survives on Windows + Docker slim (locale=C) without mangling.
+- **`settings.py` — `_normalize_language`** — transparent BCP-47 normalization on `GET` and `PUT /api/settings/workspace` so legacy `ptBR` in existing `workspace.yaml` promotes to `pt-BR` on read and canonicalizes on write. Alias lookup is case-insensitive (matches frontend's `/^ptBR$/i`).
+- **`setup.py`** — default language is now `pt-BR` (BCP-47) instead of legacy `ptBR`. Matches the canonical form used by the UI.
+- **`auth_routes._save_workspace_config`** — default language fallback changed from `"en"` to `"pt-BR"`, aligned with setup.py and frontend `DEFAULT_LOCALE`.
+
+### Fixed
+
+- **i18n resolver chain empty at runtime** — `LanguageDetector` + `supportedLngs` + `nonExplicitSupportedLngs` + `load: 'currentOnly'` combination left `i18n.languages = []` even with resources and language correctly loaded, so `t()` and `exists()` returned raw keys. Resolve the locale synchronously inline (localStorage → navigator.language → default) and pass it to `init({ lng })`. Drop `i18next-browser-languagedetector` — its job is now done inline.
+- **Scheduler — duplicate firings** — removed the `_run_scheduler` thread embedded in `app.py` that was running alongside the standalone `scheduler.py` process, causing every routine to fire 2-3× per trigger. Kept a lightweight `_poll_scheduled_tasks` thread for one-off `ScheduledTask` DB entries only.
+- **Scheduler — atomic PID lock** — replaced TOCTOU-prone check-then-create with `O_CREAT|O_EXCL` atomic open. Prevents multiple schedulers from starting simultaneously during rapid restarts (was causing `review-todoist` / `git-sync` to fire multiple times and send duplicate Telegram messages).
+- **Dashboard `restart-all`** — `pkill` processes directly then re-run `start-services.sh` instead of `systemctl restart` (which on `Type=oneshot` + `KillMode=none` didn't reliably kill children). Works without sudo.
+- **Heartbeat prompt passing** — pass prompt as positional arg instead of `-p` flag. Claude CLI has no `-p` flag; the YAML frontmatter (`---`) was being interpreted as an unknown CLI option, failing all heartbeats with `unknown option '---\nname: "zara-cs"'`.
+- **`fin-daily-pulse`** — convert all Stripe amounts to BRL (USD/IDR→BRL via exchangerate-api with 5.75 fallback); fix churn to use `customer.subscription.deleted` events with full pagination; unify Telegram to a single `reply()` call per run.
+- **`prod-good-morning` / `prod-end-of-day`** — replace sub-skill calls (`/gog-email-triage`, `/prod-review-todoist`) with direct Gmail MCP / Todoist calls, eliminating 2× Telegram notifications per run.
+- **`pulse-faq-sync`** — explicit instruction to send exactly ONE Telegram per run.
+
+## [0.26.0] - 2026-04-22
+
+### Added
+
+- **Gemini embedder for Knowledge Base** (#22) — third embedder provider alongside `local` (MPNet) and `openai`. Supports two models: `gemini-embedding-001` (stable, text-only, 2048-token input, accepts `task_type`) and `gemini-embedding-2-preview` (multimodal, 8192-token input). Uses Matryoshka Representation Learning (MRL) with selectable output dim: 768 (default, aligns with local storage cost), 1536, or 3072. L2-normalizes client-side for dim < 3072 per Google's embedding docs. Lazy SDK import — no cost when the provider is inactive. Free tier available at [aistudio.google.com/apikey](https://aistudio.google.com/apikey).
+- **Auto-generated `KNOWLEDGE_MASTER_KEY`** (#23) — the Fernet key required by the Knowledge Base is now generated automatically during `make setup` (interactive wizard) and on Docker first boot (`entrypoint.sh`), matching the UI-first philosophy already used for `EVONEXUS_SECRET_KEY`. Fresh installs get Knowledge working out of the box, no manual `make init-key` required. Idempotent — existing keys are preserved. The CLI `evonexus init-key` is still available for legacy/rotation flows.
+
+### Changed
+
+- **`BaseEmbedder.embed()` accepts optional `task_type`** — providers that support task hints (Gemini `gemini-embedding-001`) use `RETRIEVAL_DOCUMENT` during ingestion and `RETRIEVAL_QUERY` at search time. Local (MPNet) and OpenAI ignore the parameter silently for API parity. Backward-compatible via default `task_type=None`.
+- **Knowledge settings endpoint** (`PUT /api/knowledge/settings`) — now validates Gemini keys against Google AI Studio's `AIzaSy...` pattern, enforces MRL dim allowlist (`{768, 1536, 3072}`), and model allowlist for both Gemini models. Inherits CSRF guard + audit log from v0.25.0 hardening.
+- **`.gitignore`** — cover runtime databases at repo root (`*.db`, `*.db-shm`, `*.db-wal`) and the full `dashboard/data/` directory (previously only `dashboard/data/*.db` literal files were ignored, missing subdirs like `mempalace/`, `knowledge/`, `openclaude.db`).
+
+### Fixed
+
+- **`Settings.tsx`** — removed unused `providerNeedsKey` variable that was breaking `tsc --noEmit` since the Gemini PR landed.
+
+### Documentation
+
+- **`docs/dashboard/knowledge.md`** — first-time setup now reflects auto-generated master key; embedder section lists all three providers (local, openai, gemini) with their dims and use cases.
+- **`docs/reference/env-variables.md`** — new "Knowledge Base (pgvector)" section documenting `KNOWLEDGE_MASTER_KEY`, `KNOWLEDGE_EMBEDDER_PROVIDER`, OpenAI/Gemini keys, MRL dim selection, and parser choice.
+
 ## [0.25.0] - 2026-04-20
 
 ### Added — Knowledge Base (pgvector, multi-connection)

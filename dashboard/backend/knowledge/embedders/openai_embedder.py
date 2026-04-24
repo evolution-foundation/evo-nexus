@@ -15,7 +15,7 @@ constraint lives in the API layer.
 from __future__ import annotations
 
 import os
-from typing import List
+from typing import List, Optional
 
 from knowledge.embedders.base import BaseEmbedder
 
@@ -46,11 +46,18 @@ class OpenAIEmbedder(BaseEmbedder):
     def dim(self) -> int:
         return self._dim
 
-    def embed(self, texts: List[str]) -> List[List[float]]:
+    def embed(
+        self,
+        texts: List[str],
+        task_type: Optional[str] = None,
+    ) -> List[List[float]]:
         """Embed *texts* via OpenAI Embeddings API.
 
         Args:
             texts: list of non-empty strings
+            task_type: ignored — OpenAI's embeddings API does not expose
+                task conditioning. Accepted for API parity with providers
+                that do (e.g. Gemini).
 
         Returns:
             List of 1536-dim float vectors.
@@ -60,6 +67,7 @@ class OpenAIEmbedder(BaseEmbedder):
             RuntimeError: if OPENAI_API_KEY is not set.
             ValueError: if texts is empty.
         """
+        del task_type  # unused
         if not texts:
             raise ValueError("embed() called with empty texts list.")
 

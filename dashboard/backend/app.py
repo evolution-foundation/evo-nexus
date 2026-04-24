@@ -27,22 +27,51 @@ if not _secret_key:
     _key_file = WORKSPACE / "dashboard" / "data" / ".secret_key"
     _key_file.parent.mkdir(parents=True, exist_ok=True)
     if _key_file.exists():
-        _secret_key = _key_file.read_text().strip()
+        _secret_key = _key_file.read_text(encoding="utf-8").strip()
     else:
         _secret_key = secrets.token_hex(32)
-        _key_file.write_text(_secret_key)
+        _key_file.write_text(_secret_key, encoding="utf-8")
         _key_file.chmod(0o600)
 
 app.secret_key = _secret_key
+
+# Generate BRAIN_REPO_MASTER_KEY if not set (Fernet key for encrypting GitHub tokens)
+_brain_key = os.environ.get("BRAIN_REPO_MASTER_KEY")
+if not _brain_key:
+    _env_file = WORKSPACE / ".env"
+    try:
+        from cryptography.fernet import Fernet as _Fernet
+        _new_brain_key = _Fernet.generate_key().decode()
+        _env_lines = _env_file.read_text(encoding="utf-8").splitlines() if _env_file.exists() else []
+        _env_lines.append(f"BRAIN_REPO_MASTER_KEY={_new_brain_key}")
+        _env_file.write_text("\n".join(_env_lines) + "\n", encoding="utf-8")
+        os.environ["BRAIN_REPO_MASTER_KEY"] = _new_brain_key
+    except Exception as _bk_exc:
+        print(f"WARNING: Could not generate BRAIN_REPO_MASTER_KEY: {_bk_exc}")
+
 app.config["SQLALCHEMY_DATABASE_URI"] = f"sqlite:///{WORKSPACE / 'dashboard' / 'data' / 'evonexus.db'}"
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 app.config["REMEMBER_COOKIE_DURATION"] = timedelta(days=30)
 # SameSite=Strict prevents cross-origin cookie riding (CSRF defense layer 1).
 app.config["SESSION_COOKIE_SAMESITE"] = "Strict"
+
+# --- JSON encoding for API responses ---
+# With ensure_ascii=True (Flask default) jsonify escapes every non-ASCII
+# character as \uXXXX. JSON parsers in the browser decode this correctly,
+# but it clutters network logs and occasionally breaks naive consumers that
+# look at raw bytes (e.g. grep over nginx access logs). Emit real UTF-8 so
+# accented content ("João", "Mirandas Leilões") stays readable end-to-end.
+try:
+    app.json.ensure_ascii = False          # type: ignore[attr-defined]
+    app.json.mimetype = "application/json; charset=utf-8"  # type: ignore[attr-defined]
+except AttributeError:
+    # Flask <2.2 exposed this through app.config; keep compatibility.
+    app.config["JSON_AS_ASCII"] = False
+
 CORS(app, origins=["http://localhost:5173"], supports_credentials=True)
 
 # --------------- Database ---------------
-from models import db, User, needs_setup, seed_roles, seed_systems
+from models import db, User, BrainRepoConfig, needs_setup, seed_roles, seed_systems
 db.init_app(app)
 
 # Create tables on first run + enable WAL mode for concurrent reads
@@ -196,45 +225,9 @@ with app.app_context():
         END;
     """)
     _conn.commit()
-    # Seed data if missions table is empty (guard on row count, not table existence)
-    _cur.execute("SELECT COUNT(*) FROM missions")
-    if _cur.fetchone()[0] == 0:
-        _now_seed = "2026-04-14T00:00:00.000000Z"
-        _cur.execute("""
-            INSERT INTO missions (slug, title, description, target_metric, target_value, current_value, due_date, status, created_at, updated_at)
-            VALUES ('evo-revenue-1m-q4-2026', 'Evolution Revenue $1M Q4 2026',
-                    'Atingir $1M de receita anual até o Q4 2026',
-                    'revenue_usd', 1000000, 0, '2026-12-31', 'active', ?, ?)
-        """, (_now_seed, _now_seed))
-        _mission_id = _cur.lastrowid
-        # Projects
-        for _slug, _title, _desc in [
-            ('evo-ai', 'Evo AI', 'CRM + AI agents — produto principal'),
-            ('evo-summit', 'Evolution Summit', 'Evento de lançamento (14-16 Abr 2026)'),
-            ('evo-academy', 'Evo Academy', 'Plataforma de cursos'),
-        ]:
-            _cur.execute("""
-                INSERT INTO projects (slug, mission_id, title, description, status, created_at, updated_at)
-                VALUES (?, ?, ?, ?, 'active', ?, ?)
-            """, (_slug, _mission_id, _title, _desc, _now_seed, _now_seed))
-        _conn.commit()
-        # Goals per project
-        _evo_ai_id = _cur.execute("SELECT id FROM projects WHERE slug='evo-ai'").fetchone()[0]
-        _summit_id = _cur.execute("SELECT id FROM projects WHERE slug='evo-summit'").fetchone()[0]
-        _academy_id = _cur.execute("SELECT id FROM projects WHERE slug='evo-academy'").fetchone()[0]
-        _goals_seed = [
-            ('evo-ai-100-customers', _evo_ai_id, '100 paying customers by Jun 30', 'customers', 'count', 100, '2026-06-30'),
-            ('evo-ai-billing-v2', _evo_ai_id, 'Ship billing v2', 'shipped', 'boolean', 1, '2026-05-31'),
-            ('evo-summit-200-tickets', _summit_id, 'Sell 200 tickets', 'tickets_sold', 'count', 200, '2026-04-13'),
-            ('evo-summit-3-sponsors', _summit_id, 'Close 3 sponsors', 'sponsors', 'count', 3, '2026-04-10'),
-            ('evo-academy-50-students', _academy_id, '50 beta students', 'students', 'count', 50, '2026-06-30'),
-        ]
-        for _gs in _goals_seed:
-            _cur.execute("""
-                INSERT INTO goals (slug, project_id, title, target_metric, metric_type, target_value, current_value, status, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, 0, 'active', ?, ?)
-            """, (_gs[0], _gs[1], _gs[2], _gs[3], _gs[4], _gs[5], _now_seed, _now_seed))
-        _conn.commit()
+    # No seed data — Goals start empty. Users create Mission → Project → Goal via UI
+    # or via the create-goal skill. Previous seed was Evolution-specific and leaked
+    # into fresh installations of open-source users.
     # --- End Goal Cascade migration ---
 
     # --- Tickets migration (Feature 1.3) ---
@@ -300,6 +293,25 @@ with app.app_context():
         _conn.commit()
     # --- End source attribution migration ---
 
+    # --- Thread-areas columns on tickets ---
+    _ticket_cols = {row[1] for row in _cur.execute("PRAGMA table_info(tickets)").fetchall()}
+    if "workspace_path" not in _ticket_cols:
+        _cur.execute("ALTER TABLE tickets ADD COLUMN workspace_path TEXT")
+        _conn.commit()
+    if "memory_md_path" not in _ticket_cols:
+        _cur.execute("ALTER TABLE tickets ADD COLUMN memory_md_path TEXT")
+        _conn.commit()
+    if "thread_session_id" not in _ticket_cols:
+        _cur.execute("ALTER TABLE tickets ADD COLUMN thread_session_id TEXT")
+        _conn.commit()
+    if "message_count" not in _ticket_cols:
+        _cur.execute("ALTER TABLE tickets ADD COLUMN message_count INTEGER NOT NULL DEFAULT 0")
+        _conn.commit()
+    if "last_summary_at_message" not in _ticket_cols:
+        _cur.execute("ALTER TABLE tickets ADD COLUMN last_summary_at_message INTEGER NOT NULL DEFAULT 0")
+        _conn.commit()
+    # --- End thread-areas migration ---
+
     # --- End tickets migration ---
 
     # --- Knowledge connections migration (pgvector-knowledge feature) ---
@@ -360,6 +372,36 @@ with app.app_context():
         _conn.commit()
     # --- End knowledge API keys migration ---
 
+    # --- Brain Repo migration (brain-repo feature) ---
+    _user_cols = {row[1] for row in _cur.execute("PRAGMA table_info(users)").fetchall()}
+    if "onboarding_state" not in _user_cols:
+        _cur.execute("ALTER TABLE users ADD COLUMN onboarding_state TEXT")
+        _conn.commit()
+    if "onboarding_completed_agents_visit" not in _user_cols:
+        _cur.execute("ALTER TABLE users ADD COLUMN onboarding_completed_agents_visit INTEGER NOT NULL DEFAULT 0")
+        _conn.commit()
+    if "brain_repo_configs" not in _existing_tables:
+        _cur.executescript("""
+            CREATE TABLE IF NOT EXISTS brain_repo_configs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+                github_token_encrypted BLOB,
+                repo_url TEXT,
+                repo_owner TEXT,
+                repo_name TEXT,
+                local_path TEXT,
+                last_sync TIMESTAMP,
+                sync_enabled INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT,
+                pending_count INTEGER NOT NULL DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_brain_repo_user ON brain_repo_configs(user_id);
+        """)
+        _conn.commit()
+    # --- End Brain Repo migration ---
+
     # Fix corrupted datetime columns (NULL or non-string values crash SQLAlchemy)
     for _tbl, _col in [("roles", "created_at"), ("users", "created_at"), ("users", "last_login")]:
         try:
@@ -372,6 +414,33 @@ with app.app_context():
     _conn.commit()
     _conn.close()
     # --- End auto-migrate ---
+
+    # --- Migration: providers.json schema normalization ---
+    # If the file exists but is missing the canonical keys
+    # ({active_provider, providers: {...}}), copy providers.example.json
+    # over it. This recovers from broken state left by older versions of
+    # the onboarding wizard that naively wrote {<id>: {api_key, enabled}}.
+    try:
+        _providers_file = WORKSPACE / "config" / "providers.json"
+        _providers_example = WORKSPACE / "config" / "providers.example.json"
+        if _providers_file.is_file():
+            try:
+                import json as _json
+                _data = _json.loads(_providers_file.read_text(encoding="utf-8"))
+                _ok = (
+                    isinstance(_data, dict)
+                    and "active_provider" in _data
+                    and isinstance(_data.get("providers"), dict)
+                )
+            except Exception:
+                _ok = False
+            if not _ok and _providers_example.is_file():
+                import shutil as _shutil
+                _shutil.copy2(_providers_example, _providers_file)
+                print("[migration] providers.json had invalid schema, restored from providers.example.json")
+    except Exception as _mig_exc:
+        print(f"[migration] providers.json normalization skipped: {_mig_exc}")
+    # --- End providers.json migration ---
 
     seed_roles()
     seed_systems()
@@ -451,6 +520,7 @@ PUBLIC_PATHS = {
     "/api/auth/login",
     "/api/auth/needs-setup",
     "/api/auth/setup",
+    "/api/auth/needs-onboarding",
     "/api/config/workspace-status",
     "/api/version",
     "/api/version/check",
@@ -551,6 +621,26 @@ from routes.knowledge import bp as knowledge_bp
 from routes.knowledge_public import bp as knowledge_public_bp
 from routes.knowledge_proxy import bp as knowledge_proxy_bp
 from routes.knowledge_v1 import bp as knowledge_v1_bp
+from routes.databases import bp as databases_bp
+
+# Brain Repo + Onboarding blueprints (loaded after routes are created)
+try:
+    from routes.onboarding import bp as onboarding_bp
+    from routes.brain_repo import bp as brain_repo_bp
+    app.register_blueprint(onboarding_bp)
+    app.register_blueprint(brain_repo_bp)
+except ImportError:
+    pass  # Routes not yet created
+
+# Brain Repo watcher startup
+# Pass the app instance explicitly to avoid the circular `from app import app`
+# that triggered "Flask app is not registered with this 'SQLAlchemy' instance"
+# on every boot, leaving auto-sync permanently off.
+try:
+    from brain_repo.watcher import start_brain_watcher
+    start_brain_watcher(WORKSPACE, flask_app=app)
+except Exception as _bw_exc:
+    pass  # Brain watcher starts only when a brain repo is configured
 
 app.register_blueprint(overview_bp)
 app.register_blueprint(workspace_bp)
@@ -581,6 +671,7 @@ app.register_blueprint(knowledge_bp)
 app.register_blueprint(knowledge_public_bp)
 app.register_blueprint(knowledge_proxy_bp)
 app.register_blueprint(knowledge_v1_bp)
+app.register_blueprint(databases_bp)
 
 # --------------- Social Auth blueprints ---------------
 from auth.youtube import bp as youtube_auth_bp
@@ -724,7 +815,7 @@ if __name__ == "__main__":
         import yaml
         config_path = WORKSPACE / "config" / "workspace.yaml"
         if config_path.is_file():
-            with open(config_path) as f:
+            with open(config_path, encoding="utf-8") as f:
                 cfg = yaml.safe_load(f)
             if cfg and cfg.get("port"):
                 port = int(cfg["port"])

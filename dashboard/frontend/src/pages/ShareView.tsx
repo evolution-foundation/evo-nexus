@@ -281,7 +281,7 @@ function PoweredByFooter() {
         cursor: 'pointer',
       }}
     >
-      <img src="/EVO_NEXUS.png" alt="EvoNexus" style={{ height: '16px', width: 'auto', opacity: 0.7 }} />
+      <img src="/EVO_NEXUS.webp" alt="EvoNexus" style={{ height: '16px', width: 'auto', opacity: 0.7 }} />
       <span style={{ fontSize: '11px', color: 'var(--text-muted, #667085)' }}>
         Powered by EvoNexus
       </span>

@@ -2,14 +2,14 @@
 ## EvoNexus — Portainer / Docker Swarm deployment stack
 ##
 ## Before deploying, replace the placeholders below with your own values:
-##   * ghcr.io/OWNER/...            → the ghcr.io namespace where your CI
-##                                    publishes the images (e.g. your fork,
-##                                    or `evolutionapi` once the images are
-##                                    published officially).
 ##   * evonexus.example.com         → your public hostname (two places)
 ##   * traefik-public               → the external Docker network shared
 ##                                    with your Traefik stack (some setups
 ##                                    call it `web`, `proxy`, etc.)
+##
+## Images are pulled from the official Docker Hub namespace
+## `evoapicloud/evo-nexus-*`. If you want to use your own fork, update the
+## three `image:` lines below and point them at your registry.
 ##
 ## Images are published automatically by .github/workflows/docker-publish.yml
 ## on every version tag and on pushes to `main`.
@@ -23,7 +23,7 @@ version: "3.7"
 services:
 
   evonexus_dashboard:
-    image: ghcr.io/OWNER/evo-nexus-dashboard:latest  ## replace OWNER
+    image: evoapicloud/evo-nexus-dashboard:latest
 
     volumes:
       - evonexus_config:/workspace/config
@@ -84,7 +84,7 @@ services:
         - traefik.http.services.evonexus_terminal.loadbalancer.passHostHeader=true
 
   evonexus_telegram:
-    image: ghcr.io/OWNER/evo-nexus-runtime:latest  ## replace OWNER
+    image: evoapicloud/evo-nexus-runtime:latest
     command:
       - "claude"
       - "--channels"
@@ -123,7 +123,7 @@ services:
           memory: 1024M
 
   evonexus_scheduler:
-    image: ghcr.io/OWNER/evo-nexus-runtime:latest  ## replace OWNER
+    image: evoapicloud/evo-nexus-runtime:latest
     command: ["uv", "run", "python", "scheduler.py"]
 
     volumes:

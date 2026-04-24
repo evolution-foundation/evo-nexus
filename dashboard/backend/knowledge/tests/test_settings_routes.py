@@ -143,6 +143,7 @@ class TestGetSettings:
         assert "parser_default" in data
         assert "locked" in data
         assert "openai_api_key_set" in data
+        assert "gemini_api_key_set" in data
 
     def test_locked_false_when_no_connections(self, client):
         with patch("routes.knowledge._assert_key", return_value=None):
@@ -171,6 +172,17 @@ class TestListEmbedderModels:
         assert "providers" in data
         assert "local" in data["providers"]
         assert "openai" in data["providers"]
+        assert "gemini" in data["providers"]
+
+    def test_gemini_provider_lists_both_models(self, client):
+        with patch("routes.knowledge._assert_key", return_value=None):
+            resp = client.get("/api/knowledge/embedders/models?provider=gemini")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["provider"] == "gemini"
+        model_ids = [m["id"] for m in data["models"]]
+        assert "gemini-embedding-001" in model_ids
+        assert "gemini-embedding-2-preview" in model_ids
 
     def test_filter_by_openai_provider(self, client):
         with patch("routes.knowledge._assert_key", return_value=None):
@@ -260,3 +272,104 @@ class TestPutSettings:
         assert resp.status_code == 200
         data = resp.get_json()
         assert "embedder_provider" in data
+
+    # -----------------------------------------------------------------
+    # Gemini-specific validation
+    # -----------------------------------------------------------------
+
+    def test_gemini_key_rejected_when_provider_is_local(self, client, monkeypatch):
+        monkeypatch.setenv("KNOWLEDGE_EMBEDDER_PROVIDER", "local")
+        valid_key = "AIzaSy" + "a" * 33
+        with patch("routes.knowledge._assert_key", return_value=None):
+            resp = client.put(
+                "/api/knowledge/settings",
+                json={"gemini_api_key": valid_key},
+                headers=_WRITE_HEADERS,
+            )
+        assert resp.status_code == 400
+        assert "gemini_api_key" in resp.get_json().get("error", "")
+
+    def test_gemini_key_rejected_when_pattern_invalid(self, client, monkeypatch):
+        monkeypatch.setenv("KNOWLEDGE_EMBEDDER_PROVIDER", "gemini")
+        with (
+            patch("routes.knowledge._assert_key", return_value=None),
+            patch("routes.integrations._upsert_env_vars", return_value=None),
+            patch("routes.knowledge.audit", return_value=None),
+            patch("routes.knowledge.current_user", _FAKE_USER),
+        ):
+            resp = client.put(
+                "/api/knowledge/settings",
+                json={
+                    "embedder_provider": "gemini",
+                    "gemini_api_key": "not-a-valid-key",
+                },
+                headers=_WRITE_HEADERS,
+            )
+        assert resp.status_code == 400
+        assert "AIzaSy" in resp.get_json().get("error", "")
+
+    def test_gemini_valid_key_accepted(self, client, monkeypatch, tmp_path):
+        monkeypatch.setenv("KNOWLEDGE_EMBEDDER_PROVIDER", "gemini")
+        env_file = tmp_path / ".env"
+        env_file.write_text("")
+        valid_key = "AIzaSy" + "a" * 33
+        with (
+            patch("routes.knowledge._assert_key", return_value=None),
+            patch("routes.knowledge._WORKSPACE_ROOT", tmp_path),
+            patch("routes.integrations._upsert_env_vars", return_value=None),
+            patch("routes.knowledge.audit", return_value=None),
+            patch("routes.knowledge.current_user", _FAKE_USER),
+        ):
+            resp = client.put(
+                "/api/knowledge/settings",
+                json={
+                    "embedder_provider": "gemini",
+                    "gemini_api_key": valid_key,
+                },
+                headers=_WRITE_HEADERS,
+            )
+        assert resp.status_code == 200
+
+    def test_gemini_dim_rejected_when_provider_is_local(self, client, monkeypatch):
+        monkeypatch.setenv("KNOWLEDGE_EMBEDDER_PROVIDER", "local")
+        with patch("routes.knowledge._assert_key", return_value=None):
+            resp = client.put(
+                "/api/knowledge/settings",
+                json={"gemini_dim": 1536},
+                headers=_WRITE_HEADERS,
+            )
+        assert resp.status_code == 400
+
+    def test_gemini_dim_invalid_value_rejected(self, client, monkeypatch):
+        monkeypatch.setenv("KNOWLEDGE_EMBEDDER_PROVIDER", "gemini")
+        with patch("routes.knowledge._assert_key", return_value=None):
+            resp = client.put(
+                "/api/knowledge/settings",
+                json={
+                    "embedder_provider": "gemini",
+                    "gemini_dim": 512,
+                },
+                headers=_WRITE_HEADERS,
+            )
+        assert resp.status_code == 400
+
+    def test_gemini_model_2_preview_accepted(self, client, monkeypatch, tmp_path):
+        monkeypatch.setenv("KNOWLEDGE_EMBEDDER_PROVIDER", "gemini")
+        env_file = tmp_path / ".env"
+        env_file.write_text("")
+        with (
+            patch("routes.knowledge._assert_key", return_value=None),
+            patch("routes.knowledge._WORKSPACE_ROOT", tmp_path),
+            patch("routes.integrations._upsert_env_vars", return_value=None),
+            patch("routes.knowledge.audit", return_value=None),
+            patch("routes.knowledge.current_user", _FAKE_USER),
+        ):
+            resp = client.put(
+                "/api/knowledge/settings",
+                json={
+                    "embedder_provider": "gemini",
+                    "embedder_model": "gemini-embedding-2-preview",
+                },
+                headers=_WRITE_HEADERS,
+            )
+        assert resp.status_code == 200

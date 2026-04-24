@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from 'react'
 import { Library, Search, FolderPlus, Play, Trash2, RefreshCw, Download, Database, Layers, Grid3X3 } from 'lucide-react'
 import { api } from '../lib/api'
 import { useAuth } from '../context/AuthContext'
+import { useTranslation } from 'react-i18next'
 
 interface MiningStatus {
   pid: number | null
@@ -59,6 +60,7 @@ interface SearchResponse {
 type Tab = 'status' | 'sources' | 'search'
 
 export default function MemPalace() {
+  const { t } = useTranslation()
   const { hasPermission } = useAuth()
   const canManage = hasPermission('mempalace', 'manage')
 
@@ -181,7 +183,7 @@ export default function MemPalace() {
     return (
       <div>
         <div className="mb-8">
-          <h1 className="text-2xl font-bold text-[#F9FAFB]">Knowledge Base</h1>
+          <h1 className="text-2xl font-bold text-[#F9FAFB]">{t('mempalace.title')}</h1>
           <p className="text-[#667085] mt-1">Semantic search powered by MemPalace</p>
         </div>
         <div className="space-y-3">
@@ -194,7 +196,7 @@ export default function MemPalace() {
   return (
     <div>
       <div className="mb-8">
-        <h1 className="text-2xl font-bold text-[#F9FAFB]">Knowledge Base</h1>
+        <h1 className="text-2xl font-bold text-[#F9FAFB]">{t('mempalace.title')}</h1>
         <p className="text-[#667085] mt-1">Semantic search powered by MemPalace</p>
       </div>
 

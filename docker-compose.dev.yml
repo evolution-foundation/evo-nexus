@@ -1,0 +1,58 @@
+# docker-compose.dev.yml — Ambiente de teste local Windows
+#
+# USO:
+#   1. cp .env.example .env  (e edite com suas chaves)
+#   2. docker compose -f docker-compose.dev.yml up --build
+#   3. Acesse http://localhost:8080
+#
+# Diferenças do docker-compose.yml de produção:
+#   - Monta o código-fonte local (live reload no backend)
+#   - Porta 8080 em vez de 8081
+#   - Volume nomeado para cache de deps (evita rebuilds longos)
+#   - Sem serviços extras (telegram, etc)
+
+services:
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    container_name: evonexus-dev
+    ports:
+      - "8080:8080"        # Dashboard Flask + React
+      - "32352:32352"      # Terminal server (Claude Code terminal)
+    env_file:
+      - path: .env
+        required: false    # Não falha se .env não existir ainda
+    environment:
+      - TZ=America/Sao_Paulo
+      - EVONEXUS_PORT=8080
+      - TERMINAL_SERVER_PORT=32352
+      - FLASK_ENV=development
+    volumes:
+      # Código-fonte montado — mudanças no backend refletem sem rebuild
+      - ./dashboard/backend:/workspace/dashboard/backend:cached
+      - ./scheduler.py:/workspace/scheduler.py:cached
+      - ./backup.py:/workspace/backup.py:cached
+      - ./setup.py:/workspace/setup.py:cached
+      - ./ADWs:/workspace/ADWs:cached
+      - ./.claude:/workspace/.claude:cached
+      # Dados persistidos entre restarts
+      - evonexus-dev-data:/workspace/dashboard/data
+      - evonexus-dev-config:/workspace/config
+      - evonexus-dev-memory:/workspace/memory
+      - evonexus-dev-workspace:/workspace/workspace
+      - evonexus-dev-claude:/root/.claude
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/version"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+volumes:
+  evonexus-dev-data:
+  evonexus-dev-config:
+  evonexus-dev-memory:
+  evonexus-dev-workspace:
+  evonexus-dev-claude:

@@ -31,6 +31,9 @@ class User(UserMixin, db.Model):
     def check_password(self, password: str) -> bool:
         return bcrypt.checkpw(password.encode(), self.password_hash.encode())
 
+    onboarding_state = db.Column(db.String(20), nullable=True)
+    onboarding_completed_agents_visit = db.Column(db.Boolean, default=False, nullable=False, server_default='0')
+
     def to_dict(self):
         return {
             "id": self.id,
@@ -42,6 +45,8 @@ class User(UserMixin, db.Model):
             "is_active": self.is_active,
             "created_at": self.created_at.strftime("%Y-%m-%dT%H:%M:%S.%fZ") if self.created_at else None,
             "last_login": self.last_login.strftime("%Y-%m-%dT%H:%M:%S.%fZ") if self.last_login else None,
+            "onboarding_state": self.onboarding_state,
+            "onboarding_completed_agents_visit": self.onboarding_completed_agents_visit,
         }
 
 
@@ -736,7 +741,7 @@ class GoalTask(db.Model):
 
 # --------------- Tickets models (Feature 1.3) ---------------
 
-TICKET_STATUSES = ("open", "in_progress", "blocked", "review", "resolved", "closed")
+TICKET_STATUSES = ("open", "in_progress", "blocked", "review", "resolved", "closed", "archived")
 TICKET_PRIORITIES = ("urgent", "high", "medium", "low")
 PRIORITY_RANK = {"urgent": 4, "high": 3, "medium": 2, "low": 1}
 
@@ -773,6 +778,12 @@ class Ticket(db.Model):
     created_by = db.Column(db.String(100), nullable=False, default="davidson")
     source_agent = db.Column(db.String(100), nullable=True)
     source_session_id = db.Column(db.String(36), nullable=True)
+    # thread-areas columns
+    workspace_path = db.Column(db.Text, nullable=True)
+    memory_md_path = db.Column(db.Text, nullable=True)
+    thread_session_id = db.Column(db.Text, nullable=True)
+    message_count = db.Column(db.Integer, nullable=False, default=0)
+    last_summary_at_message = db.Column(db.Integer, nullable=False, default=0)
     created_at = db.Column(db.String(30), nullable=False)
     updated_at = db.Column(db.String(30), nullable=False)
     resolved_at = db.Column(db.String(30), nullable=True)
@@ -797,6 +808,13 @@ class Ticket(db.Model):
             "created_by": self.created_by,
             "source_agent": self.source_agent,
             "source_session_id": self.source_session_id,
+            # thread-areas fields
+            "workspace_path": self.workspace_path,
+            "memory_md_path": self.memory_md_path,
+            "thread_session_id": self.thread_session_id,
+            "message_count": self.message_count,
+            "last_summary_at_message": self.last_summary_at_message,
+            "is_thread": self.memory_md_path is not None,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "resolved_at": self.resolved_at,
@@ -1053,9 +1071,48 @@ def audit(user, action: str, resource: str = None, detail: str = None):
     db.session.commit()
 
 
+class BrainRepoConfig(db.Model):
+    __tablename__ = "brain_repo_configs"
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="CASCADE"), nullable=False, unique=True)
+    github_token_encrypted = db.Column(db.LargeBinary, nullable=True)
+    repo_url = db.Column(db.String(500), nullable=True)
+    repo_owner = db.Column(db.String(200), nullable=True)
+    repo_name = db.Column(db.String(200), nullable=True)
+    local_path = db.Column(db.String(500), nullable=True)
+    last_sync = db.Column(db.DateTime, nullable=True)
+    sync_enabled = db.Column(db.Boolean, default=False, nullable=False, server_default='0')
+    last_error = db.Column(db.Text, nullable=True)
+    pending_count = db.Column(db.Integer, default=0, nullable=False, server_default='0')
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+    user = db.relationship("User", backref=db.backref("brain_repo_config", uselist=False))
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "user_id": self.user_id,
+            "repo_url": self.repo_url,
+            "repo_owner": self.repo_owner,
+            "repo_name": self.repo_name,
+            "last_sync": self.last_sync.strftime("%Y-%m-%dT%H:%M:%S.%fZ") if self.last_sync else None,
+            "sync_enabled": self.sync_enabled,
+            "last_error": self.last_error,
+            "pending_count": self.pending_count,
+            "connected": self.github_token_encrypted is not None,
+        }
+
+
 def needs_setup() -> bool:
     """Check if the system needs initial setup (no users exist)."""
     try:
         return User.query.count() == 0
     except Exception:
         return True
+
+
+def needs_onboarding(user) -> bool:
+    """Check if the user needs to complete the onboarding wizard."""
+    return user is not None and user.onboarding_state in (None, "pending")

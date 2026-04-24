@@ -592,6 +592,40 @@ def list_backups(target: str = "local", s3_bucket: str = None):
                 print(f"  {name}  {size:>10s}  {date}")
 
 
+# ── GitHub (Brain Repo) ──────────────────────────
+
+
+def backup_to_github(config: dict = None) -> None:
+    """Trigger brain repo commit+push and create a milestone tag."""
+    tag = datetime.now().strftime("manual-backup-%Y-%m-%d")
+    banner("Backup — GitHub (Brain Repo)")
+
+    try:
+        from brain_repo.git_ops import commit_all, push, create_tag  # type: ignore
+        from models import BrainRepoConfig  # type: ignore
+
+        cfg = config or BrainRepoConfig.get_default()
+        if not cfg:
+            print(f"{YELLOW}Brain Repo is not configured. Run setup or use the web UI.{RESET}")
+            return
+
+        commit_all(cfg, message=f"manual-backup {datetime.now().isoformat()}")
+        push(cfg)
+        create_tag(cfg, tag)
+
+        if HAS_RICH:
+            console.print(f"  [bold green]✓ Brain Repo backup complete — tag: {tag}[/]")
+        else:
+            print(f"  {GREEN}✓ Brain Repo backup complete — tag: {tag}{RESET}")
+
+    except ImportError:
+        print(f"{YELLOW}Brain repo modules not available. Run setup first.{RESET}")
+        return
+    except Exception as exc:
+        print(f"{RED}Brain Repo backup failed: {exc}{RESET}")
+        raise
+
+
 # ── CLI ──────────────────────────────────────────
 
 
@@ -603,6 +637,7 @@ def main():
 Examples:
   python backup.py backup                  # Local backup
   python backup.py backup --target s3      # Local + S3 upload
+  python backup.py backup --target github  # Brain Repo commit+push
   python backup.py restore backups/evonexus-backup-20260409-120000.zip
   python backup.py restore backups/latest.zip --mode replace
   python backup.py restore --target s3     # Restore latest from S3
@@ -614,7 +649,7 @@ Examples:
 
     # backup
     bp = sub.add_parser("backup", help="Export workspace data to ZIP")
-    bp.add_argument("--target", choices=["local", "s3"], default="local", help="Backup target (default: local)")
+    bp.add_argument("--target", choices=["local", "s3", "github"], default="local", help="Backup target (default: local)")
     bp.add_argument("--s3-bucket", help="S3 bucket (overrides BACKUP_S3_BUCKET env var)")
 
     # restore
@@ -632,12 +667,15 @@ Examples:
     args = parser.parse_args()
 
     if args.command == "backup":
-        s3_upload = args.target == "s3"
-        zip_path = backup_local(s3_upload=s3_upload, s3_bucket=args.s3_bucket)
-        # S3 mode: remove local copy after successful upload
-        if s3_upload and zip_path and zip_path.exists():
-            zip_path.unlink(missing_ok=True)
-            print(f"  {GREEN}✓ Local copy removed (S3 only){RESET}")
+        if args.target == "github":
+            backup_to_github()
+        else:
+            s3_upload = args.target == "s3"
+            zip_path = backup_local(s3_upload=s3_upload, s3_bucket=args.s3_bucket)
+            # S3 mode: remove local copy after successful upload
+            if s3_upload and zip_path and zip_path.exists():
+                zip_path.unlink(missing_ok=True)
+                print(f"  {GREEN}✓ Local copy removed (S3 only){RESET}")
 
     elif args.command == "restore":
         if args.target == "s3":

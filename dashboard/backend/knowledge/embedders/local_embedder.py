@@ -55,11 +55,17 @@ class LocalEmbedder(BaseEmbedder):
     def dim(self) -> int:
         return 768
 
-    def embed(self, texts: List[str]) -> List[List[float]]:
+    def embed(
+        self,
+        texts: List[str],
+        task_type: Optional[str] = None,
+    ) -> List[List[float]]:
         """Embed *texts* in batches of 32.
 
         Args:
             texts: list of non-empty strings
+            task_type: ignored — MPNet has no task-conditioning. Accepted
+                for API parity with providers that do (e.g. Gemini).
 
         Returns:
             List of 768-dim float vectors.
@@ -68,6 +74,7 @@ class LocalEmbedder(BaseEmbedder):
             RuntimeError: if sentence-transformers is not installed.
             ValueError: if texts is empty.
         """
+        del task_type  # unused
         if not texts:
             raise ValueError("embed() called with empty texts list.")
 

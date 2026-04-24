@@ -1,7 +1,10 @@
 import { useEffect, useState, useRef } from 'react'
+import { useToast } from '../components/Toast'
+import { useConfirm } from '../components/ConfirmDialog'
 import { Play, Square, RefreshCw, Terminal, X, Clock, RotateCcw } from 'lucide-react'
 import { api } from '../lib/api'
 import StatusDot from '../components/StatusDot'
+import { useTranslation } from 'react-i18next'
 
 interface Service {
   id: string
@@ -70,6 +73,9 @@ function sortTasks(tasks: ScheduledTask[]): ScheduledTask[] {
 }
 
 export default function Scheduler() {
+  const { t } = useTranslation()
+  const toast = useToast()
+  const confirm = useConfirm()
   const [services, setServices] = useState<Service[]>([])
   const [tasks, setTasks] = useState<ScheduledTask[]>([])
   const [loading, setLoading] = useState(true)
@@ -95,7 +101,13 @@ export default function Scheduler() {
   const [restarting, setRestarting] = useState(false)
 
   const handleRestartAll = async () => {
-    if (!confirm('Restart EvoNexus? Dashboard, scheduler, and terminal-server will restart.')) return
+    const ok = await confirm({
+      title: 'Reiniciar EvoNexus',
+      description: 'Dashboard, scheduler e terminal-server serão reiniciados.',
+      confirmText: 'Reiniciar',
+      variant: 'danger',
+    })
+    if (!ok) return
     setRestarting(true)
     try {
       await api.post('/services/restart-all')
@@ -104,7 +116,7 @@ export default function Scheduler() {
         window.location.reload()
       }, 5000)
     } catch (e: any) {
-      alert(e?.message || 'Failed to restart. Is the systemd service installed?')
+      toast.error('Falha ao reiniciar', e?.message || 'O serviço systemd está instalado?')
       setRestarting(false)
     }
   }
@@ -163,7 +175,7 @@ export default function Scheduler() {
     return (
       <div>
         <div className="mb-8">
-          <h1 className="text-2xl font-bold text-[#e6edf3]">Services & Scheduler</h1>
+          <h1 className="text-2xl font-bold text-[#e6edf3]">{t('scheduler.title')}</h1>
         </div>
         <div className="space-y-3">
           {[...Array(3)].map((_, i) => <div key={i} className="skeleton h-24 rounded-xl" />)}
@@ -180,7 +192,7 @@ export default function Scheduler() {
             <Clock size={20} className="text-[#00FFA7]" />
           </div>
           <div>
-            <h1 className="text-2xl font-bold text-[#e6edf3]">Services & Scheduler</h1>
+            <h1 className="text-2xl font-bold text-[#e6edf3]">{t('scheduler.title')}</h1>
             <p className="text-[#667085] mt-0.5 text-sm">Background services and scheduled routines</p>
           </div>
         </div>

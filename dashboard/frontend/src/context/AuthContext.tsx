@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useState, useCallback, type ReactNode } from 'react'
 import { api } from '../lib/api'
+import { setWorkspaceLanguage } from '../i18n'
 
 interface User {
   id: string
@@ -114,6 +115,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setPermissions(meRes.permissions || {})
       setAgentAccess(meRes.agent_access || { mode: 'all' })
       setWorkspaceFolders(meRes.workspace_folders || { mode: 'all' })
+
+      // Sync i18n with workspace.language — takes priority over detector.
+      // Best-effort: never let a transient 4xx break auth flow.
+      try {
+        const ws = await api.get('/settings/workspace')
+        const lang = ws?.workspace?.language
+        if (lang) setWorkspaceLanguage(lang)
+      } catch {
+        // Endpoint unreachable / 403 / etc. — i18n detector keeps its guess.
+      }
     } catch {
       setUser(null)
       setPermissions({})

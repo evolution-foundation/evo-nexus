@@ -1,3 +1,4 @@
+import { lazy, Suspense } from 'react'
 import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import { AuthProvider, useAuth } from './context/AuthContext'
 import { NotificationProvider } from './context/NotificationContext'
@@ -30,8 +31,9 @@ import Settings from './pages/Settings'
 import ShareView from './pages/ShareView'
 import ShareLinks from './pages/ShareLinks'
 import HeartbeatsList, { HeartbeatDetail } from './pages/Heartbeats'
+import Activity from './pages/Activity'
 import Goals from './pages/Goals'
-import Issues from './pages/Issues'
+import Topics from './pages/Topics'
 import TicketDetail from './pages/TicketDetail'
 import KnowledgeLayout from './pages/Knowledge/KnowledgeLayout'
 import ConnectionLayout from './pages/Knowledge/ConnectionLayout'
@@ -45,13 +47,26 @@ import KnowledgeBrowse from './pages/Knowledge/Browse'
 import KnowledgeSearch from './pages/Knowledge/Search'
 import KnowledgeApiKeys from './pages/Knowledge/ApiKeys'
 
+// Lazy-loaded onboarding + settings pages
+const OnboardingRouter = lazy(() => import('./pages/onboarding/OnboardingRouter'))
+const BrainRepo = lazy(() => import('./pages/settings/BrainRepo'))
+
+// Extended user type with onboarding fields (backend may include these)
+interface OnboardingUser {
+  onboarding_state?: string | null
+  onboarding_completed_agents_visit?: boolean
+}
+
 function AppContent() {
   const location = useLocation()
   const isDocs = location.pathname === '/docs' || location.pathname.startsWith('/docs/')
   const isShare = location.pathname.startsWith('/share/')
+  const isOnboarding = location.pathname.startsWith('/onboarding')
   const isAgentDetail = /^\/agents\/[^/]+$/.test(location.pathname)
+  const isTicketDetail = /^\/tickets\/[^/]+$/.test(location.pathname)
   const isWorkspace = location.pathname === '/workspace' || location.pathname.startsWith('/workspace/')
   const { user, loading, needsSetup, hasPermission } = useAuth()
+  const extUser = user as (typeof user & OnboardingUser) | null
 
   // Share links are public — render without auth or sidebar
   if (isShare) {
@@ -89,6 +104,28 @@ function AppContent() {
   if (needsSetup) return <Setup />
   if (!user) return <Login />
 
+  // Onboarding guard — redirect to /onboarding if user hasn't completed/skipped it.
+  // For brand-new users onboarding_state is null (column nullable), which counts as "needs onboarding".
+  if (
+    !isOnboarding &&
+    extUser &&
+    extUser.onboarding_state !== 'completed' &&
+    extUser.onboarding_state !== 'skipped'
+  ) {
+    return <Navigate to="/onboarding" replace />
+  }
+
+  // Allow direct access to /onboarding regardless
+  if (isOnboarding) {
+    return (
+      <Suspense fallback={<div className="min-h-screen bg-[#080c14] flex items-center justify-center"><div className="text-[#5a6b7f] text-sm">Loading...</div></div>}>
+        <Routes>
+          <Route path="/onboarding/*" element={<OnboardingRouter />} />
+        </Routes>
+      </Suspense>
+    )
+  }
+
   return (
     <NotificationProvider>
     <div className="flex min-h-screen bg-[#0C111D]">
@@ -97,17 +134,30 @@ function AppContent() {
       {/* Pages — responsive margin */}
       <main
         className={
-          isAgentDetail || isWorkspace
+          isAgentDetail || isWorkspace || isTicketDetail
             ? 'flex-1 ml-0 lg:ml-60 pt-14 lg:pt-0 h-screen overflow-hidden'
             : 'flex-1 ml-0 lg:ml-60 p-4 lg:p-8 pt-16 lg:pt-8 overflow-auto'
         }
       >
         <Routes>
+          {/* Onboarding & Settings routes (lazy) */}
+          <Route path="/onboarding/*" element={
+            <Suspense fallback={<div className="flex items-center justify-center py-16"><div className="text-[#5a6b7f] text-sm">Loading...</div></div>}>
+              <OnboardingRouter />
+            </Suspense>
+          } />
+          <Route path="/settings/brain-repo" element={
+            <Suspense fallback={<div className="flex items-center justify-center py-16"><div className="text-[#5a6b7f] text-sm">Loading...</div></div>}>
+              <BrainRepo />
+            </Suspense>
+          } />
+
           <Route path="/" element={<Overview />} />
           <Route path="/workspace/*" element={<Workspace />} />
           <Route path="/agents" element={<Agents />} />
           <Route path="/agents/:name" element={<AgentDetail />} />
           <Route path="/routines" element={<Routines />} />
+          {hasPermission('scheduler', 'view') && <Route path="/activity" element={<Activity />} />}
           <Route path="/tasks" element={<Tasks />} />
           {hasPermission('triggers', 'view') && <Route path="/triggers" element={<Triggers />} />}
           <Route path="/skills" element={<Skills />} />
@@ -130,7 +180,8 @@ function AppContent() {
           {hasPermission('users', 'manage') && <Route path="/roles" element={<Roles />} />}
           {hasPermission('workspace', 'manage') && <Route path="/shares" element={<ShareLinks />} />}
           <Route path="/goals" element={<Goals />} />
-          {hasPermission('tickets', 'view') && <Route path="/issues" element={<Issues />} />}
+          {hasPermission('tickets', 'view') && <Route path="/topics" element={<Topics />} />}
+          {hasPermission('tickets', 'view') && <Route path="/issues" element={<Navigate to="/topics" replace />} />}
           {hasPermission('tickets', 'view') && <Route path="/tickets/:id" element={<TicketDetail />} />}
           {hasPermission('knowledge', 'view') && (
             <>

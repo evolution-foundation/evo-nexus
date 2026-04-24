@@ -2,16 +2,20 @@ name: Build & Publish Docker Images (Swarm)
 
 # Builds evo-nexus-runtime and evo-nexus-dashboard images using the
 # Swarm-specific Dockerfiles (Dockerfile.swarm and Dockerfile.swarm.dashboard)
-# and pushes them to GitHub Container Registry (ghcr.io). The upstream
-# Dockerfile and Dockerfile.dashboard are intentionally NOT used here:
-# they are for local `docker compose up`, while these variants carry the
-# Swarm-specific bootstrap (entrypoint.sh, start-dashboard.sh, terminal-
+# and pushes them to Docker Hub under the `evoapicloud` namespace. The
+# upstream Dockerfile and Dockerfile.dashboard are intentionally NOT used
+# here: they are for local `docker compose up`, while these variants carry
+# the Swarm-specific bootstrap (entrypoint.sh, start-dashboard.sh, terminal-
 # server native build, both CLIs on PATH).
 #
 # Triggers:
 #   * push to main            -> builds + publishes :latest
 #   * push of a version tag   -> builds + publishes :vX.Y.Z and :latest
 #   * manual dispatch         -> builds without pushing (dry-run)
+#
+# Required repository secrets:
+#   * DOCKERHUB_USERNAME  — Docker Hub account with push rights to evoapicloud
+#   * DOCKERHUB_TOKEN     — access token (Settings → Security → New Access Token)
 on:
   push:
     branches: [main]
@@ -19,7 +23,8 @@ on:
   workflow_dispatch:
 
 env:
-  REGISTRY: ghcr.io
+  REGISTRY: docker.io
+  NAMESPACE: evoapicloud
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
 
 jobs:
@@ -28,7 +33,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write
     strategy:
       fail-fast: false
       matrix:
@@ -42,26 +46,27 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Lowercase owner for ghcr.io
-        id: owner
-        run: echo "owner_lc=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+      - name: Set up QEMU (for arm64 emulation on amd64 runners)
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Login to GitHub Container Registry
+      - name: Login to Docker Hub
         if: github.event_name != 'workflow_dispatch'
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Extract metadata (tags, labels)
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ steps.owner.outputs.owner_lc }}/${{ matrix.image }}
+          images: ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/${{ matrix.image }}
           # Boa prática: publicar :latest junto com a tag versionada sempre
           # que um release (tag v*) for empurrado. Push para a branch main
           # sem tag também atualiza :latest.
@@ -79,6 +84,7 @@ jobs:
         with:
           context: .
           file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64,linux/arm64
           push: ${{ github.event_name != 'workflow_dispatch' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

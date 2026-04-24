@@ -1,15 +1,19 @@
 import { useEffect, useState, useCallback } from 'react'
+import { useToast } from '../components/Toast'
+import { useConfirm } from '../components/ConfirmDialog'
 import { useNavigate } from 'react-router-dom'
 import {
   Ticket, Plus, RefreshCw, Filter, Search, Download, CheckSquare, Square,
   X, AlertTriangle, ArrowUp, Minus, ArrowDown,
-  Lock, Clock, CheckCircle, XCircle, Eye,
+  Lock, Clock, CheckCircle, XCircle, Eye, MessageSquare,
 } from 'lucide-react'
 import { api } from '../lib/api'
+import { useTranslation } from 'react-i18next'
+import { AgentIcon } from '../components/AgentIcon'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-type TicketStatus = 'open' | 'in_progress' | 'blocked' | 'review' | 'resolved' | 'closed'
+type TicketStatus = 'open' | 'in_progress' | 'blocked' | 'review' | 'resolved' | 'closed' | 'archived'
 type TicketPriority = 'urgent' | 'high' | 'medium' | 'low'
 
 interface TicketItem {
@@ -28,6 +32,7 @@ interface TicketItem {
   created_at: string
   updated_at: string
   resolved_at: string | null
+  is_thread: boolean
 }
 
 // ── Style maps ────────────────────────────────────────────────────────────────
@@ -39,6 +44,7 @@ const STATUS_STYLES: Record<TicketStatus, string> = {
   review: 'bg-purple-500/10 text-purple-400 border-purple-500/20',
   resolved: 'bg-gray-500/10 text-gray-400 border-gray-500/20',
   closed: 'bg-[#21262d] text-[#667085] border-[#21262d]',
+  archived: 'bg-orange-500/10 text-orange-400 border-orange-500/20',
 }
 
 const STATUS_ICON: Record<TicketStatus, React.ReactNode> = {
@@ -48,6 +54,7 @@ const STATUS_ICON: Record<TicketStatus, React.ReactNode> = {
   review: <Eye size={10} />,
   resolved: <CheckCircle size={10} />,
   closed: <XCircle size={10} />,
+  archived: <XCircle size={10} />,
 }
 
 const PRIORITY_STYLES: Record<TicketPriority, string> = {
@@ -64,7 +71,7 @@ const PRIORITY_ICON: Record<TicketPriority, React.ReactNode> = {
   low: <ArrowDown size={10} />,
 }
 
-const ALL_STATUSES: TicketStatus[] = ['open', 'in_progress', 'blocked', 'review', 'resolved', 'closed']
+const ALL_STATUSES: TicketStatus[] = ['open', 'in_progress', 'blocked', 'review', 'resolved', 'closed', 'archived']
 const ALL_PRIORITIES: TicketPriority[] = ['urgent', 'high', 'medium', 'low']
 
 function formatDate(iso: string | null): string {
@@ -96,6 +103,65 @@ function PriorityBadge({ priority }: { priority: TicketPriority }) {
       {PRIORITY_ICON[priority]}
       {priority}
     </span>
+  )
+}
+
+// ── TicketRow ─────────────────────────────────────────────────────────────────
+
+interface TicketRowProps {
+  ticket: TicketItem
+  selected: boolean
+  onSelect: () => void
+  onClick: () => void
+}
+
+function TicketRow({ ticket, selected, onSelect, onClick }: TicketRowProps) {
+  return (
+    <div
+      className={`grid grid-cols-[auto_1fr_auto_auto_auto_auto] gap-3 px-4 py-3 items-center border-b border-[#21262d]/50 last:border-0 hover:bg-white/5 transition-colors cursor-pointer ${
+        selected ? 'bg-[#00FFA7]/[0.03]' : ''
+      }`}
+      onClick={onClick}
+    >
+      <button
+        onClick={e => { e.stopPropagation(); onSelect() }}
+        className="text-[#667085] hover:text-[#00FFA7]"
+      >
+        {selected
+          ? <CheckSquare size={14} className="text-[#00FFA7]" />
+          : <Square size={14} />}
+      </button>
+
+      <div className="min-w-0">
+        <div className="flex items-center gap-2">
+          {ticket.is_thread && (
+            ticket.assignee_agent
+              ? <AgentIcon agent={ticket.assignee_agent} size={18} />
+              : <MessageSquare size={12} className="text-[#00FFA7] shrink-0" aria-label="Thread" />
+          )}
+          <span className="text-sm font-medium text-[#e6edf3] truncate">{ticket.title}</span>
+          {ticket.locked_at && (
+            <span aria-label={`Locked by ${ticket.locked_by}`}>
+              <Lock size={12} className="text-orange-400 shrink-0" />
+            </span>
+          )}
+        </div>
+        {ticket.description && (
+          <p className="text-xs text-[#667085] truncate mt-0.5">{ticket.description}</p>
+        )}
+      </div>
+
+      <StatusBadge status={ticket.status} />
+      <PriorityBadge priority={ticket.priority} />
+
+      <span className="text-xs text-[#667085] max-w-[100px] truncate font-mono">
+        {ticket.assignee_agent ? `@${ticket.assignee_agent}` : '—'}
+      </span>
+
+      <span className="text-xs text-[#667085] whitespace-nowrap">
+        {formatDate(ticket.updated_at)}
+      </span>
+    </div>
   )
 }
 
@@ -214,8 +280,8 @@ function CreateModal({ onClose, onCreated }: CreateModalProps) {
                 onBlur={() => setTimeout(() => setAgentOpen(false), 150)}
               />
               {agentOpen && filteredAgents.length > 0 && (
-                <div className="absolute z-10 mt-1 w-full max-h-48 overflow-y-auto bg-[#161b22] border border-[#21262d] rounded-lg shadow-xl">
-                  {filteredAgents.slice(0, 20).map(slug => (
+                <div className="absolute z-10 mt-1 w-full max-h-72 overflow-y-auto bg-[#161b22] border border-[#21262d] rounded-lg shadow-xl">
+                  {filteredAgents.map(slug => (
                     <button
                       type="button"
                       key={slug}
@@ -259,10 +325,14 @@ function CreateModal({ onClose, onCreated }: CreateModalProps) {
 
 // ── Main page ─────────────────────────────────────────────────────────────────
 
-export default function Issues() {
+export default function Topics() {
+  const { t } = useTranslation()
   const navigate = useNavigate()
+  const toast = useToast()
+  const confirm = useConfirm()
   const [tickets, setTickets] = useState<TicketItem[]>([])
   const [total, setTotal] = useState(0)
+  const [counts, setCounts] = useState<{ threads: number; issues: number } | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -282,6 +352,15 @@ export default function Issues() {
   // Pagination
   const [offset, setOffset] = useState(0)
   const PAGE_SIZE = 50
+
+  const fetchCounts = useCallback(async () => {
+    try {
+      const res = await api.get('/tickets/counts')
+      setCounts({ threads: res.threads, issues: res.issues })
+    } catch {
+      // non-critical — counts endpoint may not exist on older deployments
+    }
+  }, [])
 
   const fetchTickets = useCallback(async () => {
     setLoading(true)
@@ -308,6 +387,10 @@ export default function Issues() {
   useEffect(() => {
     fetchTickets()
   }, [fetchTickets])
+
+  useEffect(() => {
+    fetchCounts()
+  }, [fetchCounts])
 
   const toggleStatus = (s: TicketStatus) => {
     setSelectedStatuses(prev => prev.includes(s) ? prev.filter(x => x !== s) : [...prev, s])
@@ -343,19 +426,25 @@ export default function Issues() {
       setSelected(new Set())
       fetchTickets()
     } catch (err: any) {
-      alert(err?.message ||'Bulk close failed')
+      toast.error('Falha ao fechar tickets', err?.message)
     }
   }
 
   const handleBulkDelete = async () => {
     if (!selected.size) return
-    if (!confirm(`Delete ${selected.size} ticket(s)? This cannot be undone.`)) return
+    const ok = await confirm({
+      title: 'Deletar tickets',
+      description: `Deletar ${selected.size} ticket(s)? Esta ação não pode ser desfeita.`,
+      confirmText: 'Deletar',
+      variant: 'danger',
+    })
+    if (!ok) return
     try {
       await api.post('/tickets/bulk', { ids: Array.from(selected), action: 'delete' })
       setSelected(new Set())
       fetchTickets()
     } catch (err: any) {
-      alert(err?.message ||'Bulk delete failed')
+      toast.error('Falha ao deletar tickets', err?.message)
     }
   }
 
@@ -378,6 +467,8 @@ export default function Issues() {
   }
 
   const hasFilters = q || selectedStatuses.length || selectedPriorities.length || selectedAssignee
+  const threadRows = tickets.filter(t => t.is_thread)
+  const issueRows = tickets.filter(t => !t.is_thread)
 
   return (
     <div className="min-h-screen bg-[#0C111D]">
@@ -388,7 +479,7 @@ export default function Issues() {
             <Ticket size={20} className="text-[#00FFA7]" />
           </div>
           <div>
-            <h1 className="text-2xl font-bold text-[#e6edf3]">Issues</h1>
+            <h1 className="text-2xl font-bold text-[#e6edf3]">{t('issues.title')}</h1>
             <p className="text-sm text-[#667085]">{total} ticket{total !== 1 ? 's' : ''} · work queue</p>
           </div>
         </div>
@@ -568,49 +659,52 @@ export default function Issues() {
             }
           </div>
         ) : (
-          tickets.map((ticket) => (
-            <div
-              key={ticket.id}
-              className={`grid grid-cols-[auto_1fr_auto_auto_auto_auto] gap-3 px-4 py-3 items-center border-b border-[#21262d]/50 last:border-0 hover:bg-white/5 transition-colors cursor-pointer ${
-                selected.has(ticket.id) ? 'bg-[#00FFA7]/[0.03]' : ''
-              }`}
-              onClick={() => navigate(`/tickets/${ticket.id}`)}
-            >
-              <button
-                onClick={e => { e.stopPropagation(); toggleSelect(ticket.id) }}
-                className="text-[#667085] hover:text-[#00FFA7]"
-              >
-                {selected.has(ticket.id)
-                  ? <CheckSquare size={14} className="text-[#00FFA7]" />
-                  : <Square size={14} />}
-              </button>
-
-              <div className="min-w-0">
-                <div className="flex items-center gap-2">
-                  <span className="text-sm font-medium text-[#e6edf3] truncate">{ticket.title}</span>
-                  {ticket.locked_at && (
-                    <span title={`Locked by ${ticket.locked_by}`}>
-                      <Lock size={12} className="text-orange-400 shrink-0" />
-                    </span>
-                  )}
+          <>
+            {threadRows.length > 0 && (
+              <>
+                <div className="px-4 py-2 bg-[#0C111D]/60 border-b border-[#21262d]/50 flex items-center gap-2">
+                  <MessageSquare size={12} className="text-[#00FFA7]" />
+                  <span className="text-[11px] font-semibold uppercase tracking-wider text-[#667085]">
+                    Threads
+                    {counts !== null && (
+                      <span className="ml-1.5 text-[#00FFA7]/70">({counts.threads})</span>
+                    )}
+                  </span>
                 </div>
-                {ticket.description && (
-                  <p className="text-xs text-[#667085] truncate mt-0.5">{ticket.description}</p>
-                )}
-              </div>
-
-              <StatusBadge status={ticket.status} />
-              <PriorityBadge priority={ticket.priority} />
-
-              <span className="text-xs text-[#667085] max-w-[100px] truncate font-mono">
-                {ticket.assignee_agent ? `@${ticket.assignee_agent}` : '—'}
-              </span>
-
-              <span className="text-xs text-[#667085] whitespace-nowrap">
-                {formatDate(ticket.updated_at)}
-              </span>
-            </div>
-          ))
+                {threadRows.map((ticket) => (
+                  <TicketRow
+                    key={ticket.id}
+                    ticket={ticket}
+                    selected={selected.has(ticket.id)}
+                    onSelect={() => toggleSelect(ticket.id)}
+                    onClick={() => navigate(`/tickets/${ticket.id}`)}
+                  />
+                ))}
+              </>
+            )}
+            {issueRows.length > 0 && (
+              <>
+                <div className="px-4 py-2 bg-[#0C111D]/60 border-b border-[#21262d]/50 flex items-center gap-2">
+                  <Ticket size={12} className="text-[#667085]" />
+                  <span className="text-[11px] font-semibold uppercase tracking-wider text-[#667085]">
+                    Issues
+                    {counts !== null && (
+                      <span className="ml-1.5 text-[#667085]/70">({counts.issues})</span>
+                    )}
+                  </span>
+                </div>
+                {issueRows.map((ticket) => (
+                  <TicketRow
+                    key={ticket.id}
+                    ticket={ticket}
+                    selected={selected.has(ticket.id)}
+                    onSelect={() => toggleSelect(ticket.id)}
+                    onClick={() => navigate(`/tickets/${ticket.id}`)}
+                  />
+                ))}
+              </>
+            )}
+          </>
         )}
       </div>
 

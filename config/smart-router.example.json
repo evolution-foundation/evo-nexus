@@ -1,0 +1,25 @@
+{
+  "_comment": "OpenRouter Smart Router config. Copy to config/smart-router.json to customize. IDs validated against https://openrouter.ai/api/v1/models on 2026-04-23 — verify before editing. All listed models support tool/function calling.",
+  "enabled": true,
+  "port": 4891,
+  "host": "127.0.0.1",
+  "cooldown_ms": 60000,
+  "upstream_timeout_ms": 60000,
+  "breaker": {
+    "enabled": true,
+    "failure_threshold": 20,
+    "window_ms": 10000,
+    "reset_ms": 30000
+  },
+  "free_models": [
+    "openai/gpt-oss-120b:free",
+    "qwen/qwen3-coder:free",
+    "meta-llama/llama-3.3-70b-instruct:free",
+    "z-ai/glm-4.5-air:free"
+  ],
+  "paid_models": [
+    "google/gemini-2.5-flash",
+    "moonshotai/kimi-k2",
+    "anthropic/claude-sonnet-4.5"
+  ]
+}

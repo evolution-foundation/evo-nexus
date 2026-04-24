@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { DollarSign, Zap, Activity, Calculator, Image, type LucideIcon } from 'lucide-react'
 import { api } from '../lib/api'
+import { useTranslation } from 'react-i18next'
 import {
   LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
   PieChart, Pie, Cell, Legend,
@@ -150,6 +151,7 @@ function formatBytes(b: number): string {
 }
 
 export default function Costs() {
+  const { t } = useTranslation()
   const [data, setData] = useState<CostData | null>(null)
   const [imageCosts, setImageCosts] = useState<ImageCosts | null>(null)
   const [loading, setLoading] = useState(true)
@@ -168,7 +170,7 @@ export default function Costs() {
     return (
       <div className="max-w-[1400px] mx-auto">
         <div className="mb-8">
-          <h1 className="text-2xl font-bold text-[#e6edf3] tracking-tight">Costs</h1>
+          <h1 className="text-2xl font-bold text-[#e6edf3] tracking-tight">{t('costs.title')}</h1>
           <p className="text-[#667085] text-sm mt-1">AI usage cost analysis</p>
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
@@ -206,7 +208,7 @@ export default function Costs() {
     <div className="max-w-[1400px] mx-auto">
       {/* Header */}
       <div className="mb-8">
-        <h1 className="text-2xl font-bold text-[#e6edf3] tracking-tight">Costs</h1>
+        <h1 className="text-2xl font-bold text-[#e6edf3] tracking-tight">{t('costs.title')}</h1>
         <p className="text-[#667085] text-sm mt-1">AI usage cost analysis</p>
       </div>
 

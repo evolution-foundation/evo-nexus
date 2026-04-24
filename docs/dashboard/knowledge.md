@@ -24,13 +24,13 @@ Your Postgres (not managed by EvoNexus)
 
 ## First-time setup
 
-### 1. Generate the encryption key (one-time)
+### 1. Encryption key (auto-generated)
 
-```bash
-make init-key
-```
+Since v0.26.0, `KNOWLEDGE_MASTER_KEY` is generated automatically on first setup (`make setup` wizard) and on Docker first boot (`entrypoint.sh`). You do NOT need to run `make init-key` manually on fresh installs.
 
-Creates `KNOWLEDGE_MASTER_KEY` in your `.env` (Fernet). **Back up your `.env`** — losing this key loses access to all encrypted credentials.
+**Back up your `.env`** — losing `KNOWLEDGE_MASTER_KEY` loses access to all encrypted credentials.
+
+> Legacy: if you need to regenerate (lost key, rotated secrets), the CLI is still available: `make init-key` / `evonexus init-key`. Idempotent — preserves an existing key.
 
 ### 2. Prepare your Postgres
 
@@ -91,6 +91,7 @@ Download takes a few minutes. Idempotent — re-running is a no-op.
 
 - **local** (default, 768 dim): `sentence-transformers/paraphrase-multilingual-mpnet-base-v2`. Free, offline, pt-BR native.
 - **openai** (opt-in, 1536 dim): `text-embedding-3-small`. Costs ~$0.02 / 1M tokens. Requires `OPENAI_API_KEY`.
+- **gemini** (opt-in, 768 / 1536 / 3072 dim via MRL): `gemini-embedding-001` (stable, text-only, task-type aware) or `gemini-embedding-2-preview` (multimodal, 8192-token input). Requires `GEMINI_API_KEY` (free tier on [aistudio.google.com/apikey](https://aistudio.google.com/apikey)). Default dim is 768 to align storage cost with `local`.
 
 **Embedder is GLOBAL per EvoNexus instance.** Changing it after you have data requires removing all connections and recreating them (reindex skill planned for v0.25.1).
 

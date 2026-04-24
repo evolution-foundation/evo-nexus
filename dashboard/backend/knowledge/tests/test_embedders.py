@@ -43,6 +43,12 @@ class TestRegistry:
         embedder = get_embedder("openai")
         assert embedder.__class__.__name__ == "OpenAIEmbedder"
 
+    def test_get_embedder_explicit_gemini(self):
+        _add_backend()
+        from knowledge.embedders.base import get_embedder
+        embedder = get_embedder("gemini")
+        assert embedder.__class__.__name__ == "GeminiEmbedder"
+
     def test_get_embedder_unknown_raises_value_error(self):
         _add_backend()
         from knowledge.embedders.base import get_embedder
@@ -59,6 +65,21 @@ class TestRegistry:
         _add_backend()
         from knowledge.embedders.openai_embedder import OpenAIEmbedder
         e = OpenAIEmbedder()
+        assert e.dim == 1536
+
+    def test_gemini_embedder_default_dim(self, monkeypatch):
+        _add_backend()
+        monkeypatch.delenv("KNOWLEDGE_GEMINI_DIM", raising=False)
+        monkeypatch.delenv("KNOWLEDGE_GEMINI_MODEL", raising=False)
+        from knowledge.embedders.gemini_embedder import GeminiEmbedder
+        e = GeminiEmbedder()
+        assert e.dim == 768
+
+    def test_gemini_embedder_custom_dim(self, monkeypatch):
+        _add_backend()
+        monkeypatch.setenv("KNOWLEDGE_GEMINI_DIM", "1536")
+        from knowledge.embedders.gemini_embedder import GeminiEmbedder
+        e = GeminiEmbedder()
         assert e.dim == 1536
 
 

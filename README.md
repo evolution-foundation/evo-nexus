@@ -34,7 +34,7 @@ It turns a single CLI installation into a team of **38 specialized agents** orga
 ### Why EvoNexus?
 
 - **Markdown-first agents** — agents are `.md` files with system prompts, not code. No SDK, no plugin runtime, no compile step. Add an agent by dropping a file in `.claude/agents/`
-- **Skills as instructions** — reusable capabilities are markdown too. 175+ skills covering finance, community, social, engineering, data, legal, HR, ops, product, CS
+- **Skills as instructions** — reusable capabilities are markdown too. 190+ skills covering finance, community, social, engineering, data, legal, HR, ops, product, CS
 - **Multi-provider by design** — default runs on Anthropic's native `claude` CLI, but can switch to OpenRouter, OpenAI, Gemini, AWS Bedrock, Google Vertex, or Codex Auth via [OpenClaude](https://www.npmjs.com/package/@gitlawb/openclaude) without touching a line of code. Your keys, your model choice, no vendor lock-in
 - **MCP integrations** — first-class support for Google Calendar, Gmail, GitHub, Linear, Telegram, Canva, Notion, and more via the Model Context Protocol
 - **Slash commands** — `/clawdia`, `/flux`, `/pulse`, `/apex` invoke agents directly from the terminal
@@ -111,6 +111,16 @@ Social media accounts (YouTube, Instagram, LinkedIn) are connected via OAuth thr
 
 ## Prerequisites
 
+**For the Docker install** (easiest — the container ships everything):
+
+| Tool | Required | Install |
+|------|----------|---------|
+| **Docker Engine 24+** | Yes | [docs.docker.com/engine/install](https://docs.docker.com/engine/install/) |
+
+That's it. The image includes Claude Code, Python, Node, uv, gh, and every other runtime dependency.
+
+**For the CLI / from-source install** (the dev flow):
+
 | Tool | Required | Install |
 |------|----------|---------|
 | **Claude Code** | Yes | `npm install -g @anthropic-ai/claude-code` ([docs](https://claude.ai/download)) |
@@ -150,15 +160,27 @@ The setup wizard asks which provider you want during `make setup`, and you can s
 
 > **Starting out?** After installing, open Claude Code and call **`/oracle`**. It's the official entry point of EvoNexus: runs the initial setup, interviews you about your business, shows what the toolkit can automate for you, and delivers a **phased activation plan** — an index file at the top + one folder per phase + one file per item, each with suggested agent team, dependencies, and pending decisions. The plan is materialized by the `prod-activation-plan` skill (workspace canonical pattern) so you never have to guess the next step.
 
-### Method 1 — One command (recommended)
+### Method 1 — Docker (no setup, runs anywhere)
+
+The fastest way. Pulls official multi-arch images (`linux/amd64` + `linux/arm64`) from Docker Hub — works natively on Apple Silicon, AWS Graviton, Oracle ARM, Raspberry Pi, and x86_64 servers.
+
+```bash
+curl -O https://raw.githubusercontent.com/EvolutionAPI/evo-nexus/main/docker-compose.hub.yml
+docker compose -f docker-compose.hub.yml up -d
+open http://localhost:8080
+```
+
+The setup wizard loads on first boot. Paste your Anthropic / OpenAI / Codex key and you're done — no extra tooling on your host. Full guide: [docs/guides/docker-install.md](docs/guides/docker-install.md).
+
+### Method 2 — One command (for CLI / terminal workflow)
 
 ```bash
 npx @evoapi/evo-nexus
 ```
 
-This downloads and runs the interactive setup wizard automatically.
+This downloads and runs the interactive setup wizard automatically. Requires the CLI prerequisites above (Claude Code, Python, Node, uv).
 
-### Method 2 — Manual clone
+### Method 3 — Manual clone (for developers / contributors)
 
 ```bash
 git clone --depth 1 https://github.com/EvolutionAPI/evo-nexus.git
@@ -282,7 +304,7 @@ A full web UI at `http://localhost:8080`:
 | **Agents** | View agent definitions and system prompts |
 | **Routines** | Metrics per routine (runs, success rate, cost) + manual run |
 | **Tasks** | Schedule one-off actions (skill, prompt, script) at a specific date/time |
-| **Skills** | Browse all 175+ skills by category (~125 business + 25 dev-*) |
+| **Skills** | Browse all 190+ skills by category (~125 business + 25 dev-*) |
 | **Templates** | Preview HTML report templates |
 | **Services** | Start/stop scheduler, channels (Telegram, Discord, iMessage) with live logs |
 | **Memory** | Browse agent and global memory files |
@@ -339,9 +361,9 @@ Each agent has:
 ```
 evo-nexus/
 ├── .claude/
-│   ├── agents/          — 16 agent system prompts
-│   ├── commands/        — 16 slash commands
-│   ├── skills/          — 175+ skills by prefix (~125 business + 25 dev-*) (+ custom)
+│   ├── agents/          — 38 agent system prompts
+│   ├── commands/        — 38 slash commands
+│   ├── skills/          — 190+ skills by prefix (~125 business + 25 dev-*) (+ custom)
 │   └── templates/html/  — 2 core + custom HTML templates
 ├── ADWs/
 │   ├── runner.py        — execution engine (logs + metrics + notifications)

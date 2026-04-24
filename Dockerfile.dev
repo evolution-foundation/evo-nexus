@@ -1,0 +1,81 @@
+# Dockerfile.dev — versão simplificada para testes locais no Windows
+# Diferença do Dockerfile.swarm.dashboard:
+#   - npm install com --legacy-peer-deps (resolve conflito de peer deps)
+#   - Flask roda em modo desenvolvimento
+
+# ---- Stage 1: Frontend build ----------------------------------------
+FROM node:22-alpine AS frontend-build
+WORKDIR /frontend
+COPY dashboard/frontend/package.json dashboard/frontend/package-lock.json* ./
+# --legacy-peer-deps resolve o conflito de peer dependencies
+RUN npm install --legacy-peer-deps
+COPY dashboard/frontend/ ./
+RUN npm run build
+
+# ---- Stage 2: Terminal-server native deps ---------------------------
+FROM node:22-slim AS terminal-build
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3 make g++ \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /terminal
+COPY dashboard/terminal-server/package.json dashboard/terminal-server/package-lock.json* ./
+RUN npm install --omit=dev --no-audit --no-fund
+
+# ---- Stage 3: Runtime -----------------------------------------------
+FROM python:3.12-slim AS runtime
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        curl ca-certificates gnupg openssl git \
+    && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# CLIs usadas pelo terminal embutido (/agents) e pela página de providers (/providers)
+RUN npm install -g \
+        @anthropic-ai/claude-code \
+        @gitlawb/openclaude@latest
+
+# uv
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+ENV PATH="/root/.local/bin:${PATH}"
+
+ENV TZ=America/Sao_Paulo
+RUN ln -snf /usr/share/zoneinfo/${TZ} /etc/localtime && echo "${TZ}" > /etc/timezone
+
+WORKDIR /workspace
+
+# Python deps
+COPY pyproject.toml uv.lock ./
+RUN uv venv .venv && uv sync --no-dev
+
+# App code
+COPY dashboard/       dashboard/
+COPY social-auth/     social-auth/
+COPY scheduler.py     backup.py setup.py Makefile ./
+COPY .claude/         .claude/
+COPY memory/          memory/
+COPY ADWs/            ADWs/
+COPY config/          config/
+COPY .env.example     ./
+
+# Arquivos compilados dos stages anteriores
+COPY --from=terminal-build /terminal/node_modules dashboard/terminal-server/node_modules
+COPY --from=frontend-build /frontend/dist dashboard/frontend/dist
+
+RUN mkdir -p dashboard/data ADWs/logs
+
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+COPY start-dashboard.sh /usr/local/bin/start-dashboard.sh
+RUN sed -i 's/\r//' /usr/local/bin/entrypoint.sh /usr/local/bin/start-dashboard.sh \
+    && chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/start-dashboard.sh
+
+ENV EVONEXUS_PORT=8080
+ENV TERMINAL_SERVER_PORT=32352
+EXPOSE 8080 32352
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=45s --retries=3 \
+    CMD curl -fsS "http://localhost:${EVONEXUS_PORT}/api/version" || exit 1
+
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+CMD ["/usr/local/bin/start-dashboard.sh"]

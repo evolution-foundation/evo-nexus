@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback } from 'react'
+import { useTranslation } from 'react-i18next'
 import {
   Target, ChevronDown, ChevronRight, Plus, RefreshCw,
   CheckCircle2, Circle, Clock, XCircle, PauseCircle,
@@ -505,6 +506,7 @@ type DueFilter = 'all' | 'overdue' | 'this-week' | 'this-month'
 // ---- Main component ----
 
 export default function Goals() {
+  const { t } = useTranslation()
   const [missions, setMissions] = useState<Mission[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -623,7 +625,7 @@ export default function Goals() {
         <div className="flex items-center gap-3">
           <Target size={20} className="text-[#00FFA7]" />
           <div>
-            <h1 className="text-white font-semibold text-lg">Goals</h1>
+            <h1 className="text-white font-semibold text-lg">{t('goals.title')}</h1>
             <p className="text-xs text-[#667085]">Mission → Project → Goal → Task hierarchy</p>
           </div>
         </div>
@@ -688,8 +690,11 @@ export default function Goals() {
 
       {/* Mission tree */}
       {filteredMissions.length === 0 ? (
-        <div className="text-center py-16 text-[#667085] text-sm">
-          No missions found. Run the backend migration to seed initial data.
+        <div className="text-center py-16 px-4">
+          <p className="text-sm text-[#e6edf3] mb-2">Nenhuma Mission criada ainda.</p>
+          <p className="text-xs text-[#667085] max-w-md mx-auto">
+            Missions são os objetivos de topo da sua organização. Projects e Goals descendem delas. Use a skill <code className="text-[#00FFA7]">/create-goal</code> para criar a primeira.
+          </p>
         </div>
       ) : (
         filteredMissions.map((mission) => (

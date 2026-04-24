@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback } from 'react'
+import { useTranslation } from 'react-i18next'
 import {
   Settings as SettingsIcon, Save, X, Pencil, Check,
   Clock, Calendar, CalendarClock, RefreshCw,
@@ -145,6 +146,7 @@ const TIMEZONES = [
 ]
 
 function WorkspaceTab({ showToast }: { showToast: (msg: string, type?: ToastType) => void }) {
+  const { t } = useTranslation()
   const [config, setConfig] = useState<WorkspaceConfig>({
     name: '', owner: '', company: '', language: 'pt-BR', timezone: 'America/Sao_Paulo', port: 8080,
   })
@@ -200,37 +202,37 @@ function WorkspaceTab({ showToast }: { showToast: (msg: string, type?: ToastType
     <div className="max-w-xl space-y-5">
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <div>
-          <label className={lbl}>Workspace Name</label>
+          <label className={lbl}>{t('settings.name')}</label>
           <input
             type="text"
             className={inp}
             value={config.name}
             onChange={(e) => setConfig((p) => ({ ...p, name: e.target.value }))}
-            placeholder="My Workspace"
+            placeholder={t('settings.workspacePlaceholder')}
           />
         </div>
         <div>
-          <label className={lbl}>Owner</label>
+          <label className={lbl}>{t('settings.owner')}</label>
           <input
             type="text"
             className={inp}
             value={config.owner}
             onChange={(e) => setConfig((p) => ({ ...p, owner: e.target.value }))}
-            placeholder="Owner name"
+            placeholder={t('settings.ownerPlaceholder')}
           />
         </div>
         <div>
-          <label className={lbl}>Company</label>
+          <label className={lbl}>{t('settings.company')}</label>
           <input
             type="text"
             className={inp}
             value={config.company}
             onChange={(e) => setConfig((p) => ({ ...p, company: e.target.value }))}
-            placeholder="Company name"
+            placeholder={t('settings.companyPlaceholder')}
           />
         </div>
         <div>
-          <label className={lbl}>Language</label>
+          <label className={lbl}>{t('settings.language')}</label>
           <select
             className={inp}
             value={config.language}
@@ -259,7 +261,7 @@ function WorkspaceTab({ showToast }: { showToast: (msg: string, type?: ToastType
           </select>
         </div>
         <div>
-          <label className={lbl}>Timezone</label>
+          <label className={lbl}>{t('settings.timezone')}</label>
           <select
             className={inp}
             value={config.timezone}
@@ -271,7 +273,7 @@ function WorkspaceTab({ showToast }: { showToast: (msg: string, type?: ToastType
           </select>
         </div>
         <div>
-          <label className={lbl}>Dashboard Port</label>
+          <label className={lbl}>{t('settings.port')}</label>
           <input
             type="number"
             className={inp}
@@ -290,7 +292,7 @@ function WorkspaceTab({ showToast }: { showToast: (msg: string, type?: ToastType
           className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-[#00FFA7] text-[#080c14] font-semibold text-sm hover:bg-[#00e69a] transition-colors disabled:opacity-40"
         >
           <Save size={14} />
-          {saving ? 'Saving...' : 'Save workspace'}
+          {saving ? t('common.saving') : t('settings.saveWorkspace')}
         </button>
       </div>
     </div>
@@ -715,16 +717,17 @@ function TrustTab({ showToast }: { showToast: (msg: string, type?: ToastType) =>
 
 // ── Main Settings page ──────────────────────────────────────────────────────
 const TABS = [
-  { key: 'workspace', label: 'Workspace' },
-  { key: 'routines', label: 'Routines' },
-  { key: 'notifications', label: 'Notifications' },
-  { key: 'trust', label: 'Trust' },
-  { key: 'reference', label: 'Reference' },
+  { key: 'workspace', labelKey: 'settings.tabs.workspace' },
+  { key: 'routines', labelKey: 'settings.tabs.routines' },
+  { key: 'notifications', labelKey: 'settings.tabs.notifications' },
+  { key: 'trust', labelKey: 'settings.tabs.trust' },
+  { key: 'reference', labelKey: 'settings.tabs.reference' },
 ] as const
 
 type TabKey = 'workspace' | 'routines' | 'notifications' | 'trust' | 'reference'
 
 export default function Settings() {
+  const { t } = useTranslation()
   const [activeTab, setActiveTab] = useState<TabKey>('workspace')
   const { toasts, show: showToast } = useToast()
 
@@ -736,8 +739,8 @@ export default function Settings() {
           <SettingsIcon size={20} className="text-[#00FFA7]" />
         </div>
         <div>
-          <h1 className="text-xl font-bold text-white tracking-tight">Settings</h1>
-          <p className="text-[#5a6b7f] text-sm mt-0.5">Workspace, routines and reference</p>
+          <h1 className="text-xl font-bold text-white tracking-tight">{t('settings.title')}</h1>
+          <p className="text-[#5a6b7f] text-sm mt-0.5">{t('settings.headerSubtitle')}</p>
         </div>
       </div>
 
@@ -753,7 +756,7 @@ export default function Settings() {
                 : 'text-[#667085] border-transparent hover:text-[#e6edf3] hover:border-[#21262d]'
             }`}
           >
-            {tab.label}
+            {t(tab.labelKey)}
           </button>
         ))}
       </div>
