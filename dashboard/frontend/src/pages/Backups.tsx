@@ -1,11 +1,12 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useToast } from '../components/Toast'
 import { useConfirm } from '../components/ConfirmDialog'
 import {
   HardDriveDownload, Plus, Download, RotateCcw, Trash2, RefreshCw,
-  Cloud, HardDrive, AlertCircle, CheckCircle, Loader2, FileArchive,
-  ChevronDown, Eye, EyeOff, Save, Upload,
+  Cloud, HardDrive, AlertCircle, AlertTriangle, CheckCircle, Loader2, FileArchive,
+  ChevronDown, Eye, EyeOff, Save, Upload, GitBranch, ExternalLink, Tag,
 } from 'lucide-react'
+import { Link } from 'react-router-dom'
 import { api } from '../lib/api'
 import { useTranslation } from 'react-i18next'
 
@@ -30,6 +31,22 @@ interface BackupConfig {
   s3_bucket: string
   boto3_available: boolean
   backups_dir: string
+  brain_repo_configured: boolean
+  brain_repo: BrainRepoStatus | null
+  /** Whether the server has BRAIN_REPO_MASTER_KEY + cryptography available
+   *  right now. False means stored tokens cannot be decrypted — UI should
+   *  show a danger banner instead of normal "connected" state. */
+  brain_crypto_ready: boolean
+}
+
+interface BrainRepoStatus {
+  repo_url?: string
+  repo_owner?: string
+  repo_name?: string
+  last_sync?: string | null
+  pending_count?: number
+  sync_enabled?: boolean
+  last_error?: string | null
 }
 
 function formatSize(bytes: number): string {
@@ -59,8 +76,12 @@ const S3_FIELDS = [
 ]
 
 function S3ConfigPanel({ config, onSaved }: { config: BackupConfig; onSaved: () => void }) {
+  const { t } = useTranslation()
   const toast = useToast()
-  const [expanded, setExpanded] = useState(false)
+  // Open expanded by default — parent only mounts this panel when the user
+  // explicitly clicks Configure/Manage on the S3 destination card, so there
+  // is no value in starting collapsed.
+  const [expanded, setExpanded] = useState(true)
   const [values, setValues] = useState<Record<string, string>>({})
   const [revealed, setRevealed] = useState<Set<string>>(new Set())
   const [saving, setSaving] = useState(false)
@@ -112,15 +133,15 @@ function S3ConfigPanel({ config, onSaved }: { config: BackupConfig; onSaved: () 
   }
 
   return (
-    <div className="mb-4 rounded-xl border border-[#21262d] bg-[#161b22] overflow-hidden">
+    <div className="rounded-xl border border-[#152030] bg-[#0b1018] overflow-hidden shadow-[0_4px_40px_rgba(0,0,0,0.4)]">
       {/* Header — always visible */}
       <button
         onClick={() => setExpanded(prev => !prev)}
-        className="w-full flex items-center justify-between px-4 py-3 hover:bg-[#0d1117]/50 transition-colors"
+        className="w-full flex items-center justify-between px-5 py-4 hover:bg-[#0f1520]/40 transition-colors"
       >
         <div className="flex items-center gap-3 text-sm">
-          <Cloud size={16} className={config.s3_configured ? 'text-[#00FFA7]' : 'text-[#667085]'} />
-          <span className="text-[#e6edf3] font-medium">Storage Provider</span>
+          <Cloud size={16} className={config.s3_configured ? 'text-blue-400' : 'text-[#5a6b7f]'} />
+          <span className="text-[#e2e8f0] font-medium">{t('backups.s3Config.title')}</span>
           {config.s3_configured ? (
             <span className="text-xs px-2 py-0.5 rounded-full bg-[#00FFA7]/10 text-[#00FFA7]">
               S3: {config.s3_bucket}
@@ -148,10 +169,9 @@ function S3ConfigPanel({ config, onSaved }: { config: BackupConfig; onSaved: () 
 
       {/* Expandable form */}
       {expanded && (
-        <div className="px-4 pb-4 border-t border-[#21262d]">
-          <p className="text-xs text-[#667085] mt-3 mb-4">
-            Configure S3 para backup remoto. Compatível com AWS S3, Cloudflare R2, Backblaze B2, MinIO e qualquer storage S3-compatível.
-            Para providers não-AWS, preencha o <strong>Endpoint URL</strong>. Deixe tudo vazio para usar apenas backup local.
+        <div className="px-5 pb-5 border-t border-[#152030]">
+          <p className="text-xs text-[#5a6b7f] mt-4 mb-4 leading-relaxed">
+            {t('backups.s3Config.endpointHint')}
           </p>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             {S3_FIELDS.map(field => {
@@ -215,6 +235,484 @@ interface S3BackupEntry {
   modified: string
 }
 
+interface BrainSnapshot {
+  ref: string              // e.g. "refs/tags/milestone/teste" or "HEAD"
+  sha?: string
+  label?: string           // human-readable short label (falls back to ref)
+  date?: string
+  message?: string
+}
+
+interface BrainSnapshotsResponse {
+  head: BrainSnapshot | null
+  milestones: BrainSnapshot[]
+  weekly: BrainSnapshot[]
+  daily: BrainSnapshot[]
+}
+
+type BackupsTab = 'local' | 's3' | 'brain'
+
+/**
+ * Backup destinations status panel — makes explicit which targets are
+ * available (Local always, S3 + Brain Repo conditionally). Renders 3 cards
+ * with concise status so the user knows where backups land before clicking
+ * "New Backup" or "Backup + S3" / "Backup + Brain Repo".
+ */
+/**
+ * 3-card panel showing the explicit status of every backup destination.
+ * Same palette as /onboarding (#0b1018 cards on #152030 borders, #00FFA7 accent).
+ *
+ * S3 card "Configure" button toggles the S3ConfigPanel below (parent owns the
+ * state) so the env-var form is never shown unsolicited — it only appears
+ * when the user explicitly opens it.
+ */
+function DestinationsPanel({
+  config,
+  onMilestone,
+  milestoneRunning,
+  onOpenS3Config,
+}: {
+  config: BackupConfig
+  onMilestone: () => void
+  milestoneRunning: boolean
+  onOpenS3Config: () => void
+}) {
+  const { t } = useTranslation()
+  const brain = config.brain_repo
+  const brainConfigured = config.brain_repo_configured && brain
+  // cryptoBroken: config exists but server can't decrypt tokens right now.
+  // Treat as more urgent than last_error because it means EVERY sync will
+  // fail for the same reason until the admin restores the master key.
+  const cryptoBroken = brainConfigured && !config.brain_crypto_ready
+  const s3Connected = config.s3_configured && config.boto3_available
+  const formatLastSync = (iso?: string | null) => {
+    if (!iso) return t('backups.destinations.never')
+    try {
+      const d = new Date(iso)
+      return d.toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
+    } catch { return iso }
+  }
+
+  const cardBase = "rounded-xl border bg-[#0b1018] p-5 transition-colors"
+  const cardConnected = "border-[#152030] hover:border-[#00FFA7]/30"
+  const cardOff = "border-[#152030] hover:border-[#1e2a3a]"
+
+  const badgeOk = "inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-[#00FFA7]/10 text-[#00FFA7] border border-[#00FFA7]/20 uppercase tracking-wider"
+  const badgeOff = "inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-[#152030] text-[#5a6b7f] border border-[#1e2a3a] uppercase tracking-wider"
+  const pillBtn = "text-[11px] font-medium px-3 py-1.5 rounded-md transition-colors inline-flex items-center gap-1.5"
+
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+      {/* Local — always available */}
+      <div className={`${cardBase} ${cardConnected}`}>
+        <div className="flex items-start justify-between gap-2 mb-3">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-[#00FFA7]/10 border border-[#00FFA7]/20 flex items-center justify-center">
+              <HardDrive size={16} className="text-[#00FFA7]" />
+            </div>
+            <div>
+              <div className="text-[14px] font-semibold text-[#e2e8f0]">{t('backups.destinations.local')}</div>
+              <div className="text-[10px] text-[#5a6b7f] mt-0.5">{t('backups.destinations.localDesc')}</div>
+            </div>
+          </div>
+          <span className={badgeOk}>
+            <span className="h-1.5 w-1.5 rounded-full bg-[#00FFA7]" />
+            {t('backups.destinations.available')}
+          </span>
+        </div>
+        <div className="text-[11px] text-[#5a6b7f] font-mono mt-3 px-2 py-1.5 rounded bg-[#0f1520] border border-[#152030]">
+          ./{config.backups_dir}/
+        </div>
+      </div>
+
+      {/* S3 */}
+      <div className={`${cardBase} ${s3Connected ? cardConnected : cardOff}`}>
+        <div className="flex items-start justify-between gap-2 mb-3">
+          <div className="flex items-center gap-3">
+            <div className={`w-9 h-9 rounded-xl flex items-center justify-center border ${
+              s3Connected ? 'bg-blue-500/10 border-blue-500/20' : 'bg-[#152030] border-[#1e2a3a]'
+            }`}>
+              <Cloud size={16} className={s3Connected ? 'text-blue-400' : 'text-[#5a6b7f]'} />
+            </div>
+            <div>
+              <div className="text-[14px] font-semibold text-[#e2e8f0]">{t('backups.destinations.s3')}</div>
+              <div className="text-[10px] text-[#5a6b7f] mt-0.5">{t('backups.destinations.s3Desc')}</div>
+            </div>
+          </div>
+          {s3Connected ? (
+            <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-400 border border-blue-500/20 uppercase tracking-wider">
+              <span className="h-1.5 w-1.5 rounded-full bg-blue-400" />
+              {t('backups.destinations.connected')}
+            </span>
+          ) : (
+            <span className={badgeOff}>{t('backups.destinations.notConfigured')}</span>
+          )}
+        </div>
+        {s3Connected ? (
+          <div className="text-[11px] text-[#5a6b7f] font-mono px-2 py-1.5 rounded bg-[#0f1520] border border-[#152030] truncate">
+            {config.s3_bucket}
+          </div>
+        ) : (
+          <div className="text-[11px] text-[#5a6b7f] mt-1">
+            {t('backups.destinations.s3ConfigureHint')}
+          </div>
+        )}
+        <div className="flex items-center gap-2 mt-3">
+          <button
+            onClick={onOpenS3Config}
+            className={`${pillBtn} ${
+              s3Connected
+                ? 'border border-[#152030] text-[#5a6b7f] hover:text-[#e2e8f0] hover:border-[#1e2a3a]'
+                : 'bg-[#00FFA7]/10 text-[#00FFA7] border border-[#00FFA7]/20 hover:bg-[#00FFA7]/20'
+            }`}
+          >
+            {s3Connected ? t('backups.destinations.manage') : t('backups.destinations.configure')}
+          </button>
+        </div>
+      </div>
+
+      {/* Brain Repo */}
+      {/* When crypto is broken (server can't decrypt tokens) or last_error is
+          set, the card uses a danger border so the user can't miss that sync
+          is broken — plus a Reconnect action that re-runs the onboarding. */}
+      <div className={`${cardBase} ${
+        cryptoBroken || (brainConfigured && brain?.last_error)
+          ? 'border-[#3a1515] hover:border-[#5a2020]'
+          : brainConfigured ? cardConnected : cardOff
+      }`}>
+        <div className="flex items-start justify-between gap-2 mb-3">
+          <div className="flex items-center gap-3">
+            <div className={`w-9 h-9 rounded-xl flex items-center justify-center border ${
+              cryptoBroken || (brainConfigured && brain?.last_error)
+                ? 'bg-[#3a1515]/40 border-[#5a2020]'
+                : brainConfigured ? 'bg-[#00FFA7]/10 border-[#00FFA7]/20'
+                : 'bg-[#152030] border-[#1e2a3a]'
+            }`}>
+              <GitBranch size={16} className={
+                cryptoBroken || (brainConfigured && brain?.last_error) ? 'text-[#f87171]'
+                : brainConfigured ? 'text-[#00FFA7]'
+                : 'text-[#5a6b7f]'
+              } />
+            </div>
+            <div>
+              <div className="text-[14px] font-semibold text-[#e2e8f0]">{t('backups.destinations.brainRepo')}</div>
+              <div className="text-[10px] text-[#5a6b7f] mt-0.5">{t('backups.destinations.brainRepoDesc')}</div>
+            </div>
+          </div>
+          {cryptoBroken ? (
+            <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-red-500/10 text-[#f87171] border border-red-500/20 uppercase tracking-wider">
+              <AlertTriangle size={9} />
+              {t('backups.destinations.cryptoBroken')}
+            </span>
+          ) : brainConfigured && brain?.last_error ? (
+            <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-red-500/10 text-[#f87171] border border-red-500/20 uppercase tracking-wider">
+              <AlertCircle size={9} />
+              {t('backups.destinations.syncError')}
+            </span>
+          ) : brainConfigured ? (
+            <span className={badgeOk}>
+              <span className="h-1.5 w-1.5 rounded-full bg-[#00FFA7]" />
+              {t('backups.destinations.connected')}
+            </span>
+          ) : (
+            <span className={badgeOff}>{t('backups.destinations.notConfigured')}</span>
+          )}
+        </div>
+        {brainConfigured ? (
+          <>
+            <a
+              href={brain!.repo_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-[11px] text-[#00FFA7]/80 hover:text-[#00FFA7] font-mono inline-flex items-center gap-1 truncate"
+            >
+              {brain!.repo_owner}/{brain!.repo_name}
+              <ExternalLink size={10} />
+            </a>
+            <div className="text-[11px] text-[#5a6b7f] mt-1.5">
+              {t('backups.destinations.lastSync')}: {formatLastSync(brain!.last_sync)}
+              {(brain!.pending_count ?? 0) > 0 && (
+                <span className="ml-2 text-[#F59E0B]">• {brain!.pending_count} {t('backups.destinations.pending')}</span>
+              )}
+            </div>
+            {cryptoBroken && (
+              <div className="mt-2 flex items-start gap-1.5 p-2 rounded-lg bg-[#1a0a0a] border border-[#3a1515]">
+                <AlertTriangle size={11} className="text-[#f87171] flex-shrink-0 mt-0.5" />
+                <p className="text-[10px] text-[#f87171] leading-tight break-words">
+                  {t('backups.destinations.cryptoBrokenDesc')}
+                </p>
+              </div>
+            )}
+            {!cryptoBroken && brain?.last_error && (
+              <div className="mt-2 flex items-start gap-1.5 p-2 rounded-lg bg-[#1a0a0a] border border-[#3a1515]">
+                <AlertTriangle size={11} className="text-[#f87171] flex-shrink-0 mt-0.5" />
+                <p className="text-[10px] text-[#f87171] leading-tight break-words">
+                  {brain.last_error}
+                </p>
+              </div>
+            )}
+            <div className="flex items-center gap-2 mt-3">
+              <button
+                onClick={onMilestone}
+                disabled={milestoneRunning}
+                className={`${pillBtn} bg-[#00FFA7]/10 text-[#00FFA7] border border-[#00FFA7]/20 hover:bg-[#00FFA7]/20 disabled:opacity-50`}
+              >
+                {milestoneRunning ? <Loader2 size={11} className="animate-spin" /> : <Tag size={11} />}
+                {t('backups.destinations.createMilestone')}
+              </button>
+              <Link
+                to="/settings/brain-repo"
+                className={`${pillBtn} border border-[#152030] text-[#5a6b7f] hover:text-[#e2e8f0] hover:border-[#1e2a3a]`}
+              >
+                {t('backups.destinations.manage')}
+              </Link>
+              {(cryptoBroken || brain?.last_error) && (
+                <Link
+                  to="/onboarding"
+                  className={`${pillBtn} bg-[#f87171]/10 text-[#f87171] border border-[#3a1515] hover:bg-[#f87171]/20`}
+                >
+                  {t('backups.destinations.reconnect')}
+                </Link>
+              )}
+            </div>
+          </>
+        ) : (
+          <div className="mt-1">
+            <Link
+              to="/onboarding"
+              className={`${pillBtn} bg-[#00FFA7]/10 text-[#00FFA7] border border-[#00FFA7]/20 hover:bg-[#00FFA7]/20`}
+            >
+              {t('backups.destinations.configure')}
+            </Link>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+/** Import dropdown: upload local .zip (always) + pull from brain repo (when connected). */
+function ImportMenu({
+  uploading, brainConfigured, onPickZip, onPickBrain,
+}: {
+  uploading: boolean
+  brainConfigured: boolean
+  onPickZip: () => void
+  onPickBrain: () => void
+}) {
+  const { t } = useTranslation()
+  const [open, setOpen] = useState(false)
+  const wrapperRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    const handler = (e: MouseEvent) => {
+      if (wrapperRef.current && !wrapperRef.current.contains(e.target as Node)) {
+        setOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [open])
+
+  return (
+    <div ref={wrapperRef} className="relative">
+      <button
+        onClick={() => setOpen(o => !o)}
+        disabled={uploading}
+        className="flex items-center gap-2 px-4 py-2 rounded-lg border border-[#21262d] text-[#D0D5DD] hover:bg-[#161b22] transition-colors text-sm disabled:opacity-50"
+      >
+        {uploading ? <Loader2 size={16} className="animate-spin" /> : <Upload size={16} />}
+        {uploading ? t('backups.importing') : t('backups.import')}
+        <ChevronDown size={14} className={`transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
+      {open && (
+        <div className="absolute right-0 mt-1 w-64 rounded-lg border border-[#152030] bg-[#0b1018] shadow-[0_4px_40px_rgba(0,0,0,0.4)] z-20 overflow-hidden">
+          <button
+            onClick={() => { setOpen(false); onPickZip() }}
+            className="w-full flex items-start gap-3 px-3 py-2.5 text-left hover:bg-[#0f1520] transition-colors"
+          >
+            <FileArchive size={14} className="text-[#00FFA7] flex-shrink-0 mt-0.5" />
+            <div>
+              <div className="text-[12px] text-[#e2e8f0] font-medium">{t('backups.importMenu.zipTitle')}</div>
+              <div className="text-[10px] text-[#5a6b7f]">{t('backups.importMenu.zipDesc')}</div>
+            </div>
+          </button>
+          <button
+            onClick={() => { setOpen(false); if (brainConfigured) onPickBrain() }}
+            disabled={!brainConfigured}
+            className="w-full flex items-start gap-3 px-3 py-2.5 text-left hover:bg-[#0f1520] transition-colors disabled:opacity-50 disabled:cursor-not-allowed border-t border-[#152030]"
+          >
+            <GitBranch size={14} className={`flex-shrink-0 mt-0.5 ${brainConfigured ? 'text-[#00FFA7]' : 'text-[#5a6b7f]'}`} />
+            <div>
+              <div className="text-[12px] text-[#e2e8f0] font-medium">{t('backups.importMenu.brainTitle')}</div>
+              <div className="text-[10px] text-[#5a6b7f]">
+                {brainConfigured ? t('backups.importMenu.brainDesc') : t('backups.importMenu.brainDisabled')}
+              </div>
+            </div>
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function TabButton({
+  active, onClick, icon, label, count, dimmed = false,
+}: {
+  active: boolean; onClick: () => void; icon: React.ReactNode; label: string; count?: number; dimmed?: boolean
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium transition-colors border-b-2 -mb-px ${
+        active
+          ? 'text-[#00FFA7] border-[#00FFA7]'
+          : dimmed
+            ? 'text-[#3d4f65] border-transparent hover:text-[#667085]'
+            : 'text-[#8a9aae] border-transparent hover:text-[#e2e8f0]'
+      }`}
+    >
+      {icon}
+      <span>{label}</span>
+      {typeof count === 'number' && (
+        <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${
+          active ? 'bg-[#00FFA7]/15 text-[#00FFA7]' : 'bg-[#152030] text-[#5a6b7f]'
+        }`}>{count}</span>
+      )}
+    </button>
+  )
+}
+
+function brainCount(data: BrainSnapshotsResponse): number {
+  return (data.head ? 1 : 0) + data.milestones.length + data.weekly.length + data.daily.length
+}
+
+/**
+ * Renders the 4 categories of brain-repo snapshots (HEAD, milestones, weekly,
+ * daily) grouped into collapsible sections. The daily bucket can explode to
+ * 30+ items and weekly to 12+ so both default to collapsed.
+ */
+function BrainRepoSnapshots({
+  data, repoUrl, onRestore,
+}: {
+  data: BrainSnapshotsResponse | null
+  repoUrl?: string
+  onRestore: (s: BrainSnapshot) => void
+}) {
+  const { t } = useTranslation()
+  const [openWeekly, setOpenWeekly] = useState(false)
+  const [openDaily, setOpenDaily] = useState(false)
+  if (!data) return null
+
+  const viewOnGitHub = (snapshot: BrainSnapshot) => {
+    if (!repoUrl) return
+    // Strip "refs/tags/" so the link resolves to GitHub's tag page
+    // Guard against malformed snapshots (e.g. legacy HEAD shape without `ref`).
+    const rawRef = snapshot.ref ?? snapshot.label ?? ''
+    const ref = rawRef.replace(/^refs\/tags\//, '')
+    const url = !ref || ref === 'HEAD' ? repoUrl : `${repoUrl}/tree/${encodeURIComponent(ref)}`
+    window.open(url, '_blank', 'noopener,noreferrer')
+  }
+
+  const SnapshotRow = ({ s, icon, iconClass }: { s: BrainSnapshot; icon: React.ReactNode; iconClass: string }) => (
+    <tr className="border-b border-[#152030] last:border-0 hover:bg-[#0f1520]/60 transition-colors">
+      <td className="px-4 py-3">
+        <div className="flex items-center gap-2">
+          <span className={iconClass}>{icon}</span>
+          <span className="text-[#e6edf3] font-mono text-xs truncate max-w-[280px] lg:max-w-none">
+            {s.label || (s.ref ?? '').replace(/^refs\/tags\//, '') || '(unnamed)'}
+          </span>
+        </div>
+      </td>
+      <td className="px-4 py-3 text-[#667085] text-xs font-mono">{s.sha ? s.sha.slice(0, 8) : '-'}</td>
+      <td className="px-4 py-3 text-[#667085] text-xs">{s.date || '-'}</td>
+      <td className="px-4 py-3">
+        <div className="flex items-center justify-end gap-1">
+          <button
+            onClick={() => onRestore(s)}
+            className="p-1.5 rounded-lg text-[#667085] hover:text-blue-400 hover:bg-blue-400/10 transition-colors"
+            title={t('backups.action.restoreBtn')}
+          ><RotateCcw size={14} /></button>
+          {repoUrl && (
+            <button
+              onClick={() => viewOnGitHub(s)}
+              className="p-1.5 rounded-lg text-[#667085] hover:text-[#00FFA7] hover:bg-[#00FFA7]/10 transition-colors"
+              title={t('backups.action.viewOnGithub')}
+            ><ExternalLink size={14} /></button>
+          )}
+        </div>
+      </td>
+    </tr>
+  )
+
+  const total = brainCount(data)
+  if (total === 0) {
+    return (
+      <div className="rounded-xl border border-[#152030] bg-[#0b1018] flex flex-col items-center justify-center py-16 text-[#667085]">
+        <GitBranch size={48} className="mb-4 opacity-40" />
+        <p className="text-sm text-[#8a9aae]">{t('backups.brainTab.noSnapshotsTitle')}</p>
+        <p className="text-xs mt-1">{t('backups.brainTab.noSnapshotsHint')}</p>
+      </div>
+    )
+  }
+
+  const section = (
+    title: string,
+    items: BrainSnapshot[],
+    icon: React.ReactNode,
+    iconClass: string,
+    collapsible?: { open: boolean; onToggle: () => void },
+  ) => {
+    if (items.length === 0) return null
+    return (
+      <div className="bg-[#0b1018] border border-[#152030] rounded-xl overflow-hidden">
+        <button
+          onClick={collapsible?.onToggle}
+          disabled={!collapsible}
+          className="w-full flex items-center justify-between px-4 py-3 border-b border-[#152030] hover:bg-[#0f1520]/40 transition-colors disabled:cursor-default"
+        >
+          <div className="flex items-center gap-2">
+            <span className="text-[11px] uppercase tracking-wider text-[#8a9aae] font-semibold">{title}</span>
+            <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-[#152030] text-[#5a6b7f]">{items.length}</span>
+          </div>
+          {collapsible && (
+            <ChevronDown size={14} className={`text-[#5a6b7f] transition-transform ${collapsible.open ? 'rotate-180' : ''}`} />
+          )}
+        </button>
+        {(!collapsible || collapsible.open) && (
+          <table className="w-full text-sm">
+            <tbody>
+              {items.map(s => <SnapshotRow key={s.ref} s={s} icon={icon} iconClass={iconClass} />)}
+            </tbody>
+          </table>
+        )}
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-3">
+      {data.head && section(t('backups.brainSnapshots.head'), [data.head], <GitBranch size={14} />, 'text-[#00FFA7]')}
+      {section(t('backups.brainSnapshots.milestones'), data.milestones, <Tag size={14} />, 'text-[#F59E0B]')}
+      {section(
+        t('backups.brainSnapshots.weekly'),
+        data.weekly,
+        <FileArchive size={14} />,
+        'text-blue-400',
+        { open: openWeekly, onToggle: () => setOpenWeekly(o => !o) },
+      )}
+      {section(
+        t('backups.brainSnapshots.daily'),
+        data.daily,
+        <FileArchive size={14} />,
+        'text-[#8B5CF6]',
+        { open: openDaily, onToggle: () => setOpenDaily(o => !o) },
+      )}
+    </div>
+  )
+}
+
 export default function Backups() {
   const { t } = useTranslation()
   const toast = useToast()
@@ -229,6 +727,19 @@ export default function Backups() {
   const [showRestoreModal, setShowRestoreModal] = useState<string | null>(null)
   const [restoreMode, setRestoreMode] = useState<'merge' | 'replace'>('merge')
   const [uploading, setUploading] = useState(false)
+  const [s3ConfigOpen, setS3ConfigOpen] = useState(false)
+  const [activeTab, setActiveTab] = useState<BackupsTab>('local')
+  const [brainSnapshots, setBrainSnapshots] = useState<BrainSnapshotsResponse | null>(null)
+  const [brainLoading, setBrainLoading] = useState(false)
+  const [brainError, setBrainError] = useState<string | null>(null)
+  // Brain-repo restore modal state — separate from the local/S3 restore
+  // modal because the semantics differ (SSE, kb_key_matches, include_kb).
+  const [brainRestoreModal, setBrainRestoreModal] = useState<BrainSnapshot | null>(null)
+  const [brainRestoreIncludeKb, setBrainRestoreIncludeKb] = useState(false)
+  const [brainRestoreKeyMatches, setBrainRestoreKeyMatches] = useState(false)
+  const [brainRestoreProgress, setBrainRestoreProgress] = useState<{
+    running: boolean; progress: number; message: string; error: boolean
+  }>({ running: false, progress: 0, message: '', error: false })
   const uploadRef = { current: null as HTMLInputElement | null }
 
   const fetchS3 = useCallback(async () => {
@@ -242,6 +753,20 @@ export default function Backups() {
       setS3Error('Failed to fetch S3 backups')
     } finally {
       setS3Loading(false)
+    }
+  }, [])
+
+  const fetchBrainSnapshots = useCallback(async () => {
+    setBrainLoading(true)
+    setBrainError(null)
+    try {
+      const res = await api.get('/brain-repo/snapshots') as BrainSnapshotsResponse
+      setBrainSnapshots(res)
+    } catch (ex: unknown) {
+      setBrainError(ex instanceof Error ? ex.message : 'Failed to fetch brain repo snapshots')
+      setBrainSnapshots(null)
+    } finally {
+      setBrainLoading(false)
     }
   }, [])
 
@@ -265,6 +790,27 @@ export default function Backups() {
   }, [fetchS3])
 
   useEffect(() => { fetchData() }, [fetchData])
+
+  // Lazy-fetch brain snapshots when user opens that tab and brain repo is configured.
+  useEffect(() => {
+    if (activeTab === 'brain' && config?.brain_repo_configured && !brainSnapshots && !brainLoading) {
+      fetchBrainSnapshots()
+    }
+  }, [activeTab, config?.brain_repo_configured, brainSnapshots, brainLoading, fetchBrainSnapshots])
+
+  // Poll the backup config every 30s while the user is on this page and
+  // brain repo is connected. Surfaces last_error changes from the watcher
+  // (auto-sync failures) without requiring a manual refresh. Pauses when
+  // the tab is hidden to avoid burning CPU in background tabs.
+  useEffect(() => {
+    if (!config?.brain_repo_configured) return
+    const tick = () => {
+      if (document.visibilityState !== 'visible') return
+      api.get('/backups/config').then((c) => setConfig(c)).catch(() => { /* ignore transient failures */ })
+    }
+    const interval = setInterval(tick, 30000)
+    return () => clearInterval(interval)
+  }, [config?.brain_repo_configured])
 
   // Poll job status while running
   useEffect(() => {
@@ -291,6 +837,84 @@ export default function Backups() {
     }
   }
 
+  const [milestoneRunning, setMilestoneRunning] = useState(false)
+  const handleBrainRepoMilestone = async () => {
+    setMilestoneRunning(true)
+    try {
+      const resp = await api.post('/brain-repo/sync/force') as { ok?: boolean; tag?: string }
+      if (resp?.ok) {
+        toast.success(t('backups.destinations.milestoneCreated', { tag: resp.tag || '' }))
+        // After a successful push, refresh config (last_sync) + snapshots list.
+        fetchData()
+        if (activeTab === 'brain') fetchBrainSnapshots()
+      } else {
+        toast.error(t('backups.destinations.milestoneFailed'))
+      }
+    } catch (ex: unknown) {
+      toast.error(ex instanceof Error ? ex.message : t('backups.destinations.milestoneFailed'))
+    } finally {
+      setMilestoneRunning(false)
+    }
+  }
+
+  /**
+   * Brain-repo restore uses an SSE stream (POST /api/brain-repo/restore/start)
+   * with ~10 progress events. We don't reuse the plain JSON api.post — we need
+   * the raw Response to read the stream.
+   */
+  const runBrainRestore = async (snapshot: BrainSnapshot) => {
+    setBrainRestoreProgress({ running: true, progress: 0, message: t('backups.brainRestore.starting'), error: false })
+    const base = import.meta.env.DEV ? 'http://localhost:8080' : ''
+    try {
+      const res = await fetch(`${base}/api/brain-repo/restore/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+        credentials: 'include',
+        body: JSON.stringify({
+          ref: snapshot.ref,
+          include_kb: brainRestoreIncludeKb,
+          kb_key_matches: brainRestoreKeyMatches,
+        }),
+      })
+      if (!res.ok || !res.body) {
+        throw new Error(`${res.status} ${res.statusText}`)
+      }
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() || ''
+        for (const line of lines) {
+          if (!line.startsWith('data:')) continue
+          try {
+            const ev = JSON.parse(line.slice(5).trim()) as {
+              step?: string; progress?: number; message?: string; error?: boolean
+            }
+            setBrainRestoreProgress({
+              running: !(ev.step === 'complete' || ev.step === 'done' || ev.error),
+              progress: ev.progress ?? 0,
+              message: ev.message || ev.step || '',
+              error: !!ev.error,
+            })
+          } catch { /* ignore parse errors */ }
+        }
+      }
+      toast.success(t('backups.brainRestore.success'))
+      setBrainRestoreModal(null)
+      setBrainRestoreIncludeKb(false)
+      setBrainRestoreKeyMatches(false)
+      fetchData()
+    } catch (ex: unknown) {
+      const msg = ex instanceof Error ? ex.message : t('backups.brainRestore.failed')
+      setBrainRestoreProgress({ running: false, progress: 0, message: msg, error: true })
+      toast.error(msg)
+    }
+  }
+
   const handleRestore = async (filename: string) => {
     try {
       setJobStatus('running')
@@ -309,9 +933,9 @@ export default function Backups() {
 
   const handleDelete = async (filename: string) => {
     const ok = await confirm({
-      title: 'Deletar backup',
-      description: `Deletar "${filename}"? Esta ação não pode ser desfeita.`,
-      confirmText: 'Deletar',
+      title: t('backups.confirmDelete.title'),
+      description: t('backups.confirmDelete.description', { name: filename }),
+      confirmText: t('backups.confirmDelete.btn'),
       variant: 'danger',
     })
     if (!ok) return
@@ -373,7 +997,7 @@ export default function Backups() {
           </div>
           <div>
             <h1 className="text-xl font-semibold text-[#e6edf3]">{t('backups.title')}</h1>
-            <p className="text-sm text-[#667085]">Export and restore workspace data</p>
+            <p className="text-sm text-[#667085]">{t('backups.subtitle')}</p>
           </div>
         </div>
         <div className="flex items-center gap-2">
@@ -383,14 +1007,12 @@ export default function Backups() {
           >
             <RefreshCw size={16} />
           </button>
-          <button
-            onClick={() => uploadRef.current?.click()}
-            disabled={uploading}
-            className="flex items-center gap-2 px-4 py-2 rounded-lg border border-[#21262d] text-[#D0D5DD] hover:bg-[#161b22] transition-colors text-sm disabled:opacity-50"
-          >
-            {uploading ? <Loader2 size={16} className="animate-spin" /> : <Upload size={16} />}
-            {uploading ? 'Importando...' : 'Importar'}
-          </button>
+          <ImportMenu
+            uploading={uploading}
+            brainConfigured={!!config?.brain_repo_configured}
+            onPickZip={() => uploadRef.current?.click()}
+            onPickBrain={() => setActiveTab('brain')}
+          />
           {config?.s3_configured && config?.boto3_available && (
             <button
               onClick={() => handleBackup('s3')}
@@ -398,7 +1020,17 @@ export default function Backups() {
               className="flex items-center gap-2 px-4 py-2 rounded-lg border border-[#21262d] text-[#D0D5DD] hover:bg-[#161b22] transition-colors text-sm disabled:opacity-50"
             >
               <Cloud size={16} />
-              Backup + S3
+              {t('backups.headerBtn.s3')}
+            </button>
+          )}
+          {config?.brain_repo_configured && (
+            <button
+              onClick={handleBrainRepoMilestone}
+              disabled={milestoneRunning}
+              className="flex items-center gap-2 px-4 py-2 rounded-lg border border-[#21262d] text-[#D0D5DD] hover:bg-[#161b22] transition-colors text-sm disabled:opacity-50"
+            >
+              {milestoneRunning ? <Loader2 size={16} className="animate-spin" /> : <GitBranch size={16} />}
+              {t('backups.headerBtn.brainRepo')}
             </button>
           )}
           <button
@@ -407,7 +1039,7 @@ export default function Backups() {
             className="flex items-center gap-2 px-4 py-2 rounded-lg bg-[#00FFA7]/10 border border-[#00FFA7]/20 text-[#00FFA7] hover:bg-[#00FFA7]/20 transition-colors font-medium text-sm disabled:opacity-50"
           >
             {jobStatus === 'running' ? <Loader2 size={16} className="animate-spin" /> : <Plus size={16} />}
-            {jobStatus === 'running' ? 'Running...' : 'New Backup'}
+            {jobStatus === 'running' ? t('backups.headerBtn.running') : t('backups.headerBtn.newLocal')}
           </button>
         </div>
       </div>
@@ -416,22 +1048,86 @@ export default function Backups() {
       {jobStatus === 'done' && (
         <div className="flex items-center gap-2 px-4 py-3 mb-4 rounded-lg bg-[#00FFA7]/10 border border-[#00FFA7]/20 text-[#00FFA7] text-sm">
           <CheckCircle size={16} />
-          Operation completed successfully.
-          <button onClick={() => setJobStatus('idle')} className="ml-auto text-xs opacity-60 hover:opacity-100">dismiss</button>
+          {t('backups.statusBanner.success')}
+          <button onClick={() => setJobStatus('idle')} className="ml-auto text-xs opacity-60 hover:opacity-100">{t('backups.statusBanner.dismiss')}</button>
         </div>
       )}
       {jobStatus === 'error' && (
         <div className="flex items-center gap-2 px-4 py-3 mb-4 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400 text-sm">
           <AlertCircle size={16} />
-          Operation failed. Check server logs for details.
-          <button onClick={() => setJobStatus('idle')} className="ml-auto text-xs opacity-60 hover:opacity-100">dismiss</button>
+          {t('backups.statusBanner.failed')}
+          <button onClick={() => setJobStatus('idle')} className="ml-auto text-xs opacity-60 hover:opacity-100">{t('backups.statusBanner.dismiss')}</button>
         </div>
       )}
 
-      {/* Storage provider config */}
-      {config && <S3ConfigPanel config={config} onSaved={fetchData} />}
+      {/* Backup destinations status — Local, S3, Brain Repo */}
+      {config && (
+        <DestinationsPanel
+          config={config}
+          onMilestone={handleBrainRepoMilestone}
+          milestoneRunning={milestoneRunning}
+          onOpenS3Config={() => setS3ConfigOpen(o => !o)}
+        />
+      )}
 
-      {/* Loading */}
+      {/* S3 env-var configuration — only shown after the user opens it
+          via the S3 destination card's Configure/Manage button. */}
+      {config && s3ConfigOpen && (
+        <div className="mb-6">
+          <S3ConfigPanel config={config} onSaved={fetchData} />
+        </div>
+      )}
+
+      {/* Tabs bar */}
+      {!loading && (
+        <div className="flex items-center gap-1 mb-4 border-b border-[#152030]">
+          <TabButton
+            active={activeTab === 'local'}
+            onClick={() => setActiveTab('local')}
+            icon={<HardDrive size={14} />}
+            label={t('backups.tabs.local')}
+            count={backups.length}
+          />
+          <TabButton
+            active={activeTab === 's3'}
+            onClick={() => setActiveTab('s3')}
+            icon={<Cloud size={14} />}
+            label={t('backups.tabs.s3')}
+            count={config?.s3_configured ? s3Backups.length : undefined}
+            dimmed={!config?.s3_configured}
+          />
+          <TabButton
+            active={activeTab === 'brain'}
+            onClick={() => setActiveTab('brain')}
+            icon={<GitBranch size={14} />}
+            label={t('backups.tabs.brainRepo')}
+            count={brainSnapshots ? brainCount(brainSnapshots) : undefined}
+            dimmed={!config?.brain_repo_configured}
+          />
+          {activeTab === 's3' && config?.s3_configured && (
+            <button
+              onClick={fetchS3}
+              disabled={s3Loading}
+              className="ml-auto mb-2 p-1.5 rounded-lg border border-[#152030] text-[#667085] hover:text-[#e2e8f0] hover:border-[#1e2a3a] transition-colors disabled:opacity-50"
+              title="Refresh"
+            >
+              <RefreshCw size={13} className={s3Loading ? 'animate-spin' : ''} />
+            </button>
+          )}
+          {activeTab === 'brain' && config?.brain_repo_configured && (
+            <button
+              onClick={fetchBrainSnapshots}
+              disabled={brainLoading}
+              className="ml-auto mb-2 p-1.5 rounded-lg border border-[#152030] text-[#667085] hover:text-[#e2e8f0] hover:border-[#1e2a3a] transition-colors disabled:opacity-50"
+              title="Refresh"
+            >
+              <RefreshCw size={13} className={brainLoading ? 'animate-spin' : ''} />
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Loading skeleton */}
       {loading && (
         <div className="space-y-3">
           {[...Array(3)].map((_, i) => (
@@ -440,159 +1136,60 @@ export default function Backups() {
         </div>
       )}
 
-      {/* Empty state */}
-      {!loading && backups.length === 0 && (
-        <div className="flex flex-col items-center justify-center py-16 text-[#667085]">
-          <FileArchive size={48} className="mb-4 opacity-40" />
-          <p className="text-sm">No backups yet</p>
-          <p className="text-xs mt-1">Click "New Backup" to export your workspace data</p>
-        </div>
-      )}
-
-      {/* Backup list */}
-      {!loading && backups.length > 0 && (
-        <div className="bg-[#161b22] border border-[#21262d] rounded-xl overflow-hidden">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-[#21262d] text-[#667085] text-xs">
-                <th className="text-left px-4 py-3 font-medium">Backup</th>
-                <th className="text-left px-4 py-3 font-medium hidden sm:table-cell">Version</th>
-                <th className="text-right px-4 py-3 font-medium hidden sm:table-cell">Files</th>
-                <th className="text-right px-4 py-3 font-medium">Size</th>
-                <th className="text-left px-4 py-3 font-medium">Date</th>
-                <th className="text-right px-4 py-3 font-medium">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {backups.map((b) => (
-                <tr key={b.filename} className="border-b border-[#21262d] last:border-0 hover:bg-[#0d1117]/50 transition-colors">
-                  <td className="px-4 py-3">
-                    <div className="flex items-center gap-2">
-                      <FileArchive size={16} className="text-[#00FFA7] shrink-0" />
-                      <span className="text-[#e6edf3] font-mono text-xs truncate max-w-[200px] lg:max-w-none">
-                        {b.filename}
-                      </span>
-                    </div>
-                  </td>
-                  <td className="px-4 py-3 text-[#D0D5DD] hidden sm:table-cell">
-                    {b.manifest?.version || '-'}
-                  </td>
-                  <td className="px-4 py-3 text-right text-[#D0D5DD] hidden sm:table-cell">
-                    {b.manifest?.file_count?.toLocaleString() || '-'}
-                  </td>
-                  <td className="px-4 py-3 text-right text-[#D0D5DD]">
-                    {formatSize(b.size)}
-                  </td>
-                  <td className="px-4 py-3 text-[#667085]">
-                    {formatDate(b.modified)}
-                  </td>
-                  <td className="px-4 py-3">
-                    <div className="flex items-center justify-end gap-1">
-                      <button
-                        onClick={() => handleDownload(b.filename)}
-                        className="p-1.5 rounded-lg text-[#667085] hover:text-[#00FFA7] hover:bg-[#00FFA7]/10 transition-colors"
-                        title="Download"
-                      >
-                        <Download size={14} />
-                      </button>
-                      <button
-                        onClick={() => { setShowRestoreModal(b.filename); setRestoreMode('merge') }}
-                        className="p-1.5 rounded-lg text-[#667085] hover:text-blue-400 hover:bg-blue-400/10 transition-colors"
-                        title="Restore"
-                      >
-                        <RotateCcw size={14} />
-                      </button>
-                      <button
-                        onClick={() => handleDelete(b.filename)}
-                        className="p-1.5 rounded-lg text-[#667085] hover:text-red-400 hover:bg-red-400/10 transition-colors"
-                        title="Delete"
-                      >
-                        <Trash2 size={14} />
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      {/* S3 Remote backups */}
-      {config?.s3_configured && config?.boto3_available && (
-        <div className="mt-6">
-          <div className="flex items-center justify-between mb-3">
-            <div className="flex items-center gap-2">
-              <Cloud size={16} className="text-[#667085]" />
-              <h2 className="text-sm font-medium text-[#e6edf3]">Remote Backups (S3)</h2>
-              {s3Backups.length > 0 && (
-                <span className="text-xs px-2 py-0.5 rounded-full bg-[#21262d] text-[#667085]">
-                  {s3Backups.length}
-                </span>
-              )}
+      {/* Local tab content */}
+      {!loading && activeTab === 'local' && (
+        <>
+          {backups.length === 0 ? (
+            <div className="rounded-xl border border-[#152030] bg-[#0b1018] flex flex-col items-center justify-center py-16 text-[#667085]">
+              <FileArchive size={48} className="mb-4 opacity-40" />
+              <p className="text-sm text-[#8a9aae]">{t('backups.empty.title')}</p>
+              <p className="text-xs mt-1">{t('backups.empty.hint')}</p>
             </div>
-            <button
-              onClick={fetchS3}
-              disabled={s3Loading}
-              className="p-1.5 rounded-lg border border-[#21262d] text-[#667085] hover:text-[#e6edf3] hover:border-[#344054] transition-colors disabled:opacity-50"
-            >
-              <RefreshCw size={14} className={s3Loading ? 'animate-spin' : ''} />
-            </button>
-          </div>
-
-          {s3Error && !s3Loading && s3Backups.length === 0 && (
-            <div className="flex items-center gap-2 px-4 py-3 rounded-lg bg-yellow-500/10 border border-yellow-500/20 text-yellow-400 text-xs">
-              <AlertCircle size={14} />
-              {s3Error}
-            </div>
-          )}
-
-          {!s3Loading && !s3Error && s3Backups.length === 0 && (
-            <div className="text-xs text-[#667085] px-4 py-3 border border-[#21262d] rounded-lg">
-              Nenhum backup encontrado no bucket.
-            </div>
-          )}
-
-          {s3Backups.length > 0 && (
-            <div className="bg-[#161b22] border border-[#21262d] rounded-xl overflow-hidden">
+          ) : (
+            <div className="bg-[#0b1018] border border-[#152030] rounded-xl overflow-hidden">
               <table className="w-full text-sm">
                 <thead>
-                  <tr className="border-b border-[#21262d] text-[#667085] text-xs">
-                    <th className="text-left px-4 py-3 font-medium">Backup</th>
-                    <th className="text-right px-4 py-3 font-medium">Size</th>
-                    <th className="text-left px-4 py-3 font-medium">Date</th>
-                    <th className="text-right px-4 py-3 font-medium">Actions</th>
+                  <tr className="border-b border-[#152030] text-[#5a6b7f] text-[11px] uppercase tracking-wider">
+                    <th className="text-left px-4 py-3 font-medium">{t('backups.table.backup')}</th>
+                    <th className="text-left px-4 py-3 font-medium hidden sm:table-cell">{t('backups.table.version')}</th>
+                    <th className="text-right px-4 py-3 font-medium hidden sm:table-cell">{t('backups.table.files')}</th>
+                    <th className="text-right px-4 py-3 font-medium">{t('backups.table.size')}</th>
+                    <th className="text-left px-4 py-3 font-medium">{t('backups.table.date')}</th>
+                    <th className="text-right px-4 py-3 font-medium">{t('backups.table.actions')}</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {s3Backups.map((b) => (
-                    <tr key={b.key} className="border-b border-[#21262d] last:border-0 hover:bg-[#0d1117]/50 transition-colors">
+                  {backups.map((b) => (
+                    <tr key={b.filename} className="border-b border-[#152030] last:border-0 hover:bg-[#0f1520]/60 transition-colors">
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-2">
-                          <Cloud size={14} className="text-blue-400 shrink-0" />
-                          <span className="text-[#e6edf3] font-mono text-xs truncate max-w-[250px] lg:max-w-none">
+                          <FileArchive size={16} className="text-[#00FFA7] shrink-0" />
+                          <span className="text-[#e6edf3] font-mono text-xs truncate max-w-[200px] lg:max-w-none">
                             {b.filename}
                           </span>
                         </div>
                       </td>
-                      <td className="px-4 py-3 text-right text-[#D0D5DD]">
-                        {formatSize(b.size)}
-                      </td>
-                      <td className="px-4 py-3 text-[#667085]">
-                        {formatDate(b.modified)}
-                      </td>
+                      <td className="px-4 py-3 text-[#D0D5DD] hidden sm:table-cell">{b.manifest?.version || '-'}</td>
+                      <td className="px-4 py-3 text-right text-[#D0D5DD] hidden sm:table-cell">{b.manifest?.file_count?.toLocaleString() || '-'}</td>
+                      <td className="px-4 py-3 text-right text-[#D0D5DD]">{formatSize(b.size)}</td>
+                      <td className="px-4 py-3 text-[#667085]">{formatDate(b.modified)}</td>
                       <td className="px-4 py-3">
                         <div className="flex items-center justify-end gap-1">
                           <button
-                            onClick={() => {
-                              const base = import.meta.env.DEV ? 'http://localhost:8080' : ''
-                              window.open(`${base}/api/backups/s3/${encodeURIComponent(b.key)}/download`, '_blank')
-                            }}
+                            onClick={() => handleDownload(b.filename)}
                             className="p-1.5 rounded-lg text-[#667085] hover:text-[#00FFA7] hover:bg-[#00FFA7]/10 transition-colors"
-                            title="Download from S3"
-                          >
-                            <Download size={14} />
-                          </button>
+                            title={t('backups.action.download')}
+                          ><Download size={14} /></button>
+                          <button
+                            onClick={() => { setShowRestoreModal(b.filename); setRestoreMode('merge') }}
+                            className="p-1.5 rounded-lg text-[#667085] hover:text-blue-400 hover:bg-blue-400/10 transition-colors"
+                            title={t('backups.action.restoreBtn')}
+                          ><RotateCcw size={14} /></button>
+                          <button
+                            onClick={() => handleDelete(b.filename)}
+                            className="p-1.5 rounded-lg text-[#667085] hover:text-red-400 hover:bg-red-400/10 transition-colors"
+                            title={t('backups.action.delete')}
+                          ><Trash2 size={14} /></button>
                         </div>
                       </td>
                     </tr>
@@ -601,18 +1198,226 @@ export default function Backups() {
               </table>
             </div>
           )}
+        </>
+      )}
+
+      {/* S3 tab content */}
+      {!loading && activeTab === 's3' && (
+        <>
+          {!config?.s3_configured ? (
+            <div className="rounded-xl border border-[#152030] bg-[#0b1018] flex flex-col items-center justify-center py-16 text-[#667085]">
+              <Cloud size={48} className="mb-4 opacity-40" />
+              <p className="text-sm text-[#8a9aae]">{t('backups.s3Tab.notConfiguredTitle')}</p>
+              <p className="text-xs mt-1">{t('backups.s3Tab.notConfiguredHint')}</p>
+              <button
+                onClick={() => setS3ConfigOpen(true)}
+                className="mt-4 px-4 py-2 rounded-lg bg-[#00FFA7]/10 text-[#00FFA7] border border-[#00FFA7]/20 hover:bg-[#00FFA7]/20 text-sm font-medium transition-colors"
+              >{t('backups.destinations.configure')}</button>
+            </div>
+          ) : s3Error && !s3Loading && s3Backups.length === 0 ? (
+            <div className="flex items-center gap-2 px-4 py-3 rounded-lg bg-yellow-500/10 border border-yellow-500/20 text-yellow-400 text-xs">
+              <AlertCircle size={14} />{s3Error}
+            </div>
+          ) : !s3Loading && s3Backups.length === 0 ? (
+            <div className="rounded-xl border border-[#152030] bg-[#0b1018] flex flex-col items-center justify-center py-16 text-[#667085]">
+              <Cloud size={48} className="mb-4 opacity-40" />
+              <p className="text-sm text-[#8a9aae]">{t('backups.s3List.empty')}</p>
+            </div>
+          ) : (
+            <div className="bg-[#0b1018] border border-[#152030] rounded-xl overflow-hidden">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-[#152030] text-[#5a6b7f] text-[11px] uppercase tracking-wider">
+                    <th className="text-left px-4 py-3 font-medium">{t('backups.table.backup')}</th>
+                    <th className="text-right px-4 py-3 font-medium">{t('backups.table.size')}</th>
+                    <th className="text-left px-4 py-3 font-medium">{t('backups.table.date')}</th>
+                    <th className="text-right px-4 py-3 font-medium">{t('backups.table.actions')}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {s3Backups.map((b) => (
+                    <tr key={b.key} className="border-b border-[#152030] last:border-0 hover:bg-[#0f1520]/60 transition-colors">
+                      <td className="px-4 py-3">
+                        <div className="flex items-center gap-2">
+                          <Cloud size={14} className="text-blue-400 shrink-0" />
+                          <span className="text-[#e6edf3] font-mono text-xs truncate max-w-[250px] lg:max-w-none">{b.filename}</span>
+                        </div>
+                      </td>
+                      <td className="px-4 py-3 text-right text-[#D0D5DD]">{formatSize(b.size)}</td>
+                      <td className="px-4 py-3 text-[#667085]">{formatDate(b.modified)}</td>
+                      <td className="px-4 py-3">
+                        <div className="flex items-center justify-end gap-1">
+                          <button
+                            onClick={() => {
+                              const base = import.meta.env.DEV ? 'http://localhost:8080' : ''
+                              window.open(`${base}/api/backups/s3/${encodeURIComponent(b.key)}/download`, '_blank')
+                            }}
+                            className="p-1.5 rounded-lg text-[#667085] hover:text-[#00FFA7] hover:bg-[#00FFA7]/10 transition-colors"
+                            title={t('backups.action.downloadFromS3')}
+                          ><Download size={14} /></button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </>
+      )}
+
+      {/* Brain Repo tab content */}
+      {!loading && activeTab === 'brain' && (
+        <>
+          {!config?.brain_repo_configured ? (
+            <div className="rounded-xl border border-[#152030] bg-[#0b1018] flex flex-col items-center justify-center py-16 text-[#667085]">
+              <GitBranch size={48} className="mb-4 opacity-40" />
+              <p className="text-sm text-[#8a9aae]">{t('backups.brainTab.notConnectedTitle')}</p>
+              <p className="text-xs mt-1">{t('backups.brainTab.notConnectedHint')}</p>
+              <Link
+                to="/onboarding"
+                className="mt-4 px-4 py-2 rounded-lg bg-[#00FFA7]/10 text-[#00FFA7] border border-[#00FFA7]/20 hover:bg-[#00FFA7]/20 text-sm font-medium transition-colors"
+              >{t('backups.destinations.configure')}</Link>
+            </div>
+          ) : brainLoading ? (
+            <div className="flex items-center justify-center py-16">
+              <Loader2 size={24} className="animate-spin text-[#5a6b7f]" />
+            </div>
+          ) : brainError ? (
+            <div className="flex items-center gap-2 px-4 py-3 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400 text-xs">
+              <AlertCircle size={14} />{brainError}
+            </div>
+          ) : (
+            <BrainRepoSnapshots
+              data={brainSnapshots}
+              repoUrl={config.brain_repo?.repo_url}
+              onRestore={(snapshot) => {
+                setBrainRestoreModal(snapshot)
+                setBrainRestoreIncludeKb(false)
+                setBrainRestoreKeyMatches(false)
+                setBrainRestoreProgress({ running: false, progress: 0, message: '', error: false })
+              }}
+            />
+          )}
+        </>
+      )}
+
+      {/* Brain-repo restore modal */}
+      {brainRestoreModal && (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+          onClick={() => !brainRestoreProgress.running && setBrainRestoreModal(null)}>
+          <div className="bg-[#0b1018] border border-[#152030] rounded-xl w-full max-w-md p-6 shadow-[0_4px_40px_rgba(0,0,0,0.4)]"
+            onClick={e => e.stopPropagation()}>
+            <div className="flex items-center gap-3 mb-3">
+              <div className="w-9 h-9 rounded-xl bg-[#00FFA7]/10 border border-[#00FFA7]/20 flex items-center justify-center">
+                <GitBranch size={16} className="text-[#00FFA7]" />
+              </div>
+              <div>
+                <h2 className="text-[16px] font-semibold text-[#e2e8f0]">{t('backups.brainRestore.title')}</h2>
+                <p className="text-[11px] text-[#5a6b7f] mt-0.5 font-mono truncate">
+                  {brainRestoreModal.label || (brainRestoreModal.ref ?? '').replace(/^refs\/tags\//, '') || '(unnamed)'}
+                </p>
+              </div>
+            </div>
+
+            {!brainRestoreProgress.running && !brainRestoreProgress.error && brainRestoreProgress.progress < 100 && (
+              <>
+                <div className="p-3 rounded-lg bg-[#1a1400] border border-[#3a3015] mb-4">
+                  <p className="text-[11px] text-[#b89070] leading-relaxed">
+                    <AlertTriangle size={12} className="inline mr-1 mb-0.5 text-[#F59E0B]" />
+                    {t('backups.brainRestore.warningNoDb')}
+                  </p>
+                </div>
+
+                <label className="flex items-start gap-3 p-3 rounded-lg border border-[#152030] mb-2 cursor-pointer hover:border-[#1e2a3a] transition-colors">
+                  <input
+                    type="checkbox"
+                    checked={brainRestoreIncludeKb}
+                    onChange={e => setBrainRestoreIncludeKb(e.target.checked)}
+                    className="mt-0.5 accent-[#00FFA7]"
+                  />
+                  <div>
+                    <div className="text-[12px] text-[#e2e8f0] font-medium">{t('backups.brainRestore.includeKb')}</div>
+                    <div className="text-[10px] text-[#5a6b7f] mt-0.5">{t('backups.brainRestore.includeKbDesc')}</div>
+                  </div>
+                </label>
+
+                {brainRestoreIncludeKb && (
+                  <label className="flex items-start gap-3 p-3 rounded-lg border border-[#152030] mb-4 cursor-pointer hover:border-[#1e2a3a] transition-colors">
+                    <input
+                      type="checkbox"
+                      checked={brainRestoreKeyMatches}
+                      onChange={e => setBrainRestoreKeyMatches(e.target.checked)}
+                      className="mt-0.5 accent-[#00FFA7]"
+                    />
+                    <div>
+                      <div className="text-[12px] text-[#e2e8f0] font-medium">{t('backups.brainRestore.keyMatches')}</div>
+                      <div className="text-[10px] text-[#5a6b7f] mt-0.5">{t('backups.brainRestore.keyMatchesDesc')}</div>
+                    </div>
+                  </label>
+                )}
+
+                <div className="flex justify-end gap-2 mt-2">
+                  <button
+                    onClick={() => setBrainRestoreModal(null)}
+                    className="px-4 py-2 rounded-lg border border-[#152030] text-[#5a6b7f] text-sm hover:text-[#e2e8f0] hover:border-[#1e2a3a] transition-colors"
+                  >{t('backups.modal.cancel')}</button>
+                  <button
+                    onClick={() => runBrainRestore(brainRestoreModal)}
+                    className="flex items-center gap-2 px-4 py-2 rounded-lg bg-[#00FFA7] text-[#080c14] hover:bg-[#00e69a] text-sm font-semibold transition-colors"
+                  >
+                    <RotateCcw size={14} />
+                    {t('backups.brainRestore.btn')}
+                  </button>
+                </div>
+              </>
+            )}
+
+            {(brainRestoreProgress.running || brainRestoreProgress.error || brainRestoreProgress.progress >= 100) && (
+              <div className="space-y-3 mt-2">
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className="text-[11px] text-[#5a6b7f]">{brainRestoreProgress.message}</span>
+                    <span className="text-[11px] text-[#5a6b7f]">{brainRestoreProgress.progress}%</span>
+                  </div>
+                  <div className="h-1.5 rounded-full bg-[#152030] overflow-hidden">
+                    <div
+                      className="h-full rounded-full transition-all duration-300"
+                      style={{
+                        width: `${brainRestoreProgress.progress}%`,
+                        backgroundColor: brainRestoreProgress.error ? '#ef4444' : '#00FFA7',
+                      }}
+                    />
+                  </div>
+                </div>
+                {!brainRestoreProgress.running && (
+                  <button
+                    onClick={() => {
+                      setBrainRestoreModal(null)
+                      setBrainRestoreProgress({ running: false, progress: 0, message: '', error: false })
+                    }}
+                    className="w-full py-2 rounded-lg border border-[#152030] text-[#5a6b7f] text-sm hover:text-[#e2e8f0] hover:border-[#1e2a3a] transition-colors"
+                  >{t('common.close')}</button>
+                )}
+              </div>
+            )}
+          </div>
         </div>
       )}
 
       {/* Restore modal */}
       {showRestoreModal && (
-        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" onClick={() => setShowRestoreModal(null)}>
-          <div className="bg-[#161b22] border border-[#21262d] rounded-xl w-full max-w-md p-6" onClick={(e) => e.stopPropagation()}>
-            <h2 className="text-lg font-semibold text-[#e6edf3] mb-1">Restore Backup</h2>
-            <p className="text-sm text-[#667085] mb-4 font-mono">{showRestoreModal}</p>
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4" onClick={() => setShowRestoreModal(null)}>
+          <div className="bg-[#0b1018] border border-[#152030] rounded-xl w-full max-w-md p-6 shadow-[0_4px_40px_rgba(0,0,0,0.4)]" onClick={(e) => e.stopPropagation()}>
+            <h2 className="text-lg font-semibold text-[#e2e8f0] mb-1">{t('backups.modal.title')}</h2>
+            <p className="text-xs text-[#5a6b7f] mb-5 font-mono truncate">{showRestoreModal}</p>
 
-            <div className="space-y-3 mb-6">
-              <label className="flex items-start gap-3 p-3 rounded-lg border border-[#21262d] cursor-pointer hover:border-[#344054] transition-colors">
+            <div className="space-y-2 mb-6">
+              <label className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${
+                restoreMode === 'merge'
+                  ? 'border-[#00FFA7]/40 bg-[#00FFA7]/5'
+                  : 'border-[#152030] hover:border-[#1e2a3a]'
+              }`}>
                 <input
                   type="radio"
                   name="mode"
@@ -621,21 +1426,25 @@ export default function Backups() {
                   className="mt-0.5 accent-[#00FFA7]"
                 />
                 <div>
-                  <div className="text-sm font-medium text-[#e6edf3]">Merge</div>
-                  <div className="text-xs text-[#667085]">Only restore files that don't exist. Existing files are preserved.</div>
+                  <div className="text-sm font-medium text-[#e2e8f0]">{t('backups.modal.merge')}</div>
+                  <div className="text-[11px] text-[#5a6b7f] mt-0.5">{t('backups.modal.mergeDesc')}</div>
                 </div>
               </label>
-              <label className="flex items-start gap-3 p-3 rounded-lg border border-[#21262d] cursor-pointer hover:border-[#344054] transition-colors">
+              <label className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${
+                restoreMode === 'replace'
+                  ? 'border-[#3a1515] bg-[#1a0a0a]/40'
+                  : 'border-[#152030] hover:border-[#1e2a3a]'
+              }`}>
                 <input
                   type="radio"
                   name="mode"
                   checked={restoreMode === 'replace'}
                   onChange={() => setRestoreMode('replace')}
-                  className="mt-0.5 accent-[#00FFA7]"
+                  className="mt-0.5 accent-[#f87171]"
                 />
                 <div>
-                  <div className="text-sm font-medium text-[#e6edf3]">Replace</div>
-                  <div className="text-xs text-[#667085]">Overwrite all files with backup versions. Existing data will be replaced.</div>
+                  <div className="text-sm font-medium text-[#e2e8f0]">{t('backups.modal.replace')}</div>
+                  <div className="text-[11px] text-[#5a6b7f] mt-0.5">{t('backups.modal.replaceDesc')}</div>
                 </div>
               </label>
             </div>
@@ -643,16 +1452,16 @@ export default function Backups() {
             <div className="flex justify-end gap-2">
               <button
                 onClick={() => setShowRestoreModal(null)}
-                className="px-4 py-2 rounded-lg border border-[#21262d] text-[#D0D5DD] text-sm hover:bg-[#0d1117] transition-colors"
+                className="px-4 py-2 rounded-lg border border-[#152030] text-[#5a6b7f] text-sm hover:text-[#e2e8f0] hover:border-[#1e2a3a] transition-colors"
               >
-                Cancel
+                {t('backups.modal.cancel')}
               </button>
               <button
                 onClick={() => handleRestore(showRestoreModal)}
                 className="flex items-center gap-2 px-4 py-2 rounded-lg bg-[#00FFA7]/10 border border-[#00FFA7]/20 text-[#00FFA7] hover:bg-[#00FFA7]/20 transition-colors font-medium text-sm"
               >
                 <RotateCcw size={14} />
-                Restore ({restoreMode})
+                {t('backups.modal.restoreBtn')} ({restoreMode === 'merge' ? t('backups.modal.merge') : t('backups.modal.replace')})
               </button>
             </div>
           </div>

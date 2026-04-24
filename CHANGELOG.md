@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.31.0] - 2026-04-24
+
+Minor release introducing the **Brain Repo** — automatic GitHub versioning of workspace memory and customizations — plus a full onboarding wizard and a unified `/backups` page covering Local, S3 and Brain Repo destinations.
+
+### Added
+
+- **Brain Repo — GitHub versioning of `memory/`, `workspace/`, `customizations/` and `config-safe/`** — a dedicated private repo (`evo-brain-<username>`) is created or detected per user. A file watcher with 30s debounce persists every change to GitHub; daily, weekly and milestone snapshots can be restored via a streaming SSE engine. GitHub tokens are Fernet-encrypted at rest with `BRAIN_REPO_MASTER_KEY` (auto-generated at first boot); `connect`/`sync` endpoints return `500 CRYPTO_UNAVAILABLE` when encryption is unavailable — plaintext fallback was explicitly removed. A 21-pattern secrets scanner runs before every push (AWS / GitHub / Anthropic / OpenAI / Stripe / JWT / SSH, etc.) — matched files are deleted and never leave the machine.
+- **Onboarding wizard** — post-account-creation flow replacing the cold-drop into Overview. First-time users pick an AI provider (Anthropic / OpenAI / OpenRouter / Codex OAuth) with per-provider sub-flows and optionally connect a brain repo; returning users can restore from any snapshot via a type-to-confirm safety gate. Includes an `OracleWelcomeBanner` on `/agents` (one-time, dismissable).
+- **Unified `/backups` page** — single surface for Local ZIPs, S3 and Brain Repo with 3 destination cards, tabs (counts per source), import dropdown (upload `.zip` + pull from Brain Repo), contextual restore modal with SSE progress and a danger state when crypto is broken. 30s visibility-aware polling keeps watcher results fresh.
+- **Brain Repo settings page** — `/settings/brain-repo` with status card (connected / pending / last_error / crypto danger), Sync-now, Create-milestone and Disconnect actions, fully i18n'd.
+- **i18n** — ~270 new keys across `onboarding.*`, `restore.*`, `brainRepoSettings.*`, `backups.*`, `agents.welcomeBanner.*` (en-US / pt-BR / es), with identical key trees and natural translations.
+- **CLI** — `setup.py` now prompts for brain-repo during initial setup and collects the PAT; `backup.py --target github` pushes a manual sync through the dashboard's own code path.
+- **Dev environment** — `docker-compose.dev.yml` with live-reload backend + named volumes, `Dockerfile.dev` with `--legacy-peer-deps` and globally-installed `@anthropic-ai/claude-code` + `@gitlawb/openclaude`, CRLF-safe entrypoint scripts, and a step-by-step `DEV-SETUP.md`.
+
+### Changed
+
+- **`/api/backups/config`** extended with `brain_repo_configured`, `brain_repo` and `brain_crypto_ready` so the tabs UI renders in one round-trip.
+- **`lib/api.ts`** — `buildError()` now extracts the JSON `error` / `description` / `message` from non-OK responses while preserving the status-code prefix, so existing `.includes('401')` callers keep working.
+- **`useGlobalNotifications`** — HTTP health-probe before WS + visibility guard, eliminating the `WebSocket connection failed` console spam on pages that don't use the terminal.
+- **`App.tsx`** — onboarding guard treats `null` state as "needs onboarding" and redirects accordingly.
+
+### Fixed
+
+- **Restore SSE crash on `execute_restore(install_dir=...)`** — call-site kwargs now match the function signature `(repo_url, ref, token, install_dir, include_kb, kb_key_matches)` 1:1; `install_dir` resolves to the workspace root (where the SWAP_DIRS are replaced), not the brain-repo clone. A new import-time signature check in `brain_repo/__init__.py` emits a CRITICAL log on drift so future regressions are visible at startup.
+- **Watcher no-op on workspace changes** — `sync_force`, `tag_milestone` and the watcher now mirror `memory/workspace/customizations/config-safe` from workspace → brain-repo clone *before* `git add`, so `commit_all` actually sees the new files.
+- **`start_brain_watcher` circular import** — now accepts the Flask app explicitly instead of importing it, eliminating the startup "current Flask app is not registered with this 'SQLAlchemy' instance" warning that silently disabled auto-sync.
+
 ## [0.30.4] - 2026-04-24
 
 Patch release with a **P0 race-condition fix** in the container entrypoint plus a complete Docker install experience (ready-to-run compose + full tutorial).

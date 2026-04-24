@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
+import OracleWelcomeBanner from '../components/OracleWelcomeBanner'
 import {
   Bot,
   Brain,
@@ -730,6 +731,9 @@ export default function Agents() {
 
   return (
     <div>
+      {/* Oracle welcome banner — only renders when onboarding_completed_agents_visit is false */}
+      <OracleWelcomeBanner />
+
       {/* Header */}
       <div className="mb-6">
         <h1 className="text-2xl font-bold text-[#e6edf3]">{t('agents.title')}</h1>

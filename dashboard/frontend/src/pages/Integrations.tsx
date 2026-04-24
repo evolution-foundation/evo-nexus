@@ -782,6 +782,20 @@ export default function Integrations() {
 
   const coreIntegrations = integrations.filter(i => i.kind === 'core')
   const customIntegrations = integrations.filter(i => i.kind === 'custom')
+
+  // Brain repo status (best-effort — may fail if feature not deployed)
+  const [brainRepoStatus, setBrainRepoStatus] = useState<{
+    connected: boolean
+    repo_url: string | null
+    last_sync: string | null
+    pending_count: number
+  } | null>(null)
+
+  useEffect(() => {
+    api.get('/brain-repo/status')
+      .then((d: any) => setBrainRepoStatus(d))
+      .catch(() => {/* feature may not be deployed yet */})
+  }, [])
   const connectedCount = integrations.filter((i) => i.status === 'ok').length
   const totalSocialAccounts = platforms.reduce((sum, p) => sum + p.accounts.length, 0)
   const connectedPlatformsCount = platforms.filter(p => p.has_connected).length
@@ -927,6 +941,82 @@ export default function Integrations() {
       ) : (
         <>
           {activeTab === 'integrations' && (<>
+          {/* GitHub — Brain Repo */}
+          <div className="mb-6">
+            <div className="flex items-center gap-2.5 mb-3">
+              <div className="flex items-center justify-center w-7 h-7 rounded-lg bg-[#E6EDF3]/8 border border-[#E6EDF3]/15">
+                <GitBranch size={14} className="text-[#E6EDF3]" />
+              </div>
+              <h2 className="text-base font-semibold text-[#e6edf3]">GitHub (Brain Repo)</h2>
+            </div>
+            <div
+              className="group relative rounded-xl border bg-[#161b22] p-5 transition-all duration-300"
+              style={{
+                borderColor: brainRepoStatus?.connected ? 'rgba(0,255,167,0.25)' : '#21262d',
+              }}
+            >
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="flex items-center justify-center w-10 h-10 rounded-xl border"
+                    style={{
+                      backgroundColor: brainRepoStatus?.connected ? 'rgba(0,255,167,0.08)' : 'rgba(230,237,243,0.04)',
+                      borderColor: brainRepoStatus?.connected ? 'rgba(0,255,167,0.2)' : '#21262d',
+                    }}>
+                    <GitBranch size={18} style={{ color: brainRepoStatus?.connected ? '#00FFA7' : '#8b949e' }} />
+                  </div>
+                  <div>
+                    <p className="text-sm font-semibold text-[#e6edf3]">Brain Repo</p>
+                    {brainRepoStatus?.connected && brainRepoStatus.repo_url ? (
+                      <a
+                        href={brainRepoStatus.repo_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-[11px] text-[#00FFA7]/70 hover:text-[#00FFA7] transition-colors truncate max-w-xs block"
+                      >
+                        {brainRepoStatus.repo_url}
+                      </a>
+                    ) : (
+                      <p className="text-[11px] text-[#667085]">Version control for workspace configuration</p>
+                    )}
+                  </div>
+                </div>
+                <div className="flex items-center gap-3">
+                  {brainRepoStatus?.connected ? (
+                    <>
+                      {(brainRepoStatus.pending_count ?? 0) > 0 && (
+                        <span className="text-[10px] px-2 py-0.5 rounded-full bg-[#F59E0B]/10 text-[#F59E0B] border border-[#F59E0B]/20">
+                          {brainRepoStatus.pending_count} pending
+                        </span>
+                      )}
+                      {brainRepoStatus.last_sync && (
+                        <span className="text-[10px] text-[#667085]">
+                          Synced {new Date(brainRepoStatus.last_sync).toLocaleDateString()}
+                        </span>
+                      )}
+                      <span className="flex items-center gap-1.5 px-2 py-1 rounded-full bg-[#00FFA7]/10 border border-[#00FFA7]/20 text-[10px] font-semibold uppercase tracking-wider text-[#00FFA7]">
+                        <span className="h-1.5 w-1.5 rounded-full bg-[#00FFA7]" />
+                        Connected
+                      </span>
+                      <a
+                        href="/settings/brain-repo"
+                        className="text-xs px-3 py-1.5 rounded-lg border border-[#21262d] text-[#8b949e] hover:text-[#e6edf3] hover:border-[#30363d] transition-colors"
+                      >
+                        Manage
+                      </a>
+                    </>
+                  ) : (
+                    <a
+                      href="/settings/brain-repo"
+                      className="text-xs px-3 py-1.5 rounded-lg bg-[#00FFA7]/10 text-[#00FFA7] border border-[#00FFA7]/20 hover:bg-[#00FFA7]/20 transition-all"
+                    >
+                      Connect
+                    </a>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+
           {/* Core Integrations */}
           <div className="mb-10">
             <div className="flex items-center gap-2.5 mb-4">

@@ -1,3 +1,4 @@
+import { lazy, Suspense } from 'react'
 import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import { AuthProvider, useAuth } from './context/AuthContext'
 import { NotificationProvider } from './context/NotificationContext'
@@ -46,14 +47,26 @@ import KnowledgeBrowse from './pages/Knowledge/Browse'
 import KnowledgeSearch from './pages/Knowledge/Search'
 import KnowledgeApiKeys from './pages/Knowledge/ApiKeys'
 
+// Lazy-loaded onboarding + settings pages
+const OnboardingRouter = lazy(() => import('./pages/onboarding/OnboardingRouter'))
+const BrainRepo = lazy(() => import('./pages/settings/BrainRepo'))
+
+// Extended user type with onboarding fields (backend may include these)
+interface OnboardingUser {
+  onboarding_state?: string | null
+  onboarding_completed_agents_visit?: boolean
+}
+
 function AppContent() {
   const location = useLocation()
   const isDocs = location.pathname === '/docs' || location.pathname.startsWith('/docs/')
   const isShare = location.pathname.startsWith('/share/')
+  const isOnboarding = location.pathname.startsWith('/onboarding')
   const isAgentDetail = /^\/agents\/[^/]+$/.test(location.pathname)
   const isTicketDetail = /^\/tickets\/[^/]+$/.test(location.pathname)
   const isWorkspace = location.pathname === '/workspace' || location.pathname.startsWith('/workspace/')
   const { user, loading, needsSetup, hasPermission } = useAuth()
+  const extUser = user as (typeof user & OnboardingUser) | null
 
   // Share links are public — render without auth or sidebar
   if (isShare) {
@@ -91,6 +104,28 @@ function AppContent() {
   if (needsSetup) return <Setup />
   if (!user) return <Login />
 
+  // Onboarding guard — redirect to /onboarding if user hasn't completed/skipped it.
+  // For brand-new users onboarding_state is null (column nullable), which counts as "needs onboarding".
+  if (
+    !isOnboarding &&
+    extUser &&
+    extUser.onboarding_state !== 'completed' &&
+    extUser.onboarding_state !== 'skipped'
+  ) {
+    return <Navigate to="/onboarding" replace />
+  }
+
+  // Allow direct access to /onboarding regardless
+  if (isOnboarding) {
+    return (
+      <Suspense fallback={<div className="min-h-screen bg-[#080c14] flex items-center justify-center"><div className="text-[#5a6b7f] text-sm">Loading...</div></div>}>
+        <Routes>
+          <Route path="/onboarding/*" element={<OnboardingRouter />} />
+        </Routes>
+      </Suspense>
+    )
+  }
+
   return (
     <NotificationProvider>
     <div className="flex min-h-screen bg-[#0C111D]">
@@ -105,6 +140,18 @@ function AppContent() {
         }
       >
         <Routes>
+          {/* Onboarding & Settings routes (lazy) */}
+          <Route path="/onboarding/*" element={
+            <Suspense fallback={<div className="flex items-center justify-center py-16"><div className="text-[#5a6b7f] text-sm">Loading...</div></div>}>
+              <OnboardingRouter />
+            </Suspense>
+          } />
+          <Route path="/settings/brain-repo" element={
+            <Suspense fallback={<div className="flex items-center justify-center py-16"><div className="text-[#5a6b7f] text-sm">Loading...</div></div>}>
+              <BrainRepo />
+            </Suspense>
+          } />
+
           <Route path="/" element={<Overview />} />
           <Route path="/workspace/*" element={<Workspace />} />
           <Route path="/agents" element={<Agents />} />
