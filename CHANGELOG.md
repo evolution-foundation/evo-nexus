@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.32.2] - 2026-04-24
+
+Patch release working around a bug in `@anthropic-ai/claude-agent-sdk` (v0.2.104+) where Linux auto-discovery tries the `-musl` platform package before glibc regardless of the host's actual libc. On glibc VPS installs (Ubuntu / Debian) with both platform packages present in `node_modules`, the SDK spawned the musl binary and failed with `Claude Code native binary not found` because the musl dynamic loader was absent — breaking every chat session on the affected VPS with no local repro. See upstream [issue #296](https://github.com/anthropics/claude-agent-sdk-typescript/issues/296).
+
+### Fixed
+
+- **`dashboard/terminal-server/src/chat-bridge.js`** — add `resolveClaudeExecutable()` that probes `/lib` and `/usr/lib` for `ld-musl-*` to detect the host's libc, then reorders the candidate platform packages to prefer the matching variant (glibc-first on glibc hosts, musl-first on Alpine/musl). Resolved path is passed via `queryOptions.pathToClaudeCodeExecutable` so the SDK skips its own (buggy) discovery. Respects `CLAUDE_CODE_EXECUTABLE` env override and falls back to SDK auto-discovery if no candidate resolves (preserves macOS dev flow).
+
+### Changed
+
+- **`dashboard/terminal-server/package.json`** — pin `@anthropic-ai/claude-agent-sdk` to exact `0.2.119` (was `^0.2.104`) so fresh `npm install` on the VPS doesn't drift into a newer minor with the same or worse regression before upstream lands a libc-aware fix.
+
 ## [0.32.1] - 2026-04-24
 
 Patch release fixing a `tsc -b` strict-mode type error in `PluginDetail.tsx` that broke fresh frontend builds (`npm run build` fails with TS2322 on `manifest['description']`). Local incremental builds passed because `.tsbuildinfo` cached the file as clean; fresh installs hit the error on first compile.
