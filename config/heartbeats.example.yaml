@@ -14,6 +14,10 @@
 #   goal_id         — (stub, Feature 1.2) links to a goal for context injection
 #   required_secrets — (stub, Feature 2.3) list of .env key names this agent needs
 #   decision_prompt — the decision question the agent answers in step 4 of the protocol
+#   handler         — (Wave 2.2r) optional Python module.function for in-process handlers.
+#                     If set, heartbeat_runner calls this function directly instead of
+#                     spawning a Claude CLI subprocess. max_turns must be 0.
+#                     Format: "module_name.function_name"
 #
 # IMPORTANT: All seeds start with enabled: false.
 # Davidson enables individually via UI toggle after reviewing in staging.
@@ -85,3 +89,21 @@ heartbeats:
       to Davidson via Telegram? Respond with JSON:
       {"action": "work"|"skip", "reason": "<1 sentence>",
       "alerts": [<list of critical items, if any>]}.
+
+  # integrations-health — Wave 2.2r in-process HTTP health check for plugin integrations
+  # Runs every 15 minutes; zero Claude CLI invocations (in-process Python handler).
+  # Enable via UI toggle after reviewing plugin integrations in /integrations.
+  - id: integrations-health
+    agent: system
+    interval_seconds: 900  # 15 minutes
+    max_turns: 0
+    timeout_seconds: 60
+    lock_timeout_seconds: 1800
+    wake_triggers:
+      - interval
+      - manual
+    enabled: false
+    goal_id: null
+    required_secrets: []
+    handler: plugin_integration_health.tick
+    decision_prompt: ""

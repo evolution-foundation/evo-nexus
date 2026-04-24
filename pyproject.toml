@@ -29,6 +29,7 @@ dependencies = [
     "marker-pdf>=1.6.1",
     "watchdog>=4.0",
     "sqlparse>=0.4,<1.0",
+    "jsonschema>=4.21",
 ]
 
 [project.scripts]

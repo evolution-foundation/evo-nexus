@@ -189,13 +189,15 @@ def _sync_heartbeats_to_db():
                     """INSERT INTO heartbeats
                        (id, agent, interval_seconds, max_turns, timeout_seconds,
                         lock_timeout_seconds, wake_triggers, enabled, goal_id,
-                        required_secrets, decision_prompt, created_at, updated_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        required_secrets, decision_prompt, source_plugin,
+                        created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         hb.id, hb.agent, hb.interval_seconds, hb.max_turns,
                         hb.timeout_seconds, hb.lock_timeout_seconds,
                         json.dumps(hb.wake_triggers), int(hb.enabled), hb.goal_id,
                         json.dumps(hb.required_secrets), hb.decision_prompt,
+                        hb.source_plugin,
                         now, now,
                     ),
                 )
@@ -205,12 +207,14 @@ def _sync_heartbeats_to_db():
                     """UPDATE heartbeats SET
                        agent=?, interval_seconds=?, max_turns=?, timeout_seconds=?,
                        lock_timeout_seconds=?, wake_triggers=?, goal_id=?,
-                       required_secrets=?, decision_prompt=?, updated_at=?
+                       required_secrets=?, decision_prompt=?, source_plugin=?,
+                       updated_at=?
                        WHERE id=?""",
                     (
                         hb.agent, hb.interval_seconds, hb.max_turns, hb.timeout_seconds,
                         hb.lock_timeout_seconds, json.dumps(hb.wake_triggers), hb.goal_id,
-                        json.dumps(hb.required_secrets), hb.decision_prompt, now,
+                        json.dumps(hb.required_secrets), hb.decision_prompt,
+                        hb.source_plugin, now,
                         hb.id,
                     ),
                 )
@@ -286,6 +290,32 @@ def start_dispatcher_thread():
     t = threading.Thread(target=_loop, name="heartbeat-dispatcher", daemon=True)
     t.start()
     print("[dispatcher] dispatcher thread started", flush=True)
+
+
+# ── Config reload (called by plugin_loader after install/uninstall) ──────────
+
+def reload_config() -> dict:
+    """Re-sync heartbeats from config + plugins and re-register interval jobs.
+
+    Called by plugin_loader.PluginInstaller after copying heartbeats to
+    plugins/{slug}/heartbeats.yaml (install) or after removing it (uninstall).
+    Safe to call while the dispatcher is running — uses _schedule_lock.
+
+    Returns:
+        Dict with keys: heartbeats_loaded (int), jobs_registered (int).
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+
+    logger.info("[reload_config] Re-syncing heartbeats (core + plugins)")
+    _sync_heartbeats_to_db()
+
+    with _schedule_lock:
+        schedule.clear()
+
+    count = register_interval_jobs()
+    logger.info("[reload_config] Done: %d heartbeats, %d interval jobs", count, count)
+    return {"heartbeats_loaded": count, "jobs_registered": count}
 
 
 # ── Stub hooks for future triggers ───────────────────────────────────────────

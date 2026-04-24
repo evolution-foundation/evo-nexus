@@ -73,6 +73,7 @@ def list_triggers():
     type_filter = request.args.get("type")
     source_filter = request.args.get("source")
     enabled_filter = request.args.get("enabled")
+    source_plugin_filter = request.args.get("source_plugin")  # Wave 1.1: filter by plugin slug
     page = _safe_int(request.args.get("page"), 1)
     per_page = min(_safe_int(request.args.get("per_page"), 50), 100)
 
@@ -83,6 +84,8 @@ def list_triggers():
         query = query.filter_by(source=source_filter)
     if enabled_filter in ("true", "false"):  # F7: only apply for explicit values
         query = query.filter_by(enabled=enabled_filter == "true")
+    if source_plugin_filter:  # Wave 1.1: filter triggers contributed by a specific plugin
+        query = query.filter_by(source_plugin=source_plugin_filter)
     query = query.order_by(Trigger.created_at.desc())
 
     pagination = query.paginate(page=page, per_page=per_page, error_out=False)
@@ -163,7 +166,7 @@ def create_trigger():
     return jsonify(result), 201
 
 
-@bp.route("/api/triggers/<int:trigger_id>", methods=["PUT"])
+@bp.route("/api/triggers/<int:trigger_id>", methods=["PUT", "PATCH"])
 def update_trigger(trigger_id):
     denied = _require("triggers", "execute")
     if denied:

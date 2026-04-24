@@ -164,8 +164,7 @@ def start_brain_watcher(install_dir: Path, flask_app=None) -> "BrainRepoWatcher 
                 return None
 
         from models import BrainRepoConfig  # type: ignore[import]
-        from brain_repo.github_oauth import decrypt_token, get_master_key  # type: ignore[import]
-        import brain_repo.git_ops as git_ops  # type: ignore[import]
+        from brain_repo.github_oauth import get_master_key  # type: ignore[import]
 
         with flask_app.app_context():
             config = BrainRepoConfig.query.filter_by(sync_enabled=True).first()
@@ -178,68 +177,62 @@ def start_brain_watcher(install_dir: Path, flask_app=None) -> "BrainRepoWatcher 
                 return None
 
             brain_repo_dir = Path(config.local_path)
-            master_key = get_master_key()
 
             if not config.github_token_encrypted:
                 log.warning("start_brain_watcher: no encrypted token in config")
                 return None
 
-            # Crypto-readiness guard. Without a master key, decrypt_token will
-            # raise on every sync inside the debounce closure and the watcher
-            # will log the same error every 30s forever. Better to refuse to
-            # start and surface the configuration problem at boot.
-            if not master_key:
+            # Crypto-readiness guard. Without a master key every enqueue_sync
+            # call below would fail on token decryption and the watcher would
+            # log the same error every 30 s forever. Better to refuse to start
+            # and surface the configuration problem at boot.
+            if not get_master_key():
                 log.critical(
                     "start_brain_watcher: BRAIN_REPO_MASTER_KEY missing — refusing "
                     "to start watcher (stored tokens cannot be decrypted)",
                 )
                 return None
 
-            # Capture config values for closure
-            _token_enc = config.github_token_encrypted
-            _master_key = master_key
+            # Capture user_id for the closure; the job runner re-loads the
+            # config inside each job to pick up fresh state (e.g. a disconnect
+            # that happened after start but before the first debounce fired).
+            _user_id = config.user_id
 
             def _sync_fn() -> None:
-                """Commit and push any changes in the brain repo.
+                """Enqueue a sync through the job runner.
 
-                Mirrors the install_dir watched folders into brain_repo_dir
-                first (that's the step sync_force/tag_milestone also do).
-                Without it, the auto-sync commit finds nothing to commit
-                because the brain_repo_dir is frozen at bootstrap time.
+                Earlier versions of this callback ran ``git commit`` + ``git
+                push`` inline, which caused two problems:
+                  1. it raced with manual sync_force / tag_milestone (no lock),
+                     so tags created by the manual path sometimes never got
+                     pushed because the watcher commit overwrote the working
+                     tree in between.
+                  2. it bypassed the mirror-exclusion rules (``workspace/projects``
+                     etc.), re-copying multi-GB git repos on every file change.
 
-                Push result is persisted to BrainRepoConfig.last_error so
-                the UI (card in /backups + /settings/brain-repo) reflects
-                watcher failures without requiring the user to manually
-                trigger a sync.
+                Now the watcher funnels everything through ``job_runner.enqueue_sync``
+                which acquires the global lock, applies exclusions, and handles
+                cancel requests uniformly. If a job is already running,
+                ``enqueue_sync`` returns False and we just skip this tick —
+                the next debounce (or the watcher on the next change) retries.
                 """
-                from datetime import datetime as _dt, timezone as _tz
-                token = decrypt_token(_token_enc, _master_key)
-                # Lazy import to avoid circular: routes.brain_repo imports
-                # from here at module load.
                 try:
-                    from routes.brain_repo import _sync_workspace_to_brain_repo
-                    _sync_workspace_to_brain_repo(install_dir, brain_repo_dir)
-                except Exception as exc:
-                    log.warning("watcher _sync_fn: workspace mirror failed: %s", exc)
-                git_ops.commit_all(brain_repo_dir, "auto: file watcher sync")
-                success, push_err = git_ops.push(brain_repo_dir, token, with_tags=True)
+                    from brain_repo import job_runner
+                except ImportError as exc:
+                    log.warning("watcher _sync_fn: job_runner unavailable: %s", exc)
+                    return
 
-                # Persist result so the UI surfaces watcher failures
-                try:
-                    from models import BrainRepoConfig, db  # type: ignore[import]
-                    with flask_app.app_context():
-                        cfg = BrainRepoConfig.query.filter_by(sync_enabled=True).first()
-                        if cfg is None:
-                            return
-                        if success:
-                            cfg.last_sync = _dt.now(_tz.utc)
-                            cfg.last_error = None
-                        else:
-                            log.error("watcher _sync_fn: git push failed: %s", push_err)
-                            cfg.last_error = f"auto-sync push failed: {push_err}"[:300]
-                        db.session.commit()
-                except Exception as exc:
-                    log.warning("watcher: could not persist sync result: %s", exc)
+                enqueued = job_runner.enqueue_sync(
+                    flask_app,
+                    _user_id,
+                    install_dir,
+                    kind=job_runner.JOB_KIND_WATCHER,
+                    commit_message="auto: file watcher sync",
+                )
+                if not enqueued:
+                    log.debug(
+                        "watcher _sync_fn: another job is running, skipping this tick",
+                    )
 
             watcher = BrainRepoWatcher(
                 install_dir=install_dir,

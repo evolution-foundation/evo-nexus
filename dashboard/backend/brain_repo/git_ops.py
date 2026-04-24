@@ -58,7 +58,10 @@ def commit_all(repo_dir: Path, message: str) -> bool:
     """
     add_result = _run(["git", "add", "-A"], cwd=repo_dir)
     if add_result.returncode != 0:
-        raise RuntimeError(f"git add -A failed: {add_result.stderr[:500]}")
+        raise RuntimeError(
+            f"git add -A failed (exit {add_result.returncode}): "
+            f"stderr={add_result.stderr[:400]!r} stdout={add_result.stdout[:200]!r}"
+        )
 
     commit_result = _run(["git", "commit", "-m", message], cwd=repo_dir)
     if commit_result.returncode == 0:
@@ -68,7 +71,13 @@ def commit_all(repo_dir: Path, message: str) -> bool:
     if "nothing to commit" in stderr_lower or "nothing added to commit" in stderr_lower:
         log.debug("git commit: nothing to commit in %s", repo_dir)
         return False
-    raise RuntimeError(f"git commit failed: {commit_result.stderr[:500]}")
+    # Include stdout + exit code — git often writes hook/staging failures to
+    # stdout, not stderr, and silent exit-1 without any output has happened
+    # (pre-commit hook swallowing output, identity not set, etc.).
+    raise RuntimeError(
+        f"git commit failed (exit {commit_result.returncode}): "
+        f"stderr={commit_result.stderr[:400]!r} stdout={commit_result.stdout[:200]!r}"
+    )
 
 
 def push(repo_dir: Path, token: str, with_tags: bool = True) -> tuple[bool, str]:

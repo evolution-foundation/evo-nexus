@@ -312,6 +312,21 @@ with app.app_context():
         _conn.commit()
     # --- End thread-areas migration ---
 
+    # --- Plugin provenance: source_plugin on tables that plugins can seed ---
+    # When a plugin installs rows into projects/goals/missions/goal_tasks/
+    # tickets/triggers, the row gets tagged with its slug. Uninstall then
+    # deletes WHERE source_plugin = ? — user-created rows stay. Required for
+    # the `goals`, `tasks`, and `triggers` plugin capabilities (v1b).
+    for _tbl in ("tickets", "projects", "goals", "missions", "goal_tasks", "triggers"):
+        try:
+            _cols = {row[1] for row in _cur.execute(f"PRAGMA table_info({_tbl})").fetchall()}
+        except _sqlite3.OperationalError:
+            continue  # table doesn't exist yet in this build
+        if "source_plugin" not in _cols:
+            _cur.execute(f"ALTER TABLE {_tbl} ADD COLUMN source_plugin TEXT")
+            _conn.commit()
+    # --- End plugin provenance migration ---
+
     # --- End tickets migration ---
 
     # --- Knowledge connections migration (pgvector-knowledge feature) ---
@@ -372,6 +387,52 @@ with app.app_context():
         _conn.commit()
     # --- End knowledge API keys migration ---
 
+    # --- Plugins migration (plugins-v1a) ---
+    _existing_tables5 = {row[0] for row in _cur.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    if "plugins_installed" not in _existing_tables5:
+        _cur.executescript("""
+            CREATE TABLE IF NOT EXISTS plugins_installed (
+                id TEXT PRIMARY KEY,
+                slug TEXT UNIQUE NOT NULL,
+                name TEXT NOT NULL,
+                version TEXT NOT NULL,
+                tier TEXT NOT NULL DEFAULT 'essential',
+                source_type TEXT,
+                source_url TEXT,
+                source_ref TEXT,
+                installed_at TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                manifest_json TEXT,
+                install_sha256 TEXT,
+                status TEXT NOT NULL DEFAULT 'active'
+                    CHECK(status IN ('active','disabled','broken','installing','uninstalling')),
+                last_error TEXT
+            );
+            CREATE TABLE IF NOT EXISTS plugin_audit_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                plugin_id TEXT NOT NULL,
+                action TEXT NOT NULL,
+                payload TEXT,
+                success INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS plugin_hook_circuit_state (
+                plugin_slug TEXT NOT NULL,
+                handler_path TEXT NOT NULL,
+                failures_json TEXT NOT NULL DEFAULT '[]',
+                disabled_until TEXT,
+                total_invocations INTEGER NOT NULL DEFAULT 0,
+                total_failures INTEGER NOT NULL DEFAULT 0,
+                last_failure_at TEXT,
+                PRIMARY KEY (plugin_slug, handler_path)
+            );
+            CREATE INDEX IF NOT EXISTS idx_plugins_status ON plugins_installed(status);
+            CREATE INDEX IF NOT EXISTS idx_plugin_audit_plugin ON plugin_audit_log(plugin_id, created_at);
+            CREATE INDEX IF NOT EXISTS idx_hook_cb_disabled ON plugin_hook_circuit_state(disabled_until);
+        """)
+        _conn.commit()
+    # --- End plugins migration ---
+
     # --- Brain Repo migration (brain-repo feature) ---
     _user_cols = {row[1] for row in _cur.execute("PRAGMA table_info(users)").fetchall()}
     if "onboarding_state" not in _user_cols:
@@ -400,7 +461,124 @@ with app.app_context():
             CREATE INDEX IF NOT EXISTS idx_brain_repo_user ON brain_repo_configs(user_id);
         """)
         _conn.commit()
+    # Async-sync job columns (v0.32+). Added after the table existed without them,
+    # so every column is an idempotent ALTER TABLE ADD.
+    _brain_cols = {row[1] for row in _cur.execute("PRAGMA table_info(brain_repo_configs)").fetchall()}
+    if "sync_in_progress" not in _brain_cols:
+        _cur.execute("ALTER TABLE brain_repo_configs ADD COLUMN sync_in_progress INTEGER NOT NULL DEFAULT 0")
+        _conn.commit()
+    if "sync_started_at" not in _brain_cols:
+        _cur.execute("ALTER TABLE brain_repo_configs ADD COLUMN sync_started_at TIMESTAMP")
+        _conn.commit()
+    if "sync_job_kind" not in _brain_cols:
+        _cur.execute("ALTER TABLE brain_repo_configs ADD COLUMN sync_job_kind TEXT")
+        _conn.commit()
+    if "cancel_requested" not in _brain_cols:
+        _cur.execute("ALTER TABLE brain_repo_configs ADD COLUMN cancel_requested INTEGER NOT NULL DEFAULT 0")
+        _conn.commit()
     # --- End Brain Repo migration ---
+
+    # --- Plugins Wave 1.1: per-capability toggle ---
+    # capabilities_disabled: JSON column storing which capabilities of a plugin
+    # are individually disabled (widgets, readonly_data, claude_hooks, skills,
+    # agents, commands, rules, routines). Heartbeats and triggers use their own
+    # `enabled` column instead — they are intentionally absent from this JSON.
+    _plugins_cols = {row[1] for row in _cur.execute("PRAGMA table_info(plugins_installed)").fetchall()}
+    if "capabilities_disabled" not in _plugins_cols:
+        _cur.execute(
+            "ALTER TABLE plugins_installed ADD COLUMN capabilities_disabled TEXT NOT NULL DEFAULT '{}'"
+        )
+        _conn.commit()
+
+    # source_plugin: tag heartbeats that were contributed by a plugin so the
+    # plugin detail page can filter them via GET /api/heartbeats?source_plugin=.
+    _hb_cols = {row[1] for row in _cur.execute("PRAGMA table_info(heartbeats)").fetchall()}
+    if "source_plugin" not in _hb_cols:
+        _cur.execute("ALTER TABLE heartbeats ADD COLUMN source_plugin TEXT")
+        _conn.commit()
+    # --- End Plugins Wave 1.1 migration ---
+
+    # --- Wave 2.5: plugin_scan_cache + plugin_audit_log tables ---
+    _existing_tables = {
+        row[0]
+        for row in _cur.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+    }
+    if "plugin_scan_cache" not in _existing_tables:
+        _cur.execute(
+            """CREATE TABLE plugin_scan_cache (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tarball_sha256 TEXT NOT NULL,
+                scanner_version TEXT NOT NULL,
+                verdict TEXT NOT NULL,
+                findings_json TEXT NOT NULL DEFAULT '[]',
+                scanned_files INTEGER NOT NULL DEFAULT 0,
+                llm_augmented INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+                UNIQUE(tarball_sha256, scanner_version)
+            )"""
+        )
+        _conn.commit()
+
+    if "plugin_audit_log" not in _existing_tables:
+        _cur.execute(
+            """CREATE TABLE plugin_audit_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                slug TEXT NOT NULL,
+                event TEXT NOT NULL,
+                verdict TEXT,
+                actor_user_id INTEGER REFERENCES users(id),
+                actor_username TEXT,
+                detail_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+            )"""
+        )
+        _cur.execute("CREATE INDEX IF NOT EXISTS idx_plugin_audit_slug ON plugin_audit_log(slug)")
+        _conn.commit()
+    else:
+        # Wave 1 created plugin_audit_log with a different schema; add Wave 2.5
+        # columns idempotently if missing.
+        _pal_cols = {row[1] for row in _cur.execute("PRAGMA table_info(plugin_audit_log)").fetchall()}
+        if "slug" not in _pal_cols:
+            _cur.execute("ALTER TABLE plugin_audit_log ADD COLUMN slug TEXT")
+            # Backfill from plugin_id for existing rows (Wave 1 schema)
+            if "plugin_id" in _pal_cols:
+                _cur.execute("UPDATE plugin_audit_log SET slug = plugin_id WHERE slug IS NULL")
+        if "event" not in _pal_cols:
+            _cur.execute("ALTER TABLE plugin_audit_log ADD COLUMN event TEXT")
+            if "action" in _pal_cols:
+                _cur.execute("UPDATE plugin_audit_log SET event = action WHERE event IS NULL")
+        if "verdict" not in _pal_cols:
+            _cur.execute("ALTER TABLE plugin_audit_log ADD COLUMN verdict TEXT")
+        if "actor_user_id" not in _pal_cols:
+            _cur.execute("ALTER TABLE plugin_audit_log ADD COLUMN actor_user_id INTEGER")
+        if "actor_username" not in _pal_cols:
+            _cur.execute("ALTER TABLE plugin_audit_log ADD COLUMN actor_username TEXT")
+        if "detail_json" not in _pal_cols:
+            _cur.execute("ALTER TABLE plugin_audit_log ADD COLUMN detail_json TEXT DEFAULT '{}'")
+            if "payload" in _pal_cols:
+                _cur.execute("UPDATE plugin_audit_log SET detail_json = COALESCE(payload, '{}') WHERE detail_json = '{}'")
+        _cur.execute("CREATE INDEX IF NOT EXISTS idx_plugin_audit_slug ON plugin_audit_log(slug)")
+        _conn.commit()
+    # --- End Wave 2.5 migration ---
+
+    # --- Wave 2.2r: integration_health_cache ---
+    _existing_tables_w22r = {
+        row[0]
+        for row in _cur.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+    }
+    if "integration_health_cache" not in _existing_tables_w22r:
+        _cur.execute(
+            """CREATE TABLE integration_health_cache (
+                plugin_slug TEXT NOT NULL,
+                integration_slug TEXT NOT NULL,
+                last_status TEXT,
+                last_checked_at TEXT,
+                last_error TEXT,
+                PRIMARY KEY (plugin_slug, integration_slug)
+            )"""
+        )
+        _conn.commit()
+    # --- End Wave 2.2r migration ---
 
     # Fix corrupted datetime columns (NULL or non-string values crash SQLAlchemy)
     for _tbl, _col in [("roles", "created_at"), ("users", "created_at"), ("users", "last_login")]:
@@ -486,6 +664,28 @@ with app.app_context():
         start_classify_worker(_sqlite_db_path)
     except Exception as _cw_exc:
         print(f"WARNING: knowledge classify worker init failed: {_cw_exc}")
+
+    # --- Claude Code hooks bootstrap (plugins-v1a step 8) ---
+    # Idempotent: registers dispatcher for 4 v1a events in .claude/settings.json.
+    # Plugins are a core feature — no feature flag, runs unconditionally.
+    try:
+        from claude_hook_bootstrap import run as _bootstrap_hooks
+        _bootstrap_hooks()
+    except Exception as _hb_exc:
+        print(f"WARNING: claude_hook_bootstrap failed: {_hb_exc}")
+    # --- End Claude Code hooks bootstrap ---
+
+    # --- Plugin crash recovery (ADR-5) ---
+    # Detects orphaned .install-state.json files and rolls back incomplete installs.
+    try:
+        from plugin_install_state import crash_recovery_on_boot as _crash_recovery
+        _plugin_db_path = WORKSPACE / "dashboard" / "data" / "evonexus.db"
+        _recovery_log = _crash_recovery(_plugin_db_path)
+        if _recovery_log:
+            print(f"Plugin crash recovery: {len(_recovery_log)} actions taken")
+    except Exception as _cr_exc:
+        print(f"WARNING: plugin crash recovery failed: {_cr_exc}")
+    # --- End plugin crash recovery ---
 
     # Cleanup: remove old disabled share records (expired + disabled + older than 30 days)
     from datetime import datetime as _dt, timezone as _tz, timedelta as _td
@@ -622,6 +822,8 @@ from routes.knowledge_public import bp as knowledge_public_bp
 from routes.knowledge_proxy import bp as knowledge_proxy_bp
 from routes.knowledge_v1 import bp as knowledge_v1_bp
 from routes.databases import bp as databases_bp
+from routes.plugins import bp as plugins_bp
+from routes.mcp_servers import bp as mcp_servers_bp
 
 # Brain Repo + Onboarding blueprints (loaded after routes are created)
 try:
@@ -672,6 +874,8 @@ app.register_blueprint(knowledge_public_bp)
 app.register_blueprint(knowledge_proxy_bp)
 app.register_blueprint(knowledge_v1_bp)
 app.register_blueprint(databases_bp)
+app.register_blueprint(plugins_bp)
+app.register_blueprint(mcp_servers_bp)
 
 # --------------- Social Auth blueprints ---------------
 from auth.youtube import bp as youtube_auth_bp
@@ -865,4 +1069,8 @@ if __name__ == "__main__":
     task_thread = threading.Thread(target=_poll_scheduled_tasks, daemon=True, name="task-poller")
     task_thread.start()
 
-    app.run(host="0.0.0.0", port=port, debug=False)
+    # Dev mode: EVONEXUS_DEV=1 enables Flask's auto-reloader so edits to
+    # dashboard/backend/*.py take effect without a manual restart. Disabled by
+    # default — production runs with a fixed process managed by systemd/docker.
+    dev_mode = os.getenv("EVONEXUS_DEV") == "1"
+    app.run(host="0.0.0.0", port=port, debug=dev_mode, use_reloader=dev_mode)

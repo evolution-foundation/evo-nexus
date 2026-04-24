@@ -502,18 +502,57 @@ def run_heartbeat(heartbeat_id: str, triggered_by: str = "manual", trigger_id: s
                 full_prompt = step6_assemble_context(identity, decision_ctx, hb.get("goal_id"))
                 print(f"[heartbeat_runner] step6 prompt assembled ({len(full_prompt)} chars)", flush=True)
 
-                # Step 7
-                print(f"[heartbeat_runner] step7 invoking claude agent={hb['agent']} max_turns={hb['max_turns']} timeout={hb['timeout_seconds']}s", flush=True)
-                invoke_result = step7_invoke_claude(
-                    agent=hb["agent"],
-                    prompt=full_prompt,
-                    max_turns=hb["max_turns"],
-                    timeout_seconds=hb["timeout_seconds"],
-                )
-                invoke_result["agent"] = hb["agent"]
-                invoke_result["started_at"] = started_at
-                result = invoke_result
-                print(f"[heartbeat_runner] step7 done status={result['status']} duration_ms={result.get('duration_ms')}", flush=True)
+                # Step 7 — in-process handler OR Claude CLI subprocess
+                _handler_ref = hb.get("handler") or ""
+                if _handler_ref:
+                    # Wave 2.2r: in-process Python handler (e.g. plugin_integration_health.tick)
+                    # Format: "module_name.function_name"
+                    print(f"[heartbeat_runner] step7 in-process handler={_handler_ref}", flush=True)
+                    import importlib
+                    import time as _time
+                    _t0 = _time.time()
+                    try:
+                        _mod_name, _fn_name = _handler_ref.rsplit(".", 1)
+                        _mod = importlib.import_module(_mod_name)
+                        _fn = getattr(_mod, _fn_name)
+                        _handler_result = _fn()
+                        _duration_ms = round((_time.time() - _t0) * 1000)
+                        invoke_result = {
+                            "status": "success",
+                            "error": None,
+                            "agent": hb.get("agent", "system"),
+                            "duration_ms": _duration_ms,
+                            "started_at": started_at,
+                            "handler_result": _handler_result,
+                        }
+                        print(f"[heartbeat_runner] step7 in-process handler done duration_ms={_duration_ms}", flush=True)
+                    except Exception as _h_exc:
+                        import traceback
+                        _duration_ms = round((_time.time() - _t0) * 1000)
+                        invoke_result = {
+                            "status": "fail",
+                            "error": traceback.format_exc(),
+                            "agent": hb.get("agent", "system"),
+                            "duration_ms": _duration_ms,
+                            "started_at": started_at,
+                        }
+                        print(f"[heartbeat_runner] step7 in-process handler failed: {_h_exc}", flush=True)
+                    invoke_result["agent"] = hb.get("agent", "system")
+                    invoke_result["started_at"] = started_at
+                    result = invoke_result
+                else:
+                    # Standard Claude CLI subprocess
+                    print(f"[heartbeat_runner] step7 invoking claude agent={hb['agent']} max_turns={hb['max_turns']} timeout={hb['timeout_seconds']}s", flush=True)
+                    invoke_result = step7_invoke_claude(
+                        agent=hb["agent"],
+                        prompt=full_prompt,
+                        max_turns=hb["max_turns"],
+                        timeout_seconds=hb["timeout_seconds"],
+                    )
+                    invoke_result["agent"] = hb["agent"]
+                    invoke_result["started_at"] = started_at
+                    result = invoke_result
+                    print(f"[heartbeat_runner] step7 done status={result['status']} duration_ms={result.get('duration_ms')}", flush=True)
 
         except Exception as exc:
             import traceback

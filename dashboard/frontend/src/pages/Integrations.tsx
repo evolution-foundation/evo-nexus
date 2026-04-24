@@ -32,6 +32,7 @@ import {
   EyeOff,
   Lock,
   Unlock,
+  Puzzle,
   type LucideIcon,
 } from 'lucide-react'
 import { api } from '../lib/api'
@@ -39,16 +40,44 @@ import IntegrationDrawer from '../components/IntegrationDrawer'
 import { getIntegrationMeta } from '../lib/integrationMeta'
 import { useTranslation } from 'react-i18next'
 
+interface EnvVarSpec {
+  name: string
+  description?: string
+  required: boolean
+  secret: boolean
+  default?: string
+}
+
+interface HealthCheckSpec {
+  type: 'http'
+  url: string
+  expect_status: number
+  timeout_seconds: number
+}
+
+interface LastHealth {
+  last_status: string | null
+  last_checked_at: string | null
+  last_error: string | null
+}
+
 interface Integration {
   name: string
   type: string
-  status: 'ok' | 'error' | 'pending'
-  kind: 'core' | 'custom'
+  status: 'ok' | 'error' | 'pending' | 'not_configured' | 'connected'
+  kind: 'core' | 'custom' | 'plugin'
   // custom-only fields
   slug?: string
   description?: string
   envKeys?: string[]
   category?: string
+  // plugin-only fields
+  source_plugin?: string
+  integration_slug?: string
+  env_specs?: EnvVarSpec[]
+  health_check?: HealthCheckSpec | null
+  last_health?: LastHealth | null
+  configured?: boolean
 }
 
 interface SocialAccount {
@@ -534,6 +563,77 @@ function CustomModal({ open, initial, isEdit, onClose, onSaved }: CustomModalPro
 
 // ─── Integration Card ─────────────────────────────────────────────────────────
 
+// ─── Plugin Integration Form ─────────────────────────────────────────────────
+// Schema-driven form rendered inside the Configure modal (Wave 2.2r).
+// Each EnvVarSpec becomes one field; secret=true uses password input with toggle.
+
+function PluginEnvField({
+  spec,
+  value,
+  onChange,
+}: {
+  spec: EnvVarSpec
+  value: string
+  onChange: (v: string) => void
+}) {
+  const [show, setShow] = useState(false)
+  return (
+    <div>
+      <label className="flex items-center gap-1 text-xs font-medium text-[#e6edf3] mb-1">
+        {spec.name}
+        {spec.required && <span className="text-red-400">*</span>}
+        {spec.secret && <Lock size={10} className="text-[#667085]" />}
+      </label>
+      {spec.description && (
+        <p className="text-[10px] text-[#667085] mb-1">{spec.description}</p>
+      )}
+      <div className="relative">
+        <input
+          type={spec.secret && !show ? 'password' : 'text'}
+          placeholder={spec.default || (spec.required ? 'Required' : 'Optional')}
+          value={value}
+          onChange={e => onChange(e.target.value)}
+          className="w-full bg-[#161b22] border border-[#21262d] rounded-lg px-3 py-2 text-sm text-[#e6edf3] placeholder-[#3F3F46] focus:outline-none focus:border-[#00FFA7]/50 pr-9"
+          autoComplete="off"
+        />
+        {spec.secret && (
+          <button
+            type="button"
+            onClick={() => setShow(!show)}
+            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[#667085] hover:text-[#e6edf3] transition-colors"
+            tabIndex={-1}
+          >
+            {show ? <EyeOff size={14} /> : <Eye size={14} />}
+          </button>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function PluginIntegrationForm({
+  specs,
+  values,
+  onChange,
+}: {
+  specs: EnvVarSpec[]
+  values: Record<string, string>
+  onChange: (v: Record<string, string>) => void
+}) {
+  return (
+    <div className="space-y-4 mb-5">
+      {specs.map(spec => (
+        <PluginEnvField
+          key={spec.name}
+          spec={spec}
+          value={values[spec.name] || ''}
+          onChange={v => onChange({ ...values, [spec.name]: v })}
+        />
+      ))}
+    </div>
+  )
+}
+
 interface IntegrationCardProps {
   int: Integration
   onSelect: (int: Integration) => void
@@ -713,12 +813,21 @@ export default function Integrations() {
       const ints = (intData?.integrations || []).map((i: any) => ({
         name: i.name || '',
         type: i.type || i.category || '',
-        status: (i.status === 'ok' || i.configured) ? 'ok' as const : 'pending' as const,
-        kind: i.kind || 'core',
+        status: i.kind === 'plugin'
+          ? (i.status as Integration['status'])
+          : ((i.status === 'ok' || i.configured) ? 'ok' as const : 'pending' as const),
+        kind: (i.kind || 'core') as Integration['kind'],
         slug: i.slug,
         description: i.description,
         envKeys: i.envKeys,
         category: i.category,
+        // plugin-only
+        source_plugin: i.source_plugin,
+        integration_slug: i.integration_slug,
+        env_specs: i.env_specs,
+        health_check: i.health_check,
+        last_health: i.last_health,
+        configured: i.configured,
       }))
       setIntegrations(ints)
       setPlatforms(socialData?.platforms || [])
@@ -782,6 +891,53 @@ export default function Integrations() {
 
   const coreIntegrations = integrations.filter(i => i.kind === 'core')
   const customIntegrations = integrations.filter(i => i.kind === 'custom')
+  const pluginIntegrations = integrations.filter(i => i.kind === 'plugin')
+
+  // Plugin integration configure modal state
+  const [pluginIntegModalOpen, setPluginIntegModalOpen] = useState(false)
+  const [pluginIntegTarget, setPluginIntegTarget] = useState<Integration | null>(null)
+  const [pluginIntegValues, setPluginIntegValues] = useState<Record<string, string>>({})
+  const [pluginIntegSaving, setPluginIntegSaving] = useState(false)
+  const [pluginIntegError, setPluginIntegError] = useState<string | null>(null)
+  const [pluginTestResult, setPluginTestResult] = useState<{ ok: boolean | null; status_code: number | null; duration_ms: number; error: string | null } | null>(null)
+  const [pluginTesting, setPluginTesting] = useState(false)
+
+  const openPluginIntegModal = (int: Integration) => {
+    setPluginIntegTarget(int)
+    setPluginIntegValues({})
+    setPluginIntegError(null)
+    setPluginTestResult(null)
+    setPluginIntegModalOpen(true)
+  }
+
+  const handlePluginIntegSave = async () => {
+    if (!pluginIntegTarget?.slug) return
+    setPluginIntegSaving(true)
+    setPluginIntegError(null)
+    try {
+      await api.post(`/integrations/plugin/${pluginIntegTarget.slug}`, { env_vars: pluginIntegValues })
+      setPluginIntegModalOpen(false)
+      loadData()
+    } catch (e: any) {
+      setPluginIntegError(e?.message || 'Save failed')
+    } finally {
+      setPluginIntegSaving(false)
+    }
+  }
+
+  const handlePluginIntegTest = async () => {
+    if (!pluginIntegTarget?.slug) return
+    setPluginTesting(true)
+    setPluginTestResult(null)
+    try {
+      const res = await api.post(`/integrations/plugin/${pluginIntegTarget.slug}/test`, {})
+      setPluginTestResult(res)
+    } catch {
+      setPluginTestResult({ ok: false, status_code: null, duration_ms: 0, error: 'Request failed' })
+    } finally {
+      setPluginTesting(false)
+    }
+  }
 
   // Brain repo status (best-effort — may fail if feature not deployed)
   const [brainRepoStatus, setBrainRepoStatus] = useState<{
@@ -807,7 +963,15 @@ export default function Integrations() {
   return (
     <div className="max-w-[1400px] mx-auto">
       <IntegrationDrawer
-        integration={selectedIntegration}
+        integration={selectedIntegration ? {
+          ...selectedIntegration,
+          status: (selectedIntegration.status === 'connected' || selectedIntegration.status === 'ok')
+            ? 'ok'
+            : selectedIntegration.status === 'error'
+            ? 'error'
+            : 'pending',
+          kind: selectedIntegration.kind === 'plugin' ? 'custom' : selectedIntegration.kind,
+        } : null}
         envValues={envValues}
         onClose={() => setSelectedIntegration(null)}
         onSaved={() => {
@@ -868,6 +1032,87 @@ export default function Integrations() {
                 {deleting && <Loader2 size={14} className="animate-spin" />}
                 Delete
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Plugin Integration Configure Modal — Wave 2.2r */}
+      {pluginIntegModalOpen && pluginIntegTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-[2px]" onClick={() => setPluginIntegModalOpen(false)} />
+          <div className="relative w-full max-w-md bg-[#0C111D] border border-[#21262d] rounded-2xl shadow-2xl p-6">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="flex items-center justify-center w-8 h-8 rounded-lg bg-purple-500/10 border border-purple-500/20">
+                <Puzzle size={16} className="text-purple-400" />
+              </div>
+              <div>
+                <h3 className="text-base font-semibold text-[#e6edf3]">Configure {pluginIntegTarget.name}</h3>
+                <p className="text-[11px] text-[#667085]">via plugin: {pluginIntegTarget.source_plugin}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPluginIntegModalOpen(false)}
+                className="ml-auto text-[#667085] hover:text-[#e6edf3] transition-colors"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            {/* Dynamic form from env_specs */}
+            <PluginIntegrationForm
+              specs={pluginIntegTarget.env_specs || []}
+              values={pluginIntegValues}
+              onChange={setPluginIntegValues}
+            />
+
+            {pluginIntegError && (
+              <p className="text-xs text-red-400 mb-3">{pluginIntegError}</p>
+            )}
+
+            {/* Test result */}
+            {pluginTestResult && (
+              <div className={`text-xs rounded-lg px-3 py-2 mb-3 ${
+                pluginTestResult.ok ? 'bg-[#00FFA7]/10 text-[#00FFA7] border border-[#00FFA7]/20'
+                  : 'bg-red-500/10 text-red-400 border border-red-500/20'
+              }`}>
+                {pluginTestResult.ok
+                  ? `Connected — ${pluginTestResult.duration_ms}ms`
+                  : `Error: ${pluginTestResult.error || `HTTP ${pluginTestResult.status_code}`}`
+                }
+              </div>
+            )}
+
+            <div className="flex items-center gap-2">
+              {pluginIntegTarget.health_check && (
+                <button
+                  type="button"
+                  onClick={handlePluginIntegTest}
+                  disabled={pluginTesting}
+                  className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm text-[#667085] hover:text-[#e6edf3] hover:bg-[#21262d] transition-colors disabled:opacity-60"
+                >
+                  {pluginTesting ? <Loader2 size={14} className="animate-spin" /> : <Zap size={14} />}
+                  Test
+                </button>
+              )}
+              <div className="ml-auto flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setPluginIntegModalOpen(false)}
+                  className="px-4 py-2 rounded-lg text-sm text-[#667085] hover:text-[#e6edf3] hover:bg-[#21262d] transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handlePluginIntegSave}
+                  disabled={pluginIntegSaving}
+                  className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[#00FFA7]/80 text-black text-sm font-semibold hover:bg-[#00FFA7] transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+                >
+                  {pluginIntegSaving && <Loader2 size={14} className="animate-spin" />}
+                  Save
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -1038,6 +1283,98 @@ export default function Integrations() {
               ))}
             </div>
           </div>
+
+          {/* Plugin Integrations — Wave 2.2r */}
+          {pluginIntegrations.length > 0 && (
+          <div className="mb-10">
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-2.5">
+                <div className="flex items-center justify-center w-7 h-7 rounded-lg bg-purple-500/10 border border-purple-500/20">
+                  <Puzzle size={14} className="text-purple-400" />
+                </div>
+                <h2 className="text-base font-semibold text-[#e6edf3]">Plugin Integrations</h2>
+                <span className="text-xs px-2 py-0.5 rounded-full bg-purple-500/10 text-purple-400 border border-purple-500/20">
+                  {pluginIntegrations.length}
+                </span>
+              </div>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {pluginIntegrations.map((int, i) => {
+                const isConnected = int.status === 'connected' || int.status === 'ok'
+                const isError = int.status === 'error'
+                const hasHealthCheck = !!int.health_check
+                return (
+                  <div
+                    key={i}
+                    className="group relative rounded-xl border border-[#21262d] bg-[#161b22] p-5 transition-all duration-300 hover:border-purple-500/30"
+                  >
+                    {/* Top row */}
+                    <div className="flex items-start justify-between mb-3">
+                      <div className="flex items-center justify-center h-10 w-10 rounded-lg bg-purple-500/10 transition-transform duration-300 group-hover:scale-110">
+                        <Puzzle size={20} className="text-purple-400" />
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <span
+                          className="inline-block h-2.5 w-2.5 rounded-full mt-1"
+                          style={{
+                            backgroundColor: isConnected ? '#00FFA7' : isError ? '#EF4444' : '#3F3F46',
+                            boxShadow: isConnected ? '0 0 8px rgba(0,255,167,0.5)' : 'none',
+                          }}
+                        />
+                      </div>
+                    </div>
+
+                    {/* Name + badges */}
+                    <div className="flex items-center gap-2 mb-1 flex-wrap">
+                      <h3 className="text-[15px] font-semibold text-[#e6edf3]">{int.name}</h3>
+                      <span className="text-[9px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded-full bg-purple-500/10 text-purple-400 border border-purple-500/20">
+                        via plugin
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-[#667085] mb-3">
+                      {int.source_plugin}
+                    </p>
+
+                    {/* Status + category badges */}
+                    <div className="flex items-center gap-2 mb-3 flex-wrap">
+                      <span className="text-[10px] font-medium uppercase tracking-wider px-2 py-0.5 rounded-full border border-purple-500/20 text-purple-400 bg-purple-500/8">
+                        {int.category}
+                      </span>
+                      <span className={`text-[10px] font-medium px-2 py-0.5 rounded-full border ${
+                        isConnected
+                          ? 'bg-[#00FFA7]/10 text-[#00FFA7] border-[#00FFA7]/25'
+                          : isError
+                          ? 'bg-red-500/10 text-red-400 border-red-500/25'
+                          : 'bg-[#FBBF24]/10 text-[#FBBF24] border-[#FBBF24]/25'
+                      }`}>
+                        {isConnected ? 'Connected' : isError ? 'Error' : 'Not configured'}
+                      </span>
+                    </div>
+                    {int.last_health?.last_error && isError && (
+                      <p className="text-[10px] text-red-400 mb-2 truncate" title={int.last_health.last_error}>
+                        {int.last_health.last_error}
+                      </p>
+                    )}
+
+                    {/* Action buttons */}
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => openPluginIntegModal(int)}
+                        className="flex items-center gap-1 text-[11px] px-2.5 py-1 rounded-lg bg-[#00FFA7]/10 text-[#00FFA7] border border-[#00FFA7]/20 hover:bg-[#00FFA7]/20 transition-all"
+                      >
+                        <Settings size={11} /> Configure
+                      </button>
+                      {hasHealthCheck && (
+                        <span className="text-[10px] text-[#667085] italic">health check available</span>
+                      )}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+          )}
 
           {/* Custom Integrations */}
           <div className="mb-10">

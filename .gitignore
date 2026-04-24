@@ -115,4 +115,22 @@ mempalace.yaml
 entities.json
 .claude/worktrees/
 
+# ── Plugins (installed plugin directories are not committed) ──
+plugins/*/
+!plugins/.gitkeep
+
+# Plugin-installed files in .claude/ — plugins copy agents/skills/rules/commands
+# with `plugin-{slug}-` prefix. These are per-machine artifacts and must not land
+# in platform PRs. The `_plugins-index.md` marker file in rules/ is regenerated
+# on install/uninstall and is also per-machine.
+.claude/agents/plugin-*
+.claude/skills/plugin-*
+.claude/rules/plugin-*
+.claude/rules/_plugins-index.md
+.claude/commands/plugin-*
+
+# ── Claude hook bootstrap artifacts ──
+.claude/.settings.json.backup-*
+
+# ── Brain Repo raw transcripts (not backed up to brain repo) ──
 memory/raw-transcripts/

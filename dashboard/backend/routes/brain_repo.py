@@ -45,46 +45,32 @@ def _get_config() -> BrainRepoConfig | None:
     return BrainRepoConfig.query.filter_by(user_id=current_user.id).first()
 
 
+# _WATCH_PATHS is also declared in brain_repo.job_runner; both must stay in sync.
+# Left here because watcher.py imports it indirectly via _sync_workspace_to_brain_repo's
+# module scope in older builds — safe to remove once we confirm no call sites rely on it.
 _WATCH_PATHS = ["memory", "workspace", "customizations", "config-safe"]
-_EXCLUDE_RELATIVE_PATHS = ["memory/raw-transcripts"]
 
 
 def _sync_workspace_to_brain_repo(workspace: Path, brain_dir: Path) -> tuple[int, int]:
     """Mirror watched workspace folders into the local brain repo working tree.
 
-    Without this step, ``git_ops.commit_all`` runs against a brain-repo dir that
-    nobody has updated since the initial bootstrap — so it always reports
-    "nothing to commit", no matter how many files the user changed in the
-    workspace. This is the function the user expected to be running but wasn't.
-
-    Steps:
-        1. For each path in ``_WATCH_PATHS``, mirror ``workspace/<path>`` →
-           ``brain_dir/<path>`` using ``shutil.copytree(dirs_exist_ok=True)``,
-           skipping anything whose relative path starts with one of
-           ``_EXCLUDE_RELATIVE_PATHS`` (e.g. raw transcripts).
-        2. Run secrets scanner on the resulting brain_dir; **delete** any file
-           that triggers a finding and log a warning. Better to drop a couple
-           of files than to leak a token to GitHub.
+    Delegates to :func:`brain_repo.job_runner.build_ignore_callback` for the
+    exclusion rules so the mirror and the job-runner pipeline stay in sync.
+    Used by the file watcher's auto-sync callback; the manual /sync/force and
+    /tag/milestone paths go through the job runner directly.
 
     Returns ``(files_copied, secrets_removed)``.
     """
     import shutil
 
     files_copied = 0
-
-    def _ignore(src_dir: str, names: list[str]) -> list[str]:
-        ignored = []
-        for n in names:
-            full = Path(src_dir) / n
-            try:
-                rel = full.resolve().relative_to(workspace.resolve()).as_posix()
-            except Exception:
-                continue
-            for excl in _EXCLUDE_RELATIVE_PATHS:
-                if rel == excl or rel.startswith(excl + "/"):
-                    ignored.append(n)
-                    break
-        return ignored
+    try:
+        from brain_repo.job_runner import build_ignore_callback
+        _ignore = build_ignore_callback(workspace)
+    except ImportError:
+        # job_runner unavailable — fall back to "ignore nothing" (old behaviour).
+        def _ignore(src_dir: str, names: list[str]) -> list[str]:
+            return []
 
     for watch in _WATCH_PATHS:
         src = workspace / watch
@@ -358,8 +344,11 @@ def connect():
     if not ok:
         abort(400, description="GitHub PAT validation failed — check token scopes (needs 'repo')")
 
-    # Create or validate the repo
-    bootstrap_local_path: str | None = None
+    # Create or validate the repo. The bootstrap (clone-init + initialize_brain_repo
+    # + first commit + push) moved to job_runner.enqueue_bootstrap below — it's the
+    # slow part and Cloudflare's 100 s request limit was killing first-time connects.
+    bootstrap_pending = False
+    bootstrap_params: dict | None = None
     if create_repo:
         try:
             from brain_repo.github_api import create_private_repo, get_github_username
@@ -385,21 +374,21 @@ def connect():
         repo_owner = repo_info.get("owner", {}).get("login", "")
         repo_name = repo_info.get("name", create_repo)
 
-        # Bootstrap the empty remote: clone-init + initialize_brain_repo + commit + push.
-        # Without this, the repo has no .evo-brain marker so detect_brain_repos
-        # (GitHub code search) cannot find it later, and Use-existing rejects it
-        # as "incompatible".
+        # Defer the bootstrap to a background thread. The config row gets persisted
+        # below with local_path=NULL so the UI knows the repo is "initializing"
+        # (sync_in_progress=1 until bootstrap finishes writing local_path).
         try:
             github_username = get_github_username(token)
         except Exception:
             github_username = repo_owner
-        bootstrap_local_path = _initialize_remote_brain_repo(
-            token=token,
-            repo_url=repo_url,
-            repo_name=repo_name,
-            owner_username=current_user.username or repo_owner,
-            github_username=github_username,
-        )
+        bootstrap_pending = True
+        bootstrap_params = {
+            "token": token,
+            "repo_url": repo_url,
+            "repo_name": repo_name,
+            "owner_username": current_user.username or repo_owner,
+            "github_username": github_username,
+        }
     else:
         # Validate existing repo is private
         try:
@@ -462,11 +451,26 @@ def connect():
     config.repo_url = repo_url
     config.repo_owner = repo_owner
     config.repo_name = repo_name
-    if bootstrap_local_path:
-        config.local_path = bootstrap_local_path
+    # local_path stays NULL when bootstrap is deferred — it gets filled in by
+    # job_runner.run_bootstrap_pipeline after the push succeeds. UI reads
+    # sync_in_progress + local_path==null as "initializing".
     config.sync_enabled = True
     config.last_error = None
     db.session.commit()
+
+    # Kick off async bootstrap *after* commit so the enqueue's DB lock update
+    # doesn't race with the config insert above.
+    if bootstrap_pending and bootstrap_params is not None:
+        try:
+            from brain_repo import job_runner
+            from flask import current_app
+            job_runner.enqueue_bootstrap(
+                current_app._get_current_object(),  # type: ignore[attr-defined]
+                current_user.id,
+                **bootstrap_params,
+            )
+        except ImportError:
+            log.error("connect: job_runner unavailable — bootstrap will not run")
 
     return jsonify(config.to_dict())
 
@@ -605,29 +609,24 @@ def restore_start():
 @bp.route("/api/brain-repo/sync/force", methods=["POST"])
 @login_required
 def sync_force():
-    """Force a workspace → brain-repo sync, then commit + push (tags included).
+    """Enqueue a workspace → brain-repo sync (async — 202 Accepted).
 
-    Steps:
-        1. Mirror watched workspace folders (memory, workspace, customizations,
-           config-safe) into the local brain-repo working tree, with secrets
-           scan applied.
-        2. ``git add -A`` + commit if there is anything to commit.
-        3. Create an annotated milestone tag (timestamp includes seconds so
-           rapid re-clicks don't collide; ``-f`` so a same-second collision
-           overwrites locally instead of erroring).
-        4. ``git push --follow-tags`` so the commit AND the new tag both reach
-           GitHub in a single round-trip.
+    The actual work (mirror → commit → tag → push) runs in a daemon thread
+    behind brain_repo.job_runner's global lock. On a VPS behind Cloudflare
+    the synchronous version routinely exceeded the 100 s request limit on
+    first-time syncs or slow uplinks. The frontend polls
+    ``/api/brain-repo/status`` for ``sync_in_progress=False`` + ``last_sync``
+    to detect completion.
 
-    Failures are persisted to ``BrainRepoConfig.last_error`` so the UI can
-    surface them via the status endpoint.
+    Returns:
+        202 Accepted ``{"ok": true, "status": "queued", "tag": <name>}`` on
+        successful enqueue.
+        409 Conflict ``{"error": "...", "code": "SYNC_IN_PROGRESS"}`` when
+        another job is already running for this user.
     """
     config = _get_config()
     if not config or not config.github_token_encrypted:
         abort(400, description="Brain repo not connected")
-
-    token = _decrypt_token(config)
-    if not token:
-        abort(500, description="Could not decrypt stored token — re-connect the brain repo")
 
     local_path = config.local_path
     if not local_path:
@@ -637,58 +636,44 @@ def sync_force():
     if not repo_dir.is_dir() or not (repo_dir / ".git").is_dir():
         abort(500, description=f"Local brain repo at {local_path} is missing or corrupt — re-connect")
 
+    # Quick token-decryption probe so bad keys fail fast (before enqueueing).
+    # The pipeline re-decrypts inside the thread — we just surface the error
+    # synchronously here so the UI can react inline.
+    token = _decrypt_token(config)
+    if not token:
+        abort(500, description="Could not decrypt stored token — re-connect the brain repo")
+
     try:
-        from brain_repo import git_ops
+        from brain_repo import job_runner
     except ImportError:
-        abort(500, description="git_ops module unavailable")
+        abort(500, description="job_runner module unavailable")
 
     workspace = Path(__file__).resolve().parent.parent.parent.parent
     now = datetime.now(timezone.utc)
     # Seconds in the tag name avoids "tag already exists" on rapid re-clicks
     tag_name = f"milestone/manual-{now.strftime('%Y-%m-%d-%H-%M-%S')}"
 
-    try:
-        # 1. Mirror workspace → brain-repo working tree (this is what was missing)
-        copied, secrets_dropped = _sync_workspace_to_brain_repo(workspace, repo_dir)
-        log.info("sync_force: copied=%d files, secrets_removed=%d", copied, secrets_dropped)
-
-        # 2. Stage + commit
-        committed = git_ops.commit_all(repo_dir, f"manual sync {now.isoformat()}")
-
-        # 3. Create the milestone tag (force=True so same-second re-runs don't 500)
-        tag_created = git_ops.create_tag(
-            repo_dir, tag_name, f"Manual sync at {now.isoformat()}", force=True,
-        )
-
-        # 4. Push branch + tags together
-        pushed, push_err = git_ops.push(repo_dir, token, with_tags=True)
-    except Exception as exc:
-        config.last_error = str(exc)[:300]
-        db.session.commit()
-        abort(500, description=str(exc))
-
-    if not pushed:
-        config.last_error = f"push failed: {push_err}"
-        db.session.commit()
+    from flask import current_app
+    enqueued = job_runner.enqueue_sync(
+        current_app._get_current_object(),  # type: ignore[attr-defined]
+        current_user.id,
+        workspace,
+        kind=job_runner.JOB_KIND_SYNC,
+        tag_name=tag_name,
+        commit_message=f"manual sync {now.isoformat()}",
+    )
+    if not enqueued:
         return jsonify({
             "ok": False,
-            "committed": committed,
-            "tag": tag_name if tag_created else None,
-            "error": f"git push failed — {push_err}",
-        }), 500
-
-    config.last_sync = now
-    config.last_error = None
-    config.pending_count = 0
-    db.session.commit()
+            "error": "Another sync is already running for this user.",
+            "code": "SYNC_IN_PROGRESS",
+        }), 409
 
     return jsonify({
         "ok": True,
-        "committed": committed,
-        "tag": tag_name if tag_created else None,
-        "files_copied": copied,
-        "secrets_removed": secrets_dropped,
-    })
+        "status": "queued",
+        "tag": tag_name,
+    }), 202
 
 
 # ── Tag milestone ─────────────────────────────────────
@@ -696,16 +681,14 @@ def sync_force():
 @bp.route("/api/brain-repo/tag/milestone", methods=["POST"])
 @login_required
 def tag_milestone():
-    """Create a named milestone tag pointing at the *current* workspace state.
+    """Enqueue a named milestone snapshot (async — 202 Accepted).
 
     Body (JSON):
         name - tag suffix, result will be ``milestone/<name>``
 
-    Same shape as ``sync_force`` (mirror workspace → commit → tag → push) but
-    with a user-supplied tag name instead of a timestamp. ``force=True`` on
-    create_tag means re-tagging an existing milestone moves it to the new
-    snapshot rather than 500-ing — which is what users expect when they
-    "re-tag" something.
+    Same pipeline as ``sync_force`` but with a user-supplied tag name. Runs
+    async behind the same global lock, so a milestone click while a sync is
+    in flight returns 409.
     """
     data = request.get_json() or {}
     name = data.get("name", "").strip()
@@ -716,10 +699,6 @@ def tag_milestone():
     if not config or not config.github_token_encrypted:
         abort(400, description="Brain repo not connected")
 
-    token = _decrypt_token(config)
-    if not token:
-        abort(500, description="Could not decrypt stored token — re-connect the brain repo")
-
     local_path = config.local_path
     if not local_path:
         abort(400, description="local_path not configured — repo not yet cloned")
@@ -728,54 +707,66 @@ def tag_milestone():
     if not repo_dir.is_dir() or not (repo_dir / ".git").is_dir():
         abort(500, description=f"Local brain repo at {local_path} is missing or corrupt — re-connect")
 
+    token = _decrypt_token(config)
+    if not token:
+        abort(500, description="Could not decrypt stored token — re-connect the brain repo")
+
     try:
-        from brain_repo import git_ops
+        from brain_repo import job_runner
     except ImportError:
-        abort(500, description="git_ops module unavailable")
+        abort(500, description="job_runner module unavailable")
 
     workspace = Path(__file__).resolve().parent.parent.parent.parent
     tag = f"milestone/{name}"
     now = datetime.now(timezone.utc)
 
-    try:
-        # Mirror workspace so the tag captures the current state (not the
-        # frozen state from when the brain repo was first initialised).
-        copied, secrets_dropped = _sync_workspace_to_brain_repo(workspace, repo_dir)
-        log.info("tag_milestone: copied=%d, secrets_removed=%d", copied, secrets_dropped)
-
-        committed = git_ops.commit_all(repo_dir, f"milestone: {name}")
-
-        tag_created = git_ops.create_tag(
-            repo_dir, tag, f"Milestone: {name} ({now.isoformat()})", force=True,
-        )
-        if not tag_created:
-            abort(500, description=f"git tag {tag} failed locally — see server logs")
-
-        pushed, push_err = git_ops.push(repo_dir, token, with_tags=True)
-    except Exception as exc:
-        config.last_error = str(exc)[:300]
-        db.session.commit()
-        abort(500, description=str(exc))
-
-    if not pushed:
-        config.last_error = f"push failed: {push_err}"
-        db.session.commit()
+    from flask import current_app
+    enqueued = job_runner.enqueue_sync(
+        current_app._get_current_object(),  # type: ignore[attr-defined]
+        current_user.id,
+        workspace,
+        kind=job_runner.JOB_KIND_MILESTONE,
+        tag_name=tag,
+        commit_message=f"milestone: {name} ({now.isoformat()})",
+    )
+    if not enqueued:
         return jsonify({
             "ok": False,
-            "tag": tag,
-            "committed": committed,
-            "error": f"git push failed — {push_err}",
-        }), 500
-
-    config.last_sync = now
-    config.last_error = None
-    config.pending_count = 0
-    db.session.commit()
+            "error": "Another sync is already running for this user.",
+            "code": "SYNC_IN_PROGRESS",
+        }), 409
 
     return jsonify({
         "ok": True,
+        "status": "queued",
         "tag": tag,
-        "committed": committed,
-        "files_copied": copied,
-        "secrets_removed": secrets_dropped,
-    })
+    }), 202
+
+
+# ── Sync cancel ───────────────────────────────────────
+
+@bp.route("/api/brain-repo/sync/cancel", methods=["POST"])
+@login_required
+def sync_cancel():
+    """Request cancellation of the active sync/milestone/bootstrap job.
+
+    Cancel is cooperative — the pipeline checks cancel_requested between
+    watched directories, between secrets-scan batches, and before each git
+    subprocess. A ``git push`` already in flight is NOT interrupted (would
+    risk corrupting the remote), so the UI should show "cancelling…
+    (awaiting current push)" until ``sync_in_progress`` flips to False.
+
+    Returns ``{"ok": true, "cancel_requested": true}`` whether or not a job
+    was actually running — idempotent.
+    """
+    try:
+        from brain_repo import job_runner
+    except ImportError:
+        abort(500, description="job_runner module unavailable")
+
+    from flask import current_app
+    flagged = job_runner.request_cancel(
+        current_app._get_current_object(),  # type: ignore[attr-defined]
+        current_user.id,
+    )
+    return jsonify({"ok": True, "cancel_requested": True, "was_running": flagged})

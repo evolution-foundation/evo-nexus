@@ -1,7 +1,10 @@
 """Shared helpers for route modules."""
 
+import logging
 import re
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 WORKSPACE = Path(__file__).resolve().parent.parent.parent.parent
 
@@ -138,6 +141,65 @@ def discover_routines() -> dict:
                 "custom": True,
                 "script_key": script_key,
             }
+
+    # 3. Scan plugin routines (plugins/{slug}/routines.yaml or
+    #    plugins/{slug}/routines/routines.yaml)
+    plugins_dir = WORKSPACE / "plugins"
+    if plugins_dir.is_dir():
+        try:
+            import yaml
+        except ImportError:
+            yaml = None  # type: ignore[assignment]
+
+        if yaml is not None:
+            plugin_routines: list[dict] = []
+            for plugin_dir in sorted(plugins_dir.iterdir()):
+                if not plugin_dir.is_dir() or plugin_dir.name.startswith("."):
+                    continue
+                slug = plugin_dir.name
+
+                # Accept both flat and nested layout
+                yaml_candidates = [
+                    plugin_dir / "routines.yaml",
+                    plugin_dir / "routines" / "routines.yaml",
+                ]
+                routines_yaml = next(
+                    (p for p in yaml_candidates if p.is_file()), None
+                )
+                if routines_yaml is None:
+                    continue
+
+                try:
+                    plugin_spec = yaml.safe_load(routines_yaml.read_text()) or {}
+                except Exception as exc:
+                    log.warning("[plugins] failed to read %s: %s", routines_yaml, exc)
+                    continue
+
+                for entry in plugin_spec.get("routines", []):
+                    script_rel = entry.get("script", "")
+                    script_path = (routines_yaml.parent / script_rel).resolve()
+                    if not script_path.is_file():
+                        log.warning(
+                            "[plugins] routine script missing: %s", script_path
+                        )
+                        continue
+                    make_id = entry.get("name", script_path.stem).replace(" ", "-").lower()
+                    plugin_routines.append({
+                        **entry,
+                        "script": str(script_path),
+                        "script_key": script_path.stem,
+                        "make_id": make_id,
+                        "source_plugin": slug,
+                        "custom": True,
+                    })
+
+            # Deterministic order: sort by (slug, name)
+            plugin_routines.sort(
+                key=lambda r: (r.get("source_plugin", ""), r.get("name", ""))
+            )
+            for pr in plugin_routines:
+                make_id = pr.pop("make_id", pr.get("name", "").replace(" ", "-").lower())
+                registry[f"plugin-{pr['source_plugin']}-{make_id}"] = pr
 
     return registry
 

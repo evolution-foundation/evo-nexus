@@ -26,6 +26,7 @@ The workspace has skills in two layers:
 | `pulse-` | Community (daily, weekly, monthly, FAQ sync) | 4 |
 | `sage-` | Strategy (OKR review, strategy digest, competitive analysis) | 3 |
 | `create-` | Workspace management (create-routine, create-agent, create-command, create-heartbeat, create-goal, create-ticket, manage-heartbeats) | 7 |
+| `plugin-` | Plugins (install, list, uninstall, update, marketplace, health) | 6 |
 
 > **Note:** `evo-*` skills (Evo Method) have been moved to the separate [EVO-METHOD](https://github.com/EvolutionAPI/EVO-METHOD) project.
 

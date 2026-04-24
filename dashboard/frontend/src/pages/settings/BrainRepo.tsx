@@ -6,6 +6,7 @@ import { api } from '../../lib/api'
 interface BrainRepoStatus {
   connected: boolean
   repo_url: string | null
+  local_path?: string | null
   last_sync: string | null
   pending_count: number
   sync_enabled: boolean
@@ -14,6 +15,11 @@ interface BrainRepoStatus {
    *  False means stored tokens cannot be decrypted; UI should warn. */
   crypto_ready?: boolean
   last_error?: string | null
+  /** Async job state — backend pipeline runs in a daemon thread. UI polls. */
+  sync_in_progress?: boolean
+  sync_job_kind?: string | null
+  sync_started_at?: string | null
+  cancel_requested?: boolean
 }
 
 const inp = "w-full px-4 py-3 rounded-lg bg-[#0f1520] border border-[#1e2a3a] text-[#e2e8f0] placeholder-[#3d4f65] text-sm transition-colors duration-200 focus:outline-none focus:border-[#00FFA7]/60 focus:ring-1 focus:ring-[#00FFA7]/20"
@@ -42,24 +48,39 @@ export default function BrainRepo() {
   }
 
   const loadStatus = () => {
-    setLoading(true)
     api.get('/brain-repo/status')
       .then((d: BrainRepoStatus) => setStatus(d))
       .catch(() => setStatus(null))
       .finally(() => setLoading(false))
   }
 
-  useEffect(() => { loadStatus() }, [])
+  useEffect(() => { setLoading(true); loadStatus() }, [])
+
+  // While a sync/milestone/bootstrap is running, poll every 3 s so the status
+  // transitions from "running" → "complete" without the user refreshing. The
+  // 30 s poll on /backups doesn't feel responsive when you're actively watching.
+  useEffect(() => {
+    if (!status?.sync_in_progress) return
+    const interval = setInterval(loadStatus, 3000)
+    return () => clearInterval(interval)
+  }, [status?.sync_in_progress])
+
+  // Derived: backend is the source of truth. Local "syncing"/"milestoning"
+  // only cover the click → next poll gap so buttons feel instant.
+  const busy = !!status?.sync_in_progress || syncing || milestoning
+  const cancelling = !!status?.cancel_requested
 
   const handleSync = async () => {
     setSyncing(true)
     setSyncMsg(null)
     try {
+      // 202 Accepted: enqueue worked. 409 SYNC_IN_PROGRESS: something else running.
       await api.post('/brain-repo/sync/force')
-      setSyncMsg({ type: 'ok', text: t('brainRepoSettings.sync.success') })
-      setTimeout(loadStatus, 2000)
+      setSyncMsg({ type: 'ok', text: t('brainRepoSettings.sync.queued') })
+      setTimeout(loadStatus, 500)  // fast initial refresh to pick up sync_in_progress
     } catch (ex: unknown) {
-      setSyncMsg({ type: 'err', text: ex instanceof Error ? ex.message : t('brainRepoSettings.sync.failed') })
+      const msg = ex instanceof Error ? ex.message : t('brainRepoSettings.sync.failed')
+      setSyncMsg({ type: 'err', text: msg })
     } finally {
       setSyncing(false)
     }
@@ -70,13 +91,24 @@ export default function BrainRepo() {
     setMilestoning(true)
     setMilestoneMsg(null)
     try {
-      const res = await api.post('/brain-repo/tag/milestone', { name: milestoneInput.trim() }) as { tag: string }
-      setMilestoneMsg({ type: 'ok', text: t('brainRepoSettings.milestone.success', { tag: res.tag }) })
+      const res = await api.post('/brain-repo/tag/milestone', { name: milestoneInput.trim() }) as { tag: string; status?: string }
+      setMilestoneMsg({ type: 'ok', text: t('brainRepoSettings.milestone.queued', { tag: res.tag }) })
       setMilestoneInput('')
+      setTimeout(loadStatus, 500)
     } catch (ex: unknown) {
       setMilestoneMsg({ type: 'err', text: ex instanceof Error ? ex.message : t('brainRepoSettings.milestone.failed') })
     } finally {
       setMilestoning(false)
+    }
+  }
+
+  const handleCancel = async () => {
+    try {
+      await api.post('/brain-repo/sync/cancel')
+      setSyncMsg({ type: 'ok', text: t('brainRepoSettings.sync.cancelRequested') })
+      setTimeout(loadStatus, 500)
+    } catch (ex: unknown) {
+      setSyncMsg({ type: 'err', text: ex instanceof Error ? ex.message : t('brainRepoSettings.sync.cancelFailed') })
     }
   }
 
@@ -193,14 +225,28 @@ export default function BrainRepo() {
                 <p className="text-[14px] font-semibold text-[#e2e8f0]">{t('brainRepoSettings.sync.title')}</p>
                 <p className="text-[11px] text-[#5a6b7f] mt-0.5">{t('brainRepoSettings.sync.desc')}</p>
               </div>
-              <button
-                onClick={handleSync}
-                disabled={syncing}
-                className="flex items-center gap-2 px-4 py-2 rounded-lg bg-[#00FFA7] text-[#080c14] hover:bg-[#00e69a] text-sm font-semibold transition-colors disabled:opacity-40"
-              >
-                {syncing ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
-                {syncing ? t('brainRepoSettings.sync.running') : t('brainRepoSettings.sync.btn')}
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={handleSync}
+                  disabled={busy}
+                  className="flex items-center gap-2 px-4 py-2 rounded-lg bg-[#00FFA7] text-[#080c14] hover:bg-[#00e69a] text-sm font-semibold transition-colors disabled:opacity-40"
+                >
+                  {busy ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+                  {busy
+                    ? (cancelling
+                        ? t('brainRepoSettings.sync.cancelling')
+                        : t('brainRepoSettings.sync.running'))
+                    : t('brainRepoSettings.sync.btn')}
+                </button>
+                {busy && !cancelling && (
+                  <button
+                    onClick={handleCancel}
+                    className="flex items-center gap-2 px-3 py-2 rounded-lg border border-[#3a1515] text-[#f87171] hover:bg-[#f87171]/10 text-xs font-medium transition-colors"
+                  >
+                    {t('brainRepoSettings.sync.cancel')}
+                  </button>
+                )}
+              </div>
             </div>
             {syncMsg && (
               <div className={`mt-3 flex items-center gap-2 px-3 py-2 rounded-lg border text-xs ${
@@ -229,11 +275,16 @@ export default function BrainRepo() {
               />
               <button
                 onClick={handleMilestone}
-                disabled={milestoning || !milestoneInput.trim()}
+                disabled={busy || !milestoneInput.trim()}
                 className="flex items-center gap-2 px-4 py-2 rounded-lg border border-[#152030] text-[#5a6b7f] hover:border-[#00FFA7]/30 hover:text-[#e2e8f0] text-sm font-medium transition-colors disabled:opacity-40 flex-shrink-0"
+                title={busy ? t('brainRepoSettings.sync.running') : undefined}
               >
-                {milestoning ? <Loader2 size={14} className="animate-spin" /> : <Tag size={14} />}
-                {milestoning ? t('brainRepoSettings.milestone.running') : t('brainRepoSettings.milestone.btn')}
+                {busy ? <Loader2 size={14} className="animate-spin" /> : <Tag size={14} />}
+                {busy
+                  ? (cancelling
+                      ? t('brainRepoSettings.sync.cancelling')
+                      : t('brainRepoSettings.sync.running'))
+                  : t('brainRepoSettings.milestone.btn')}
               </button>
             </div>
             {milestoneMsg && (
