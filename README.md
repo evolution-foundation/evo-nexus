@@ -111,6 +111,16 @@ Social media accounts (YouTube, Instagram, LinkedIn) are connected via OAuth thr
 
 ## Prerequisites
 
+**For the Docker install** (easiest — the container ships everything):
+
+| Tool | Required | Install |
+|------|----------|---------|
+| **Docker Engine 24+** | Yes | [docs.docker.com/engine/install](https://docs.docker.com/engine/install/) |
+
+That's it. The image includes Claude Code, Python, Node, uv, gh, and every other runtime dependency.
+
+**For the CLI / from-source install** (the dev flow):
+
 | Tool | Required | Install |
 |------|----------|---------|
 | **Claude Code** | Yes | `npm install -g @anthropic-ai/claude-code` ([docs](https://claude.ai/download)) |
@@ -150,15 +160,27 @@ The setup wizard asks which provider you want during `make setup`, and you can s
 
 > **Starting out?** After installing, open Claude Code and call **`/oracle`**. It's the official entry point of EvoNexus: runs the initial setup, interviews you about your business, shows what the toolkit can automate for you, and delivers a **phased activation plan** — an index file at the top + one folder per phase + one file per item, each with suggested agent team, dependencies, and pending decisions. The plan is materialized by the `prod-activation-plan` skill (workspace canonical pattern) so you never have to guess the next step.
 
-### Method 1 — One command (recommended)
+### Method 1 — Docker (no setup, runs anywhere)
+
+The fastest way. Pulls official multi-arch images (`linux/amd64` + `linux/arm64`) from Docker Hub — works natively on Apple Silicon, AWS Graviton, Oracle ARM, Raspberry Pi, and x86_64 servers.
+
+```bash
+curl -O https://raw.githubusercontent.com/EvolutionAPI/evo-nexus/main/docker-compose.hub.yml
+docker compose -f docker-compose.hub.yml up -d
+open http://localhost:8080
+```
+
+The setup wizard loads on first boot. Paste your Anthropic / OpenAI / Codex key and you're done — no extra tooling on your host. Full guide: [docs/guides/docker-install.md](docs/guides/docker-install.md).
+
+### Method 2 — One command (for CLI / terminal workflow)
 
 ```bash
 npx @evoapi/evo-nexus
 ```
 
-This downloads and runs the interactive setup wizard automatically.
+This downloads and runs the interactive setup wizard automatically. Requires the CLI prerequisites above (Claude Code, Python, Node, uv).
 
-### Method 2 — Manual clone
+### Method 3 — Manual clone (for developers / contributors)
 
 ```bash
 git clone --depth 1 https://github.com/EvolutionAPI/evo-nexus.git

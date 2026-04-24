@@ -1,6 +1,16 @@
 # Getting Started with EvoNexus
 
-## Prerequisites
+## Choose your install method
+
+| Method | Best for | Requires |
+|---|---|---|
+| **[Docker](guides/docker-install.md)** | Anyone who wants a one-command install that works the same on every OS (Linux, macOS, Windows+WSL2, VPS) | Docker Engine 24+ |
+| **CLI (`npx`)** | Users who want to run EvoNexus alongside their existing Claude Code CLI | Claude Code, Python 3.11+, Node 18+, uv |
+| **Manual clone** | Developers who want to modify source | git, Claude Code, Python 3.11+, Node 18+, uv |
+
+Pick the Docker flow if you're unsure. Keep reading for the CLI flow.
+
+## Prerequisites (CLI flow only)
 
 - **Claude Code CLI** — [Install Claude Code](https://claude.ai/claude-code)
 - **Python 3.11+** with [uv](https://docs.astral.sh/uv/)
@@ -9,7 +19,19 @@
 
 ## Installation
 
-### 1. Quick Install (recommended)
+### Option A — Docker (fastest)
+
+Pulls the official multi-arch images and runs the wizard at http://localhost:8080. Full guide: [Installing with Docker](guides/docker-install.md).
+
+```bash
+curl -O https://raw.githubusercontent.com/EvolutionAPI/evo-nexus/main/docker-compose.hub.yml
+docker compose -f docker-compose.hub.yml up -d
+open http://localhost:8080
+```
+
+Skip to [Start with /oracle](#6-use-claude-code--start-with-oracle) after the wizard completes.
+
+### Option B — `npx` (CLI flow)
 
 ```bash
 npx @evoapi/evo-nexus
@@ -17,7 +39,7 @@ npx @evoapi/evo-nexus
 
 This downloads and runs the interactive setup wizard automatically.
 
-### Alternative: Manual Clone
+### Option C — Manual clone
 
 ```bash
 git clone --depth 1 https://github.com/EvolutionAPI/evo-nexus.git

@@ -30,18 +30,32 @@ mkdir -p "$CONFIG_DIR" \
          /workspace/.claude/agent-memory \
          /workspace/dashboard/data
 
+# --- 1b. Serialize first-boot bootstrap across services --------------------
+# The dashboard, telegram and scheduler services share /workspace/config on a
+# named volume. On first boot they race on "[ ! -f .env ] && cp .env.example"
+# (one succeeds, others crash with "File exists") and also on "grep -q KEY ||
+# echo >> .env" (two processes both see "not found" and append two different
+# keys, silently corrupting Flask sessions or Knowledge Base encryption).
+#
+# Serialize the whole bootstrap section with a flock on a lockfile inside the
+# shared volume — that way every process that mounts this volume takes turns
+# regardless of which container runs first.
+LOCK_FILE="$CONFIG_DIR/.bootstrap.lock"
+exec 200>"$LOCK_FILE"
+flock 200
+
 # --- 2. Bootstrap /workspace/config from image defaults (first boot only) --
 if [ -d "$DEFAULTS_DIR" ]; then
     if [ ! -f "$CONFIG_DIR/.env" ]; then
         if [ -f "$DEFAULTS_DIR/.env.example" ]; then
-            cp "$DEFAULTS_DIR/.env.example" "$CONFIG_DIR/.env"
+            cp -n "$DEFAULTS_DIR/.env.example" "$CONFIG_DIR/.env"
         else
             touch "$CONFIG_DIR/.env"
         fi
     fi
     for f in providers.example.json heartbeats.example.yaml; do
         if [ -f "$DEFAULTS_DIR/config/$f" ] && [ ! -f "$CONFIG_DIR/$f" ]; then
-            cp "$DEFAULTS_DIR/config/$f" "$CONFIG_DIR/$f"
+            cp -n "$DEFAULTS_DIR/config/$f" "$CONFIG_DIR/$f"
         fi
     done
 fi
@@ -80,6 +94,10 @@ if ! grep -q '^KNOWLEDGE_MASTER_KEY=' "$CONFIG_DIR/.env" 2>/dev/null; then
     fi
     unset _PYBIN _KEY
 fi
+
+# --- 3c. Release the bootstrap lock ----------------------------------------
+flock -u 200
+exec 200>&-
 
 # --- 4. Symlinks so the app finds files at the paths it expects ------------
 ln -sfn "$CONFIG_DIR/.env" /workspace/.env
