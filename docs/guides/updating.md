@@ -35,9 +35,30 @@ kill $(lsof -ti :8080) 2>/dev/null
 python app.py &
 ```
 
-## Update via Docker
+## Update via Docker (published images)
 
-If you're running EvoNexus with Docker Compose:
+Starting with **v0.30.2**, official images are published to Docker Hub under the `evoapicloud` namespace:
+
+- `evoapicloud/evo-nexus-dashboard` — Flask + React + embedded terminal + Claude CLI
+- `evoapicloud/evo-nexus-runtime` — Node/Python runtime for the Telegram bot and the scheduler
+
+The images are public — no `docker login` required.
+
+### Docker Swarm / Portainer
+
+Bump the image tag in your stack (or leave `:latest` and force a redeploy). Example:
+
+```bash
+docker service update --image evoapicloud/evo-nexus-dashboard:v0.30.2 evonexus_evonexus_dashboard
+docker service update --image evoapicloud/evo-nexus-runtime:v0.30.2   evonexus_evonexus_telegram
+docker service update --image evoapicloud/evo-nexus-runtime:v0.30.2   evonexus_evonexus_scheduler
+```
+
+See [`README.swarm.md`](https://github.com/EvolutionAPI/evo-nexus/blob/main/README.swarm.md) for the full Swarm / Portainer deployment guide and the `evonexus.stack.yml` template.
+
+### Local docker compose (building from source)
+
+If you're running `docker-compose.yml` locally (building the image from source instead of pulling from Docker Hub):
 
 ```bash
 cd /path/to/your/workspace
