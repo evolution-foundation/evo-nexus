@@ -33,7 +33,7 @@ It turns a single CLI installation into a team of **38 specialized agents** orga
 
 ### Why EvoNexus?
 
-- **Markdown-first agents** — agents are `.md` files with system prompts, not code. No SDK, no plugin runtime, no compile step. Add an agent by dropping a file in `.claude/agents/`
+- **Markdown-first agents** — agents are `.md` files with system prompts, not code. No SDK, no compile step. Add an agent by dropping a file in `.claude/agents/`, or package reusable bundles via the plugin system (see [`docs/introduction.md`](docs/introduction.md))
 - **Skills as instructions** — reusable capabilities are markdown too. 190+ skills covering finance, community, social, engineering, data, legal, HR, ops, product, CS
 - **Multi-provider by design** — default runs on Anthropic's native `claude` CLI, but can switch to OpenRouter, OpenAI, Gemini, AWS Bedrock, Google Vertex, or Codex Auth via [OpenClaude](https://www.npmjs.com/package/@gitlawb/openclaude) without touching a line of code. Your keys, your model choice, no vendor lock-in
 - **MCP integrations** — first-class support for Google Calendar, Gmail, GitHub, Linear, Telegram, Canva, Notion, and more via the Model Context Protocol

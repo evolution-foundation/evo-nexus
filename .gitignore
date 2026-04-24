@@ -49,6 +49,7 @@ config/providers.json
 # ── Runtime data & logs ───────────────────
 backups/
 ADWs/logs/
+.claude/scheduled_tasks.lock
 # Runtime DBs may be created in repo root, dashboard/data/ or dashboard/backend/
 *.db
 *.db-shm
