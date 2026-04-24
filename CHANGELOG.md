@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.30.4] - 2026-04-24
+
+Patch release with a **P0 race-condition fix** in the container entrypoint plus a complete Docker install experience (ready-to-run compose + full tutorial).
+
+### Fixed
+
+- **Race condition on shared `/workspace/config` volume (P0)** — when `dashboard`, `telegram` and `scheduler` boot in parallel against the same named volume (the canonical Docker / Swarm / Portainer deploy pattern), the first-boot bootstrap raced on four operations:
+  - `[ ! -f .env ] && cp .env.example .env` — one container wins, others crash with `File exists`. Scheduler died visibly on every fresh v0.30.3 deploy.
+  - `[ ! -f ] && cp` for `providers.json` / `heartbeats.yaml` — same race.
+  - `grep -q EVONEXUS_SECRET_KEY || echo … >> .env` — two processes both see "not found" and append **two different keys**; Flask picks one at random per request, invalidating sessions silently.
+  - Same pattern for `KNOWLEDGE_MASTER_KEY` — silently corrupted Knowledge Base encryption, losing all configured DB connections on second boot.
+
+  Fix: wrap the whole bootstrap in `flock` on a lockfile inside the shared volume, serializing all containers regardless of start order. Also added `cp -n` (no-clobber) as belt-and-suspenders. `flock` is part of `util-linux`, already present in both base images.
+
+### Added
+
+- **`docker-compose.hub.yml`** — ready-to-run compose file that pulls `evoapicloud/evo-nexus-*` from Docker Hub instead of building from source. Uses `depends_on: condition: service_healthy` to order the boot (dashboard first, then telegram/scheduler) — defense-in-depth on top of the flock fix. This is the recommended install for end users: `curl -O …docker-compose.hub.yml && docker compose -f docker-compose.hub.yml up -d`.
+- **`docs/guides/docker-install.md`** — complete Docker install guide. Prerequisites (Docker Engine 24+ is the only requirement — image ships everything), one-command boot, first-boot wizard walkthrough, update flow (`docker compose pull && up -d`), backup/restore recipes, advanced section documenting how to pass secrets via `environment:` or Docker Secrets (for CI/CD and immutable-infra users who prefer to keep secrets out of the `.env` volume), running behind Caddy for public HTTPS, troubleshooting table.
+- **Install method chooser in `docs/getting-started.md`** — table at the top comparing Docker vs CLI (`npx`) vs manual clone, with clear guidance on which to pick.
+
+### Changed
+
+- **`README.md`** — Docker promoted to Method 1 in Quick Start. Prerequisites split into two tracks (Docker-only vs CLI-flow), reflecting that the Docker image ships Claude Code, Python, Node, uv and `gh` baked in.
+- **`docs/guides/updating.md`** — new `docker compose -f docker-compose.hub.yml pull && up -d` section documenting the Docker Hub upgrade path. Swarm examples bumped to `v0.30.4`.
+
 ## [0.30.3] - 2026-04-24
 
 Patch release completing the Docker Hub migration: official images now ship as **multi-arch manifests** (`linux/amd64` + `linux/arm64`) so ARM hosts (Apple Silicon, AWS Graviton, Oracle Cloud ARM, Raspberry Pi, many modern VPS) can pull without platform overrides.
