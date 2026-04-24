@@ -11,17 +11,70 @@ interface AgentTerminalProps {
   accentColor?: string
 }
 
-// In dev mode OR local production (localhost/127.0.0.1), connect directly to terminal-server port.
-// In real deployments (behind reverse proxy), use /terminal path on the same origin.
-const isLocal = import.meta.env.DEV || /^(localhost|127\.0\.0\.1)$/i.test(window.location.hostname)
+// Terminal connection URL resolution.
+//
+// Default heuristic:
+//   - Dev mode OR a private-network hostname (loopback, RFC1918, RFC6598 CGNAT,
+//     link-local, IPv6 ::1 / fe80:) → connect directly to terminal-server:32352.
+//   - Anything else (public hostname / domain) → use /terminal on the same
+//     origin, assuming a reverse proxy is rewriting the path.
+//
+// Escape hatch for mixed scenarios (e.g. reverse proxy sitting in front of a
+// private IP): set VITE_TERMINAL_URL at build time to force a specific base
+// URL. When set, it overrides the heuristic entirely. Trailing slash is
+// stripped so both `https://x.y/terminal` and `https://x.y/terminal/` work.
+const rawOverride = (import.meta.env.VITE_TERMINAL_URL as string | undefined)?.trim()
+const terminalOverride = rawOverride ? rawOverride.replace(/\/+$/, '') : null
 
-const CC_WEB_HTTP = isLocal
-  ? `http://${window.location.hostname}:32352`
-  : `${window.location.origin}/terminal`
+const hostname = window.location.hostname
+const isPrivateHost =
+  /^localhost$/i.test(hostname) ||
+  /^127\./.test(hostname) ||
+  /^10\./.test(hostname) ||
+  /^192\.168\./.test(hostname) ||
+  /^169\.254\./.test(hostname) ||
+  /^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(hostname) ||
+  /^100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\./.test(hostname) || // RFC6598 CGNAT
+  hostname === '::1' ||
+  /^\[::1\]$/.test(hostname) ||
+  /^fe80:/i.test(hostname) ||
+  /^\[fe80:/i.test(hostname)
 
-const CC_WEB_WS = isLocal
-  ? `ws://${window.location.hostname}:32352`
-  : `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/terminal`
+const isLocal = import.meta.env.DEV || isPrivateHost
+
+// Resolve an override URL into the (httpBase, wsBase) pair the rest of the
+// component expects. Accepts either http(s):// or ws(s):// — both schemes
+// are mapped to their counterpart so users can paste whichever they have
+// on hand. Invalid input falls back to the heuristic.
+function resolveOverride(raw: string): { http: string; ws: string } | null {
+  try {
+    const u = new URL(raw)
+    const isSecure = u.protocol === 'https:' || u.protocol === 'wss:'
+    const httpProto = isSecure ? 'https:' : 'http:'
+    const wsProto = isSecure ? 'wss:' : 'ws:'
+    const path = u.pathname.replace(/\/+$/, '') + u.search
+    return {
+      http: `${httpProto}//${u.host}${path}`,
+      ws: `${wsProto}//${u.host}${path}`,
+    }
+  } catch {
+    return null
+  }
+}
+
+const override = terminalOverride ? resolveOverride(terminalOverride) : null
+
+const CC_WEB_HTTP = override
+  ? override.http
+  : isLocal
+    ? `http://${hostname}:32352`
+    : `${window.location.origin}/terminal`
+
+const CC_WEB_WS = override
+  ? override.ws
+  : isLocal
+    ? `ws://${hostname}:32352`
+    : `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/terminal`
 
 type Status = 'connecting' | 'ready' | 'starting' | 'running' | 'error' | 'exited'
 
