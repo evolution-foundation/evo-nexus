@@ -19,6 +19,7 @@ import {
 } from 'lucide-react'
 import { api } from '../lib/api'
 import HealthBadge from '../components/HealthBadge'
+import PluginWidgetsGrid from '../components/PluginWidgetsGrid'
 
 interface OverviewData {
   metrics: {
@@ -404,6 +405,9 @@ export default function Overview() {
           )}
         </div>
       </div>
+
+      {/* Plugin Widgets */}
+      <PluginWidgetsGrid mountPoint="overview" />
 
       {/* Quick Actions */}
       <div className="mb-4">

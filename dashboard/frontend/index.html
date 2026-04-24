@@ -7,6 +7,14 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <!--
+      Wave 2.1 CSP hardening (connect-src):
+      - 'self' covers all /api/* and /plugins/* fetch calls
+      - ws://localhost:5173 is needed for Vite HMR in dev (removed by build pipeline in prod)
+      - Google Fonts are loaded via <link rel="stylesheet"> (style-src / font-src, not connect-src)
+    -->
+    <meta http-equiv="Content-Security-Policy"
+      content="connect-src 'self' ws://localhost:5173 ws://localhost:8080" />
     <title>Evo Workspace</title>
   </head>
   <body class="bg-[#0C111D] text-[#F9FAFB]">

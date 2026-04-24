@@ -1,6 +1,7 @@
 const express = require('express');
 const http = require('http');
 const path = require('path');
+const fs = require('fs');
 const WebSocket = require('ws');
 const cors = require('cors');
 const { v4: uuidv4 } = require('uuid');
@@ -8,12 +9,22 @@ const ClaudeBridge = require('./claude-bridge');
 const { ChatBridge } = require('./chat-bridge');
 const SessionStore = require('./utils/session-store');
 const ChatLogger = require('./utils/chat-logger');
+const { loadProviderConfig, getProviderMode } = require('./provider-config');
 
 class TerminalServer {
   constructor(options = {}) {
     this.port = options.port || 32352;
     this.dev = options.dev || false;
     this.baseFolder = process.cwd();
+    const ttlHours = Number(process.env.TERMINAL_SESSION_TTL_HOURS);
+    const gcMinutes = Number(process.env.TERMINAL_SESSION_GC_INTERVAL_MINUTES);
+    this.sessionTtlMs = options.sessionTtlMs ?? (
+      Number.isFinite(ttlHours) && ttlHours > 0 ? ttlHours * 60 * 60 * 1000 : (24 * 60 * 60 * 1000)
+    );
+    this.sessionGcIntervalMs = options.sessionGcIntervalMs ?? (
+      Number.isFinite(gcMinutes) && gcMinutes >= 0 ? gcMinutes * 60 * 1000 : (15 * 60 * 1000)
+    );
+    this.autoSaveIntervalMs = options.autoSaveIntervalMs ?? 30000;
 
     this.app = express();
     this.claudeSessions = new Map();
@@ -21,14 +32,24 @@ class TerminalServer {
     this.globalSubscribers = new Set(); // wsIds subscribed to global notifications
     this.claudeBridge = new ClaudeBridge();
     this.chatBridge = new ChatBridge();
-    this.sessionStore = new SessionStore();
+    this.sessionStore = new SessionStore({ sessionTtlMs: this.sessionTtlMs });
     this.chatLogger = new ChatLogger(this.baseFolder);
     this.autoSaveInterval = null;
+    this.sessionGcInterval = null;
     this.isShuttingDown = false;
+    this._beforeExitSaved = false;
+    this._handleSigint = () => this.handleShutdown();
+    this._handleSigterm = () => this.handleShutdown();
+    this._handleBeforeExit = () => {
+      if (this._beforeExitSaved) return;
+      this._beforeExitSaved = true;
+      void this.saveSessionsToDisk();
+    };
+    this.ready = this.loadPersistedSessions();
 
     this.setupExpress();
-    this.loadPersistedSessions();
     this.setupAutoSave();
+    this.setupSessionGc();
   }
 
   async loadPersistedSessions() {
@@ -44,19 +65,161 @@ class TerminalServer {
   }
 
   setupAutoSave() {
-    this.autoSaveInterval = setInterval(() => {
-      this.saveSessionsToDisk();
-    }, 30000);
+    if (this.autoSaveIntervalMs > 0) {
+      this.autoSaveInterval = setInterval(() => {
+        this.saveSessionsToDisk();
+      }, this.autoSaveIntervalMs);
+    }
 
-    process.on('SIGINT', () => this.handleShutdown());
-    process.on('SIGTERM', () => this.handleShutdown());
-    process.on('beforeExit', () => this.saveSessionsToDisk());
+    process.on('SIGINT', this._handleSigint);
+    process.on('SIGTERM', this._handleSigterm);
+    process.on('beforeExit', this._handleBeforeExit);
+  }
+
+  setupSessionGc() {
+    if (this.sessionGcIntervalMs <= 0) {
+      return;
+    }
+
+    this.sessionGcInterval = setInterval(() => {
+      void this.purgeStaleSessions();
+    }, this.sessionGcIntervalMs);
   }
 
   async saveSessionsToDisk() {
-    if (this.claudeSessions.size > 0) {
-      await this.sessionStore.saveSessions(this.claudeSessions);
+    await this.sessionStore.saveSessions(this.claudeSessions);
+  }
+
+  _checkPathAccess(targetPath, requireWrite = false) {
+    try {
+      const mode = requireWrite ? fs.constants.R_OK | fs.constants.W_OK : fs.constants.R_OK;
+      fs.accessSync(targetPath, mode);
+      return { status: 'ok', path: targetPath };
+    } catch (error) {
+      return {
+        status: 'error',
+        path: targetPath,
+        detail: error.message,
+      };
     }
+  }
+
+  _getProviderHealth() {
+    try {
+      const providerConfig = loadProviderConfig() || {};
+      const providerMode = getProviderMode(providerConfig);
+      const active = providerConfig.active || 'none';
+      if (!active || active === 'none') {
+        return { status: 'warning', active, detail: 'No provider configured' };
+      }
+      if (active !== 'anthropic' && providerMode !== 'code') {
+        return {
+          status: 'warning',
+          active,
+          mode: providerMode,
+          detail: `Provider ${active} is not in code mode`,
+        };
+      }
+      return {
+        status: 'ok',
+        active,
+        mode: providerMode,
+      };
+    } catch (error) {
+      return {
+        status: 'error',
+        detail: error.message,
+      };
+    }
+  }
+
+  getHealthSnapshot(deep = false) {
+    const now = Date.now();
+    let staleSessions = 0;
+    for (const session of this.claudeSessions.values()) {
+      if (this.sessionStore.isSessionStale(session, now)) {
+        staleSessions += 1;
+      }
+    }
+
+    const checks = {
+      storage: this._checkPathAccess(this.sessionStore.storageDir, true),
+      sessions_file: fs.existsSync(this.sessionStore.sessionsFile)
+        ? this._checkPathAccess(this.sessionStore.sessionsFile, false)
+        : { status: 'warning', path: this.sessionStore.sessionsFile, detail: 'Sessions file not created yet' },
+      workspace: this._checkPathAccess(this.baseFolder, false),
+    };
+
+    if (deep) {
+      checks.providers = this._getProviderHealth();
+    }
+
+    const statuses = Object.values(checks).map((check) => check.status);
+    const status = statuses.includes('error')
+      ? 'error'
+      : (statuses.includes('warning') ? 'warning' : 'ok');
+
+    return {
+      status,
+      timestamp: new Date().toISOString(),
+      uptime_seconds: Math.round(process.uptime()),
+      counts: {
+        claudeSessions: this.claudeSessions.size,
+        activeSessions: Array.from(this.claudeSessions.values()).filter((s) => s.active).length,
+        staleSessions,
+        webSocketConnections: this.webSocketConnections.size,
+        globalSubscribers: this.globalSubscribers.size,
+        claudeBridgeSessions: this.claudeBridge.sessions.size,
+        chatBridgeSessions: this.chatBridge.sessions.size,
+      },
+      memory: process.memoryUsage(),
+      checks,
+    };
+  }
+
+  async purgeStaleSessions() {
+    const now = Date.now();
+    const staleEntries = [];
+    for (const [sessionId, session] of this.claudeSessions.entries()) {
+      if (this.sessionStore.isSessionStale(session, now)) {
+        staleEntries.push([sessionId, session]);
+      }
+    }
+
+    if (staleEntries.length === 0) {
+      return { removed: 0 };
+    }
+
+    let removed = 0;
+    for (const [sessionId, session] of staleEntries) {
+      if (session.active) {
+        continue;
+      }
+
+      const claudeSession = this.claudeBridge.getSession(sessionId);
+      if (claudeSession && claudeSession.active) {
+        continue;
+      }
+      const chatSession = this.chatBridge.getSession(sessionId);
+      if (chatSession && chatSession.active) {
+        continue;
+      }
+
+      this.claudeSessions.delete(sessionId);
+      removed += 1;
+
+      try {
+        await Promise.allSettled([
+          this.claudeBridge.stopSession(sessionId),
+          this.chatBridge.stopSession(sessionId),
+        ]);
+      } catch (error) {
+        if (this.dev) console.warn(`Failed to clean stale session ${sessionId}:`, error.message);
+      }
+    }
+
+    await this.saveSessionsToDisk();
+    return { removed };
   }
 
   async handleShutdown() {
@@ -65,6 +228,7 @@ class TerminalServer {
     console.log('\nGracefully shutting down...');
     await this.saveSessionsToDisk();
     if (this.autoSaveInterval) clearInterval(this.autoSaveInterval);
+    if (this.sessionGcInterval) clearInterval(this.sessionGcInterval);
     this.close();
     process.exit(0);
   }
@@ -93,11 +257,13 @@ class TerminalServer {
     this.app.use(express.json());
 
     this.app.get('/api/health', (req, res) => {
-      res.json({
-        status: 'ok',
-        claudeSessions: this.claudeSessions.size,
-        activeConnections: this.webSocketConnections.size,
-      });
+      const snapshot = this.getHealthSnapshot(false);
+      res.status(snapshot.status === 'error' ? 503 : 200).json(snapshot);
+    });
+
+    this.app.get('/api/health/deep', (req, res) => {
+      const snapshot = this.getHealthSnapshot(true);
+      res.status(snapshot.status === 'error' ? 503 : 200).json(snapshot);
     });
 
     // Find-or-create a session for a specific subagent (e.g. 'oracle')
@@ -362,6 +528,7 @@ class TerminalServer {
   }
 
   async start() {
+    await this.ready;
     const server = http.createServer(this.app);
 
     this.wss = new WebSocket.Server({ server });
@@ -911,6 +1078,10 @@ class TerminalServer {
   close() {
     this.saveSessionsToDisk();
     if (this.autoSaveInterval) clearInterval(this.autoSaveInterval);
+    if (this.sessionGcInterval) clearInterval(this.sessionGcInterval);
+    process.removeListener('SIGINT', this._handleSigint);
+    process.removeListener('SIGTERM', this._handleSigterm);
+    process.removeListener('beforeExit', this._handleBeforeExit);
     if (this.wss) this.wss.close();
     if (this.server) this.server.close();
 

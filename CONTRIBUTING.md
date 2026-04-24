@@ -10,6 +10,27 @@ Thank you for your interest in contributing to EvoNexus! This document provides 
 - Include steps to reproduce, expected behavior, and actual behavior
 - Include your OS, Python version, and Node.js version
 
+### Cloning the repository
+
+The repository history currently carries legacy PNG avatar blobs that inflate
+a full clone to roughly 290 MB even though the working tree is only ~13 MB.
+Until the one-time history rewrite tracked in [#26](https://github.com/EvolutionAPI/evo-nexus/issues/26)
+lands, we recommend cloning with blob filtering — git fetches objects on
+demand instead of downloading the entire history up front:
+
+```bash
+# Recommended — ~10 MB, full log/blame still work, blobs lazy-load
+git clone --filter=blob:none https://github.com/EvolutionAPI/evo-nexus.git
+
+# Alternative if you only need the working tree (no history) — ~8 MB
+git clone --depth 1 --branch develop https://github.com/EvolutionAPI/evo-nexus.git
+```
+
+Both forms support all normal read operations. `--filter=blob:none` is
+preferred for regular contribution work because `git log`, `git blame` and
+`git show` still function; the first time you access an older blob git
+fetches it on demand.
+
 ### Pull Requests
 
 1. Fork the repository

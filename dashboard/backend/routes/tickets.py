@@ -129,6 +129,7 @@ def list_tickets():
     priorities = request.args.getlist("priority")
     project_id = request.args.get("project_id", type=int)
     goal_id = request.args.get("goal_id", type=int)
+    source_plugin = request.args.get("source_plugin")
     q = request.args.get("q", "").strip()
     display_mode = request.args.get("display_mode", "all")  # threads | issues | all
     limit = min(int(request.args.get("limit", 50)), 500)
@@ -146,6 +147,8 @@ def list_tickets():
         query = query.filter(Ticket.project_id == project_id)
     if goal_id is not None:
         query = query.filter(Ticket.goal_id == goal_id)
+    if source_plugin is not None:
+        query = query.filter(Ticket.source_plugin == source_plugin)
     if display_mode == "threads":
         query = query.filter(Ticket.memory_md_path.isnot(None))
     elif display_mode == "issues":

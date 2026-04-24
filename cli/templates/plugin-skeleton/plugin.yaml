@@ -1,0 +1,33 @@
+id: __SLUG__
+name: My Plugin
+version: 0.1.0
+description: A short description of what this plugin does.
+author: Your Name
+license: MIT
+homepage: https://github.com/your-org/__SLUG__
+
+min_evonexus_version: 0.30.0
+tier: essential
+
+capabilities:
+  - agents
+  # - skills
+  # - rules
+  # - heartbeats
+  # - sql_migrations
+  # - widgets
+  # - claude_hooks
+  # - readonly_data
+
+env_vars_needed: []
+  # - MY_PLUGIN_API_KEY
+
+conflicts: {}
+
+dependencies: {}
+
+# claude_hooks: []
+
+# readonly_data: []
+
+# source_url: https://github.com/your-org/__SLUG__

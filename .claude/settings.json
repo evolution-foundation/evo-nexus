@@ -12,6 +12,16 @@
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/agent-tracker.sh\""
           }
         ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/dashboard/backend/claude_hook_dispatcher.py\" PreToolUse",
+            "_evonexus_managed": true
+          }
+        ]
       }
     ],
     "Stop": [
@@ -21,6 +31,40 @@
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/agent-tracker.sh\""
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/dashboard/backend/claude_hook_dispatcher.py\" Stop",
+            "_evonexus_managed": true
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/dashboard/backend/claude_hook_dispatcher.py\" PostToolUse",
+            "_evonexus_managed": true
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/dashboard/backend/claude_hook_dispatcher.py\" SubagentStop",
+            "_evonexus_managed": true
           }
         ]
       }

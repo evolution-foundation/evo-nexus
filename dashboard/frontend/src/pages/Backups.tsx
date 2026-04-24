@@ -43,10 +43,17 @@ interface BrainRepoStatus {
   repo_url?: string
   repo_owner?: string
   repo_name?: string
+  local_path?: string | null
   last_sync?: string | null
   pending_count?: number
   sync_enabled?: boolean
   last_error?: string | null
+  /** Async job state — the backend pipeline is fire-and-forget. The UI polls
+   *  /api/backups/config every 30 s to detect transitions. */
+  sync_in_progress?: boolean
+  sync_job_kind?: string | null
+  sync_started_at?: string | null
+  cancel_requested?: boolean
 }
 
 function formatSize(bytes: number): string {
@@ -269,12 +276,16 @@ type BackupsTab = 'local' | 's3' | 'brain'
 function DestinationsPanel({
   config,
   onMilestone,
-  milestoneRunning,
+  onCancel,
+  brainBusy,
+  cancelRequested,
   onOpenS3Config,
 }: {
   config: BackupConfig
   onMilestone: () => void
-  milestoneRunning: boolean
+  onCancel: () => void
+  brainBusy: boolean
+  cancelRequested: boolean
   onOpenS3Config: () => void
 }) {
   const { t } = useTranslation()
@@ -454,12 +465,25 @@ function DestinationsPanel({
             <div className="flex items-center gap-2 mt-3">
               <button
                 onClick={onMilestone}
-                disabled={milestoneRunning}
+                disabled={brainBusy}
                 className={`${pillBtn} bg-[#00FFA7]/10 text-[#00FFA7] border border-[#00FFA7]/20 hover:bg-[#00FFA7]/20 disabled:opacity-50`}
+                title={brainBusy ? t('backups.destinations.syncInProgress') : undefined}
               >
-                {milestoneRunning ? <Loader2 size={11} className="animate-spin" /> : <Tag size={11} />}
-                {t('backups.destinations.createMilestone')}
+                {brainBusy ? <Loader2 size={11} className="animate-spin" /> : <Tag size={11} />}
+                {brainBusy
+                  ? (cancelRequested
+                      ? t('backups.destinations.cancelling')
+                      : t('backups.destinations.syncInProgress'))
+                  : t('backups.destinations.createMilestone')}
               </button>
+              {brainBusy && !cancelRequested && (
+                <button
+                  onClick={onCancel}
+                  className={`${pillBtn} border border-[#3a1515] text-[#f87171] hover:bg-[#f87171]/10`}
+                >
+                  {t('backups.destinations.cancel')}
+                </button>
+              )}
               <Link
                 to="/settings/brain-repo"
                 className={`${pillBtn} border border-[#152030] text-[#5a6b7f] hover:text-[#e2e8f0] hover:border-[#1e2a3a]`}
@@ -837,23 +861,47 @@ export default function Backups() {
     }
   }
 
-  const [milestoneRunning, setMilestoneRunning] = useState(false)
+  /** Sync/milestone in progress — derived from the polled config. The local
+   *  flag only covers the tiny window between click and the next poll, so
+   *  the button feels responsive. Once config.brain_repo.sync_in_progress
+   *  flips true the local flag is redundant and gets cleared. */
+  const syncInProgress = !!config?.brain_repo?.sync_in_progress
+  const cancelRequested = !!config?.brain_repo?.cancel_requested
+  const [optimisticSync, setOptimisticSync] = useState(false)
+  const brainBusy = syncInProgress || optimisticSync
   const handleBrainRepoMilestone = async () => {
-    setMilestoneRunning(true)
+    setOptimisticSync(true)
     try {
-      const resp = await api.post('/brain-repo/sync/force') as { ok?: boolean; tag?: string }
-      if (resp?.ok) {
-        toast.success(t('backups.destinations.milestoneCreated', { tag: resp.tag || '' }))
-        // After a successful push, refresh config (last_sync) + snapshots list.
-        fetchData()
-        if (activeTab === 'brain') fetchBrainSnapshots()
-      } else {
-        toast.error(t('backups.destinations.milestoneFailed'))
+      // Server returns 202 Accepted on enqueue. api.post throws on non-2xx,
+      // so 409 (already running) lands in the catch.
+      const resp = await api.post('/brain-repo/sync/force') as { ok?: boolean; status?: string; tag?: string }
+      if (resp?.status === 'queued') {
+        toast.success(t('backups.destinations.syncQueued', { tag: resp.tag || '' }))
       }
+      // Kick an immediate refresh so the "inProgress" badge appears without
+      // waiting for the 30 s poll tick.
+      fetchData()
     } catch (ex: unknown) {
-      toast.error(ex instanceof Error ? ex.message : t('backups.destinations.milestoneFailed'))
+      const msg = ex instanceof Error ? ex.message : t('backups.destinations.milestoneFailed')
+      // 409 SYNC_IN_PROGRESS has the code in the message body — surface as info, not error.
+      if (msg.includes('SYNC_IN_PROGRESS') || msg.includes('409')) {
+        toast.info(t('backups.destinations.syncAlreadyRunning'))
+      } else {
+        toast.error(msg)
+      }
     } finally {
-      setMilestoneRunning(false)
+      // Clear the optimistic flag — next poll will set the real one.
+      setTimeout(() => setOptimisticSync(false), 1500)
+    }
+  }
+
+  const handleBrainRepoCancel = async () => {
+    try {
+      await api.post('/brain-repo/sync/cancel')
+      toast.info(t('backups.destinations.cancelRequested'))
+      fetchData()
+    } catch (ex: unknown) {
+      toast.error(ex instanceof Error ? ex.message : t('backups.destinations.cancelFailed'))
     }
   }
 
@@ -1026,11 +1074,16 @@ export default function Backups() {
           {config?.brain_repo_configured && (
             <button
               onClick={handleBrainRepoMilestone}
-              disabled={milestoneRunning}
+              disabled={brainBusy}
               className="flex items-center gap-2 px-4 py-2 rounded-lg border border-[#21262d] text-[#D0D5DD] hover:bg-[#161b22] transition-colors text-sm disabled:opacity-50"
+              title={brainBusy ? t('backups.destinations.syncInProgress') : undefined}
             >
-              {milestoneRunning ? <Loader2 size={16} className="animate-spin" /> : <GitBranch size={16} />}
-              {t('backups.headerBtn.brainRepo')}
+              {brainBusy ? <Loader2 size={16} className="animate-spin" /> : <GitBranch size={16} />}
+              {brainBusy
+                ? (cancelRequested
+                    ? t('backups.destinations.cancelling')
+                    : t('backups.destinations.syncInProgress'))
+                : t('backups.headerBtn.brainRepo')}
             </button>
           )}
           <button
@@ -1065,7 +1118,9 @@ export default function Backups() {
         <DestinationsPanel
           config={config}
           onMilestone={handleBrainRepoMilestone}
-          milestoneRunning={milestoneRunning}
+          onCancel={handleBrainRepoCancel}
+          brainBusy={brainBusy}
+          cancelRequested={cancelRequested}
           onOpenS3Config={() => setS3ConfigOpen(o => !o)}
         />
       )}

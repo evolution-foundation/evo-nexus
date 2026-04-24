@@ -98,7 +98,13 @@ def list_heartbeats():
     if denied:
         return denied
 
-    heartbeats = Heartbeat.query.all()
+    query = Heartbeat.query
+    # Wave 1.1: optional ?source_plugin=<slug> filter (ADR Step 4)
+    source_plugin = request.args.get("source_plugin")
+    if source_plugin:
+        query = query.filter_by(source_plugin=source_plugin)
+
+    heartbeats = query.all()
     result = []
     for hb in heartbeats:
         d = hb.to_dict()

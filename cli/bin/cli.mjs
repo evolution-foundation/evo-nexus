@@ -58,6 +58,14 @@ function ask(question) {
 async function main() {
   const args = process.argv.slice(2);
 
+  // Subcommand routing — intercept before banner so plugin commands
+  // don't print the installer header.
+  if (args[0] === "plugin") {
+    const { runPlugin } = await import("../src/commands/plugin.mjs");
+    await runPlugin(args.slice(1));
+    process.exit(0);
+  }
+
   if (args.includes("--help") || args.includes("-h")) {
     console.log(`
   Usage: npx @evoapi/evo-nexus [directory]

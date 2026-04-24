@@ -164,18 +164,24 @@ def _walk_dynamic(root_rel: str) -> list[str]:
 def collect_files() -> list[str]:
     """Collect files to back up using two complementary strategies:
 
-    1. Dynamic filesystem walk of `workspace/` and `memory/` — captures
-       anything the user has created (including files that git doesn't
-       explicitly list as ignored, e.g. uploads dropped via the dashboard).
-       Skips sub-directories that contain their own `.git` (those have
-       upstream remotes and backing up blobs duplicates state).
+    1. Dynamic filesystem walk of `workspace/`, `memory/`, and `plugins/` —
+       captures anything the user has created (including dashboard uploads
+       and installed plugin directories). Skips sub-directories that
+       contain their own `.git` (those have upstream remotes and backing
+       up blobs duplicates state).
     2. `git ls-files --others --ignored` for the rest of the repo —
-       captures .env, config/*.yaml, .claude/agent-memory, etc.
+       captures .env, config/*.yaml, .claude/agent-memory, and the
+       namespaced plugin artifacts under .claude/agents/plugin-*,
+       .claude/skills/plugin-*, .claude/rules/plugin-*,
+       .claude/commands/plugin-*.
     """
     files: set[str] = set()
 
     # Strategy 1 — dynamic walk of user-data roots.
-    for root in ("workspace", "memory"):
+    # `plugins/` is listed explicitly so installed plugin artifacts land
+    # in the backup even if an author's file pattern doesn't match
+    # .gitignore (Strategy 2 would miss it in that case).
+    for root in ("workspace", "memory", "plugins"):
         for rel in _walk_dynamic(root):
             if not _should_exclude(rel):
                 files.add(rel)

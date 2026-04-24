@@ -618,6 +618,10 @@ class ChatBridge {
     return { sdkSessionId };
   }
 
+  getSession(sessionId) {
+    return this.sessions.get(sessionId);
+  }
+
   /**
    * Resolve a pending tool approval request.
    * Called by server.js when the user clicks Allow/Deny in the UI.

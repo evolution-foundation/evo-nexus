@@ -81,7 +81,12 @@ def release_expired_locks(app=None) -> int:
 
 
 def _janitor_loop(app):
-    """Background loop — runs release_expired_locks every JANITOR_INTERVAL_SECONDS."""
+    """Background loop — reclaims expired ticket AND brain-repo locks.
+
+    Both share the same 5-min cadence because both reclaim "busy" flags that
+    should never stay set after a crash or OOM-kill. Keeping them in one
+    thread avoids a second daemon with identical semantics.
+    """
     while True:
         time.sleep(JANITOR_INTERVAL_SECONDS)
         try:
@@ -89,6 +94,15 @@ def _janitor_loop(app):
                 release_expired_locks()
         except Exception as exc:
             print(f"[ticket_janitor] loop error: {exc}", flush=True)
+        # Brain-repo stale-lock sweep. Runs in the same context; failures are
+        # isolated so a broken brain_repo import doesn't stop ticket cleanup.
+        try:
+            from brain_repo.job_runner import reclaim_stale_locks
+            reclaim_stale_locks(app)
+        except ImportError:
+            pass  # brain_repo not installed / disabled
+        except Exception as exc:
+            print(f"[ticket_janitor] brain-repo sweep error: {exc}", flush=True)
 
 
 def start_janitor_thread():

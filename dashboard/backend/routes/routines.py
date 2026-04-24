@@ -16,21 +16,53 @@ ROTINAS_DIR = WORKSPACE / "ADWs" / "routines"
 @bp.route("/api/routines")
 def get_routines():
     content = safe_read(METRICS_PATH)
-    if not content:
-        return jsonify({"metrics": {}, "totals": {}})
+    data: dict = {}
+    if content:
+        try:
+            parsed = json.loads(content)
+            if isinstance(parsed, dict):
+                data = parsed
+        except json.JSONDecodeError:
+            data = {}
+
+    # Merge in routines that are declared (ADWs/ or plugins/) but haven't
+    # run yet — so plugin rotinas, custom rotinas recém-adicionadas and
+    # core scripts without history all appear in the UI with zeroed metrics.
     try:
-        data = json.loads(content)
-    except json.JSONDecodeError:
-        return jsonify({"metrics": {}, "totals": {}})
+        from routes._helpers import discover_routines
+        discovered = discover_routines()
+    except Exception:
+        discovered = {}
+
+    for make_id, spec in discovered.items():
+        if make_id in data:
+            # already has execution metrics; enrich with agent/name if missing
+            entry = data[make_id]
+            if isinstance(entry, dict):
+                entry.setdefault("agent", spec.get("agent", ""))
+                entry.setdefault("source_plugin", spec.get("source_plugin"))
+            continue
+        data[make_id] = {
+            "agent": spec.get("agent", ""),
+            "runs": 0,
+            "successes": 0,
+            "success_rate": 0,
+            "avg_seconds": 0,
+            "total_input_tokens": 0,
+            "total_output_tokens": 0,
+            "total_cost_usd": 0.0,
+            "avg_cost_usd": 0.0,
+            "last_run": None,
+            "source_plugin": spec.get("source_plugin"),
+        }
 
     # Calculate totals
     totals = {"total_runs": 0, "total_cost": 0.0, "total_tokens": 0}
-    if isinstance(data, dict):
-        for key, val in data.items():
-            if isinstance(val, dict):
-                totals["total_runs"] += val.get("runs", 0)
-                totals["total_cost"] += val.get("cost", 0.0)
-                totals["total_tokens"] += val.get("tokens", 0)
+    for key, val in data.items():
+        if isinstance(val, dict):
+            totals["total_runs"] += val.get("runs", 0)
+            totals["total_cost"] += val.get("cost", 0.0)
+            totals["total_tokens"] += val.get("tokens", 0)
 
     return jsonify({"metrics": data, "totals": totals})
 

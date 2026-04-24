@@ -68,26 +68,35 @@ def _post(url: str, token: str, payload: dict) -> tuple[int, dict | None]:
 
 
 def detect_brain_repos(token: str) -> list[dict]:
-    """Search for repos that contain a .evo-brain file owned by the authenticated user.
+    """Find repos owned by the authenticated user that carry a ``.evo-brain`` marker.
+
+    Previous implementation used ``/search/code?q=filename:.evo-brain`` which had
+    two bugs in practice: GitHub's code index doesn't reliably include dotfiles,
+    and it lags push events by minutes-to-hours for small/new repos — so a
+    just-connected brain repo would appear to vanish until the index caught up.
+
+    This implementation is deterministic: list the user's private repos, then
+    hit the Contents API for ``.evo-brain`` on each. Costs one extra request
+    per private repo (cheap at ≤100 repos), but the result reflects the
+    current state of the remote, not the indexer.
 
     Returns list of {name, full_name, html_url, private, description}.
     """
-    url = f"{_API_BASE}/search/code?q=filename:.evo-brain+user:@me"
-    status, body, _ = _get(url, token)
-    if status != 200 or not isinstance(body, dict):
-        log.warning("detect_brain_repos: status %d", status)
-        return []
-
+    repos = list_user_repos(token)
     results = []
-    for item in body.get("items", []):
-        repo = item.get("repository", {})
-        results.append({
-            "name": repo.get("name", ""),
-            "full_name": repo.get("full_name", ""),
-            "html_url": repo.get("html_url", ""),
-            "private": repo.get("private", False),
-            "description": repo.get("description", ""),
-        })
+    for repo in repos:
+        full_name = repo.get("full_name", "")
+        if not full_name or "/" not in full_name:
+            continue
+        owner, name = full_name.split("/", 1)
+        contents_url = f"{_API_BASE}/repos/{owner}/{name}/contents/.evo-brain"
+        status, _body, _ = _get(contents_url, token)
+        if status == 200:
+            results.append(repo)
+        elif status not in (200, 404):
+            # 403 rate-limit, 5xx, network hiccup — log and move on, the user
+            # can retry. Don't error the whole listing for one flaky repo.
+            log.debug("detect_brain_repos: %s returned %d", full_name, status)
     return results
 
 

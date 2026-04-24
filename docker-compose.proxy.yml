@@ -1,0 +1,114 @@
+# ============================================================================
+# EvoNexus — docker-compose para instalações atrás de reverse proxy
+#
+# Use este arquivo em vez de docker-compose.hub.yml quando o host já tiver um
+# reverse proxy na frente cuidando do TLS e do roteamento externo — por
+# exemplo: Coolify, Dokploy, Traefik, Caddy, Nginx Proxy Manager.
+#
+# Diferença principal: as portas do dashboard e do terminal-server são
+# declaradas como `expose` (só alcançáveis dentro da rede Docker) em vez de
+# `ports` (mapeadas no host). Isso evita conflito com o proxy que já ocupa
+# 80/443/8080 no host e mantém toda a comunicação externa sob controle do
+# proxy.
+#
+# Requisitos:
+#   - Seu reverse proxy precisa estar na mesma rede Docker que os serviços
+#     abaixo (ou ter acesso a ela). A maioria das ferramentas (Coolify,
+#     Dokploy, Traefik) faz isso automaticamente.
+#   - Roteie 2 rotas públicas pro container `dashboard`:
+#       1. `/`          → porta 8080   (UI + API HTTP)
+#       2. `/terminal`  → porta 32352  (terminal-server, HTTP + WebSocket upgrade)
+#     Alternativamente, publique o terminal em subdomínio separado e use a
+#     env var VITE_TERMINAL_URL (veja README.md) no build do frontend.
+#
+# Uso:
+#   $ curl -O https://raw.githubusercontent.com/EvolutionAPI/evo-nexus/main/docker-compose.proxy.yml
+#   $ docker compose -f docker-compose.proxy.yml up -d
+#
+# Para instalações simples em localhost ou VPS sem reverse proxy,
+# continue usando docker-compose.hub.yml.
+# ============================================================================
+
+services:
+  # Dashboard — Flask + React + terminal embutido + Claude CLI.
+  # Portas expostas apenas dentro da rede Docker; o reverse proxy é quem
+  # publica para o mundo externo.
+  dashboard:
+    image: evoapicloud/evo-nexus-dashboard:latest
+    container_name: evonexus-dashboard
+    expose:
+      - "8080"    # Dashboard (UI + API)
+      - "32352"   # Terminal server (WebSocket)
+    environment:
+      - TZ=America/Sao_Paulo
+      - EVONEXUS_PORT=8080
+      - TERMINAL_SERVER_PORT=32352
+      - FORWARDED_ALLOW_IPS=*
+    volumes:
+      - evonexus_config:/workspace/config
+      - evonexus_workspace:/workspace/workspace
+      - evonexus_dashboard_data:/workspace/dashboard/data
+      - evonexus_memory:/workspace/memory
+      - evonexus_adw_logs:/workspace/ADWs/logs
+      - evonexus_agent_memory:/workspace/.claude/agent-memory
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/api/version"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # Telegram — bot que escuta mensagens e delega para agentes.
+  # Opcional: remova este serviço se não for usar Telegram.
+  telegram:
+    image: evoapicloud/evo-nexus-runtime:latest
+    container_name: evonexus-telegram
+    command: ["claude", "--channels", "plugin:telegram@claude-plugins-official", "--dangerously-skip-permissions"]
+    environment:
+      - TZ=America/Sao_Paulo
+      - REQUIRE_ANTHROPIC_KEY=1
+    volumes:
+      - evonexus_config:/workspace/config
+      - evonexus_workspace:/workspace/workspace
+      - evonexus_memory:/workspace/memory
+      - evonexus_adw_logs:/workspace/ADWs/logs
+      - evonexus_agent_memory:/workspace/.claude/agent-memory
+    stdin_open: true
+    tty: true
+    restart: unless-stopped
+    depends_on:
+      dashboard:
+        condition: service_healthy
+
+  # Scheduler — executa rotinas automáticas (daily, weekly, monthly).
+  # Opcional: remova este serviço se não for usar rotinas automatizadas.
+  scheduler:
+    image: evoapicloud/evo-nexus-runtime:latest
+    container_name: evonexus-scheduler
+    command: ["uv", "run", "python", "scheduler.py"]
+    environment:
+      - TZ=America/Sao_Paulo
+      - REQUIRE_ANTHROPIC_KEY=1
+    volumes:
+      - evonexus_config:/workspace/config
+      - evonexus_workspace:/workspace/workspace
+      - evonexus_memory:/workspace/memory
+      - evonexus_adw_logs:/workspace/ADWs/logs
+      - evonexus_agent_memory:/workspace/.claude/agent-memory
+    restart: unless-stopped
+    depends_on:
+      dashboard:
+        condition: service_healthy
+
+# ----------------------------------------------------------------------------
+# Volumes nomeados — mesmos de docker-compose.hub.yml. Você pode migrar de um
+# arquivo para o outro sem perder dados: os volumes são resolvidos por nome.
+# ----------------------------------------------------------------------------
+volumes:
+  evonexus_config:
+  evonexus_workspace:
+  evonexus_dashboard_data:
+  evonexus_memory:
+  evonexus_adw_logs:
+  evonexus_agent_memory:

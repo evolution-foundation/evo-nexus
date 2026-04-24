@@ -258,6 +258,14 @@ export default function Wizard({ onClose, onCreated }: Props) {
                     onChange={(e) => set('connection_string', e.target.value)}
                     className="w-full bg-[#182230] border border-[#344054] rounded-lg px-3 py-2 text-sm text-[#F9FAFB] placeholder-[#667085] focus:border-[#00FFA7] focus:outline-none font-mono"
                   />
+                  <p className="mt-2 text-[11px] text-[#667085] leading-relaxed">
+                    Using <strong>Supabase / Neon / Railway</strong>? Use the <em>direct</em>{' '}
+                    connection string on port <code className="text-[#D0D5DD]">5432</code>, not the
+                    transaction pooler on <code className="text-[#D0D5DD]">6543</code>. Transaction
+                    pooling (PgBouncer) breaks Alembic migrations,{' '}
+                    <code className="text-[#D0D5DD]">CREATE INDEX … USING hnsw</code>, and
+                    SQLAlchemy prepared statements. Session pooler works if you need pooling.
+                  </p>
                 </div>
               ) : (
                 <div className="grid grid-cols-2 gap-3">

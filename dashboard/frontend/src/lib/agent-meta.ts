@@ -28,9 +28,16 @@ export interface AgentMeta {
   command: string
   label: string
   avatar?: string
+  // Wave 2.0: plugin agents may declare an avatar_url served by the backend
+  avatar_url?: string | null
 }
 
-const AGENT_META: Record<string, AgentMeta> = {
+// ---------------------------------------------------------------------------
+// Static seed — 38 native agents (pre-hydration fallback, covers 100% of
+// natives before the first fetch completes). Contract: getAgentMeta() is
+// always synchronous.
+// ---------------------------------------------------------------------------
+const AGENT_META_SEED: Record<string, AgentMeta> = {
   'atlas-project': { icon: FolderKanban, color: '#60A5FA', command: '/atlas-project', label: 'Projects', avatar: '/avatar/avatar_atlas.webp' },
   'clawdia-assistant': { icon: Brain, color: '#22D3EE', command: '/clawdia', label: 'Operations', avatar: '/avatar/avatar_clawdia.webp' },
   'flux-finance': { icon: DollarSign, color: '#34D399', command: '/flux', label: 'Finance', avatar: '/avatar/avatar_flux.webp' },
@@ -71,6 +78,16 @@ const AGENT_META: Record<string, AgentMeta> = {
   'zen-simplifier': { icon: Bot, color: '#A78BFA', command: '/zen-simplifier', label: 'Code Simplifier', avatar: '/avatar/avatar_zen.webp' },
 }
 
+// ---------------------------------------------------------------------------
+// Wave 2.0: runtime registry — starts as a copy of the seed; hydrated once
+// per session via hydrateAgentMeta(). Merge is additive: seed entries for
+// native agents are never removed.
+// ---------------------------------------------------------------------------
+
+// Module-level mutable registry (not exported — callers use getAgentMeta).
+let _registry: Record<string, AgentMeta> = { ...AGENT_META_SEED }
+let _hydrated = false
+
 const DEFAULT_META: AgentMeta = {
   icon: Bot,
   color: '#00FFA7',
@@ -78,8 +95,59 @@ const DEFAULT_META: AgentMeta = {
   label: 'Agent',
 }
 
+/**
+ * Fetch /api/agent-meta and merge plugin agents into the local registry.
+ *
+ * - Idempotent: second call is a no-op unless `force` is true.
+ * - Never destroys the seed: native agent entries are kept even on fetch error.
+ * - Plugin agents gain `avatar_url` from the backend response.
+ */
+export async function hydrateAgentMeta(force = false): Promise<void> {
+  if (_hydrated && !force) return
+  try {
+    const API = import.meta.env.DEV ? 'http://localhost:8080' : ''
+    const res = await fetch(`${API}/api/agent-meta`, { credentials: 'include' })
+    if (!res.ok) return  // silently keep seed on non-2xx
+    const data: Record<string, { label: string; avatar_url: string | null }> = await res.json()
+    for (const [slug, entry] of Object.entries(data)) {
+      const existing = _registry[slug]
+      if (existing) {
+        // Native agent: update avatar_url (and avatar for AgentAvatar.tsx compat) if backend provides one
+        _registry[slug] = {
+          ...existing,
+          avatar_url: entry.avatar_url ?? existing.avatar_url,
+          avatar: entry.avatar_url ?? existing.avatar,
+        }
+      } else {
+        // Plugin agent: synthesize a new entry with defaults for icon/color/command.
+        // Set both avatar_url (Wave 2.0 field) and avatar (AgentAvatar.tsx reads this).
+        _registry[slug] = {
+          icon: Bot,
+          color: '#00FFA7',
+          command: `/${slug}`,
+          label: entry.label || slug,
+          avatar_url: entry.avatar_url,
+          avatar: entry.avatar_url ?? undefined,
+        }
+      }
+    }
+    _hydrated = true
+  } catch {
+    // Network error — keep seed, don't set _hydrated so next call retries
+  }
+}
+
+/**
+ * Synchronous agent meta lookup.
+ *
+ * Returns the seed entry (or hydrated entry) for native agents.
+ * Returns a synthesized entry for plugin agents after hydration.
+ * Falls back to DEFAULT_META for unknown slugs.
+ *
+ * Contract: always synchronous. Callers in hot render paths (AgentAvatar,
+ * AgentChat) are unaffected.
+ */
 export function getAgentMeta(name: string): AgentMeta {
-  const base = AGENT_META[name] || DEFAULT_META
-  // Always derive command from the slug so custom agents work too
-  return { ...base, command: AGENT_META[name]?.command || `/${name}` }
+  const base = _registry[name] || DEFAULT_META
+  return { ...base, command: _registry[name]?.command || `/${name}` }
 }

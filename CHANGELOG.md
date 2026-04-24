@@ -5,6 +5,62 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.32.0] - 2026-04-24
+
+Minor release introducing the **Plugin System v1** — a full extensibility layer with 15 capabilities, pre-install security scanning, per-capability toggles, update diff previews, and a reference plugin (`pm-essentials`). Ships alongside a security-hardening pass (PRD #37) and a batch of community-reported fixes.
+
+### Added
+
+- **Plugin System v1 — 15 capabilities, security gate, reference plugin (#41)** — end-to-end extensibility: Pydantic-validated manifests, git/zip/local install with SHA-256 integrity check, semver-aware migration runner with rollback, atomic file ops, Claude Code hooks dispatcher (PreToolUse / PostToolUse / Stop / SubagentStop) with per-plugin SQLite circuit breaker, and crash recovery for orphaned installs. Capabilities include agents, skills, commands, rules, routines, heartbeats, widgets, readonly_data, writable_data, claude_hooks, goals, tasks, triggers, MCP servers and custom UI pages. Plugin-contributed rows are tagged with `source_plugin` across `tickets`, `projects`, `goals`, `missions`, `goal_tasks` and `triggers` so uninstall cleans them without touching user data.
+- **Plugins REST API + dashboard UI** — full CRUD (`GET/POST/PATCH/DELETE /api/plugins`), curated marketplace listing, upload endpoint (ZIP / tar.gz, 20 MB cap, zip-slip guard), preview-before-install flow, audit log, and per-plugin widget limits per tier (essential / standard / power). New `/plugins` page with marketplace grid, install wizard (source → security scan → config → confirm), plugin detail with widgets, capabilities toggles, MCP banner, and Update button with diff preview (Wave 1.2). New `/mcp-servers` system page aggregating `~/.claude.json` entries grouped by plugin / native with masked env values.
+- **Plugins CLI (`cli/src/commands/plugin.mjs`)** — `plugin init` (scaffold from template), `plugin install <source>`, `plugin list`, `plugin uninstall <slug>`, `plugin update <slug>`. Starter template under `cli/templates/plugin-skeleton/` ships with a pre-filled `plugin.yaml`, sample agent, and README.
+- **Plugin security scan (Wave 2.5)** — hybrid regex + LLM scanner with 13 pattern categories, 57-domain whitelist, anti-hallucination guard, 7-day cache in `plugin_scan_cache`, and an APPROVE / WARN / BLOCK adaptive button with admin BLOCK override. New `plugin-security-scan` skill exposes the semantic scanner.
+- **Plugin MCP servers (Wave 2.3)** — plugins can declare MCP servers with command whitelist and shell-metachar block; 6-layer atomic write to `~/.claude.json` with flock, timestamped backups (retention 10) and drift detection (name + args_hash match). UI shows a restart-Claude-CLI callout on install and an MCP diff section in update preview.
+- **Plugin integrations (Wave 2.2r)** — plugins can declare env-var-based integrations with optional HTTP health checks running as in-process heartbeats (zero Claude CLI overhead). New Plugin Integrations section on `/integrations` with schema-driven configure modal and secret masking.
+- **Plugin custom UI (Wave 2.1)** — plugins can contribute React pages mounted at `/plugins-ui/:slug/*`, sidebar groups, and writable SQLite resources with column allowlist + jsonschema validation. `window.EvoNexus` SDK injected post-login for plugin frontends.
+- **Plugin per-capability toggles (Wave 1.1)** — granular ON/OFF per capability without uninstalling the plugin. Disable cascades to `.claude/{agents,skills,commands}/plugin-{slug}-*` (rename to `.disabled`), routines skipped by the scheduler, hooks and heartbeats skipped by their dispatchers.
+- **Plugin management skills** — `plugin-install`, `plugin-list`, `plugin-uninstall`, `plugin-update`, `plugin-marketplace`, `plugin-health` expose plugin operations to all agents.
+- **`agent_meta_seed.py`** — 38-agent seed served via `GET /api/agent-meta` (in-process cache + invalidation). Plugin agents contribute metadata via `manifest.metadata.icon` + per-agent avatars; frontend registry (`agent-meta.ts`) is hydrated once post-login and plugin cards render custom icons with img fallback.
+- **Merged routines listing** — `/api/routines` now merges declared routines (via `discover_routines()`) with execution metrics so newly installed plugin routines and unrun core routines show up in `/routines` with zeroed metrics.
+- **`EVONEXUS_DEV=1`** — toggles Flask's auto-reloader (`debug=True`, `use_reloader=True`) for backend development. Default remains off; production uses systemd/docker.
+- **`docker-compose.proxy.yml` (#45)** — sibling compose file for reverse-proxy hosts (Coolify, Dokploy, Traefik, Caddy): uses `expose:` instead of `ports:` so the proxy owns external traffic while containers stay reachable by name inside the Docker network. Volumes named identically to `hub.yml` for no-loss migration.
+- **`docs/knowledge-database.md` (#46)** — provider cheat-sheet for Supabase / Neon / Railway PgBouncer gotchas (port 5432 vs 6543, Supabase IPv6-only edge case, error reference table). Inline hint added under the Knowledge connections wizard input.
+- **`scripts/clean-history.sh` (#26)** — safe-by-default dry-run helper that clones the remote as `--mirror` and previews removal of ~283 MB of orphaned PNG avatar blobs via `git filter-repo --path-regex`. Verifies develop/main HEAD trees are byte-identical and all tags preserved before the maintainer force-pushes. `CONTRIBUTING.md` gains the partial-clone recipe (`git clone --filter=blob:none`) so contributors download ~10 MB instead of ~290 MB in the interim.
+
+### Changed
+
+- **`/api/health/deep` now requires an authenticated admin session** (PRD security hardening, #37) — previously leaked filesystem paths, provider identity, secret-key source, and error details to unauthenticated callers. `/api/health` is now a minimal public liveness probe returning status only. Tooling scraping `/api/health/deep` for internals must authenticate.
+- **Frontend route splitting (#37)** — top-level route bundles are code-split so the main chunk size drops substantially on first load.
+- **Plugin install sources restricted (hardening)** — `resolve_source` now rejects local filesystem paths, `file://`, `ssh://` and non-HTTPS schemes with a clear `ValueError`. Only `github:`, `https://` tarballs, or uploaded ZIP / tar.gz archives are accepted. Closes the doc/code mismatch where the skill promised rejection but the code accepted anything via `Path(s)`.
+- **Plugin triggers ship disabled by default** — regardless of YAML value, unless explicitly `"true"`, so a malicious plugin cannot auto-fire hooks on install.
+- **Telegram notifications moved from skills to routines** — `run_skill(notify_telegram=True)` appends a one-shot send instruction at the end of the prompt, guaranteeing exactly one send per execution (was duplicated when skills embedded the instruction themselves). Skills cleaned: `prod-end-of-day`, `prod-good-morning`, `pulse-faq-sync`, `pulse-daily`.
+- **Integration status verifies all declared env keys (#49)** — `list_integrations` previously checked only a single key per entry, so Evolution API / Evolution Go / Evo CRM showed as "configured" with only the token set (URL missing) or vice-versa. Schema is now `keys: list[str]`; an integration is considered configured only when every declared key is non-empty.
+- **Bling integration keys corrected (#49)** — `BLING_ACCESS_TOKEN` (which existed nowhere in the repo) replaced with `BLING_CLIENT_ID` / `BLING_CLIENT_SECRET` used by the real OAuth2 flow. **Migration:** users who set `BLING_ACCESS_TOKEN` manually must run `make bling-auth` to obtain the OAuth credentials.
+- **Omie integration now requires both `OMIE_APP_KEY` and `OMIE_APP_SECRET`** — backend was only checking the key, so a half-configured Omie appeared green (#49).
+
+### Fixed
+
+- **`scripts/start-services.sh` no longer kills unrelated processes (#18)** — `pkill -f 'python.*app.py'` matched every `app.py` on the host, killing unrelated services. Replaced with an explicit pinned match on the venv interpreter + absolute script path, and TCP 8080 (or `EVONEXUS_PORT`) is now freed directly via `fuser` / `lsof` before restart — falls back to `lsof -ti tcp:$PORT | kill` when `fuser` is absent (BSD-ish / macOS).
+- **Terminal client detects RFC1918 + CGNAT hostnames as local (#35)** — previously only `localhost` / `127.0.0.1` were treated as local, so bare-metal installs behind no reverse proxy fell back to `/terminal` on the same origin, which didn't exist. Heuristic widened to RFC1918 (`10/8`, `172.16/12`, `192.168/16`), RFC6598 CGNAT (`100.64.0.0/10`, common on Brazilian VPS), link-local (`169.254/16`), IPv6 loopback (`::1`), and IPv6 link-local (`fe80:`). New `VITE_TERMINAL_URL` explicit override for edge cases (reverse proxy on a private IP). `deriveWsBase` rewritten to use `URL()` instead of a regex that silently dropped the `https` branch and mangled uppercase schemes.
+- **Plugin uninstall sweeps leftover `plugin-{slug}-*` files** — `reverse_remove_from_manifest` walks `.install-manifest.json`, but if that manifest is missing / corrupt / predates the name-rewrite change, files in `.claude/{agents,skills,rules,commands}/` stayed behind and the next install hit 409. An unconditional sweep runs after the manifest pass.
+- **Plugin install seeds an anchor mission per plugin** — plugins seeding projects without `mission_id` left them orphaned and invisible in `/goals`. Installer now synthesizes one mission per plugin (`plugin-{slug}-root`) when the YAML doesn't declare one and links all orphan projects to it. Missions get `source_plugin` too so uninstall cleans them.
+- **Plugin widget listing reads `ui_entry_points.widgets`** — was reading a non-existent `manifest.manifest.widgets` key and returning `[]` regardless of mount point.
+- **Plugin install falls back to first `migrations/*.sql`** when `migrations/install.sql` is missing, so plugin authors using the `NNN_description.sql` convention don't have to rename.
+- **Plugin skills install as directory trees** — `copy_with_manifest` now copies `skills/<name>/` as a whole directory and rewrites the `name:` field inside `SKILL.md` to match the prefixed dirname, enforcing the Claude Code contract that `name` == filename. Agents / commands / rules similarly get their `name:` frontmatter rewritten.
+- **Plugin `GET /api/plugins/<slug>/audit` endpoint** — was missing, so `PluginDetail.tsx` hit the SPA catch-all, got `index.html` back, and threw `Unexpected token '<'` on JSON parse.
+- **Plugin heartbeat agent references get auto-prefixed** — plugins can declare `assignee_agent: pm-nova` instead of the full `plugin-pm-essentials-pm-nova`; the installer rewrites bare references to match the prefixed file.
+- **Plugin update endpoint now uses `resolve_source`** — works from `github:` / `https://` / uploaded path (was local-only).
+- **`PATCH /api/triggers/<id>`** — the endpoint was simply missing.
+- **Brain Repo sync no longer blocks HTTP requests** — new `brain_repo/job_runner.py` background executor serialises sync / milestone / bootstrap ops. `POST /sync/force`, `/sync/cancel`, `/tag/milestone` now enqueue jobs and return immediately; `GET /status` exposes job state. `/backups` and `/brain-repo` pages poll state and expose a Cancel button (cooperative `cancel_requested` flag checked between git steps).
+- **`ticket_janitor.py`** — guards against `IsADirectoryError` on the health-check path that crashed on certain setups.
+
+### Security
+
+- **Pre-install plugin security scanning** — every plugin installed from an external source runs through a hybrid regex + LLM scanner before any file lands on disk. APPROVE / WARN / BLOCK with admin override + audit trail.
+- **`/api/health/deep` requires admin** — see Changed.
+- **Plugin install sources restricted to HTTPS / github / upload** — see Changed.
+- **Plugin triggers disabled by default** — see Changed.
+
 ## [0.31.0] - 2026-04-24
 
 Minor release introducing the **Brain Repo** — automatic GitHub versioning of workspace memory and customizations — plus a full onboarding wizard and a unified `/backups` page covering Local, S3 and Brain Repo destinations.
