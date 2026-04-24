@@ -248,6 +248,15 @@ MESSAGES = {
         "openai_dashboard_path": "Providers → Login with OpenAI",
         "configure_provider_header": "Configure {name}",
         "multi_select_hint": "Enter keys to toggle (comma-separated), or press Enter to accept:",
+        # Brain Repo (versioning)
+        "brain_repo_enable_prompt": "Enable Brain Repo? (version your memory/workspace to GitHub)",
+        "brain_repo_auth_method": "Authentication method",
+        "brain_repo_defer_to_web": "Configure in web UI later",
+        "brain_repo_pat_instructions": "Create a GitHub PAT at https://github.com/settings/tokens/new?scopes=repo",
+        "brain_repo_pat_prompt": "GitHub Personal Access Token (scope: repo)",
+        "brain_repo_pat_saved": "Brain repo PAT saved. Complete setup in the web UI.",
+        "brain_repo_pat_skipped": "Skipped. You can configure Brain Repo in Settings > Integrations.",
+        "brain_repo_configure_later": "OK! You can connect GitHub in Settings > Integrations.",
     },
     "pt-BR": {
         "choose_lang_prompt": "Choose your language / Escolha seu idioma / Elige tu idioma",
@@ -417,6 +426,15 @@ MESSAGES = {
         "openai_dashboard_path": "Provedores → Login com OpenAI",
         "configure_provider_header": "Configurar {name}",
         "multi_select_hint": "Digite as teclas para alternar (separadas por vírgula), ou Enter para aceitar:",
+        # Brain Repo (versionamento)
+        "brain_repo_enable_prompt": "Ativar Brain Repo? (versione sua memória/workspace no GitHub)",
+        "brain_repo_auth_method": "Método de autenticação",
+        "brain_repo_defer_to_web": "Configurar pela interface web depois",
+        "brain_repo_pat_instructions": "Crie um PAT do GitHub em https://github.com/settings/tokens/new?scopes=repo",
+        "brain_repo_pat_prompt": "Token de Acesso Pessoal do GitHub (escopo: repo)",
+        "brain_repo_pat_saved": "PAT do Brain Repo salvo. Conclua a configuração pela interface web.",
+        "brain_repo_pat_skipped": "Pulado. Configure o Brain Repo em Configurações > Integrações.",
+        "brain_repo_configure_later": "Certo! Conecte o GitHub em Configurações > Integrações.",
     },
     "es": {
         "choose_lang_prompt": "Choose your language / Escolha seu idioma / Elige tu idioma",
@@ -586,6 +604,15 @@ MESSAGES = {
         "openai_dashboard_path": "Proveedores → Iniciar sesión con OpenAI",
         "configure_provider_header": "Configurar {name}",
         "multi_select_hint": "Escribe las teclas para alternar (separadas por coma), o Enter para aceptar:",
+        # Brain Repo (control de versiones)
+        "brain_repo_enable_prompt": "¿Activar Brain Repo? (versiona tu memoria/workspace en GitHub)",
+        "brain_repo_auth_method": "Método de autenticación",
+        "brain_repo_defer_to_web": "Configurar en la interfaz web después",
+        "brain_repo_pat_instructions": "Crea un PAT de GitHub en https://github.com/settings/tokens/new?scopes=repo",
+        "brain_repo_pat_prompt": "Token de Acceso Personal de GitHub (alcance: repo)",
+        "brain_repo_pat_saved": "PAT del Brain Repo guardado. Completa la configuración en la interfaz web.",
+        "brain_repo_pat_skipped": "Omitido. Configura Brain Repo en Ajustes > Integraciones.",
+        "brain_repo_configure_later": "¡De acuerdo! Conecta GitHub en Ajustes > Integraciones.",
     },
 }
 
@@ -1267,6 +1294,109 @@ def ask_bool(prompt: str, default: bool = True) -> bool:
     return val in ("y", "yes", "1", "true")
 
 
+def ask_password(prompt: str) -> str:
+    """Read a password/token without echoing it to the terminal."""
+    import getpass
+    try:
+        val = getpass.getpass(f"  {CYAN}>{RESET} {prompt}: ")
+    except (EOFError, KeyboardInterrupt):
+        print()
+        val = ""
+    return val.strip()
+
+
+def ask_choice(prompt: str, options: list[str], default: int = 0) -> str:
+    """Present a numbered list and return the chosen option string."""
+    print(f"\n  {prompt}")
+    for i, opt in enumerate(options, 1):
+        print(f"    {BOLD}{i}{RESET}) {opt}")
+    raw = ask(f"Choice (1-{len(options)})", str(default + 1))
+    try:
+        idx = int(raw) - 1
+        if 0 <= idx < len(options):
+            return options[idx]
+    except (ValueError, TypeError):
+        pass
+    return options[default]
+
+
+def _ensure_brain_master_key() -> None:
+    """Generate BRAIN_REPO_MASTER_KEY in .env if not already present."""
+    env_file = WORKSPACE / ".env"
+    existing = env_file.read_text(encoding="utf-8") if env_file.exists() else ""
+    if "BRAIN_REPO_MASTER_KEY" in existing:
+        return
+    try:
+        from cryptography.fernet import Fernet
+        key = Fernet.generate_key().decode()
+        with open(env_file, "a", encoding="utf-8") as f:
+            f.write(f"\nBRAIN_REPO_MASTER_KEY={key}\n")
+        # Expose to current process so _save_brain_repo_pat can use it
+        os.environ["BRAIN_REPO_MASTER_KEY"] = key
+        print(f"  {GREEN}✓{RESET} BRAIN_REPO_MASTER_KEY generated")
+    except ImportError:
+        print(f"  {YELLOW}!{RESET} cryptography not installed — skipping key generation")
+
+
+def _save_brain_repo_pat(pat: str) -> None:
+    """Save encrypted PAT to brain_repo_configs table for user_id=1 (first admin)."""
+    import sqlite3
+    master_key = os.environ.get("BRAIN_REPO_MASTER_KEY", "").encode()
+    if not master_key:
+        print(f"  {YELLOW}!{RESET} BRAIN_REPO_MASTER_KEY not set — PAT not saved")
+        return
+    try:
+        from cryptography.fernet import Fernet
+        encrypted = Fernet(master_key).encrypt(pat.encode())
+    except Exception as exc:
+        print(f"  {YELLOW}!{RESET} Encryption failed: {exc}")
+        return
+
+    db_path = WORKSPACE / "dashboard" / "data" / "evonexus.db"
+    if not db_path.exists():
+        # DB created when the backend starts; store the PAT in a temp file
+        # that the backend will import on first boot.
+        pat_pending = WORKSPACE / "dashboard" / "data" / "brain_repo_pat_pending.enc"
+        pat_pending.parent.mkdir(parents=True, exist_ok=True)
+        pat_pending.write_bytes(encrypted)
+        print(f"  {DIM}  PAT queued — will be imported when dashboard starts{RESET}")
+        return
+
+    try:
+        conn = sqlite3.connect(str(db_path))
+        cur = conn.cursor()
+        # Ensure the table exists (migration may not have run yet)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS brain_repo_configs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL UNIQUE,
+                github_token_encrypted BLOB,
+                repo_url TEXT,
+                repo_owner TEXT,
+                repo_name TEXT,
+                local_path TEXT,
+                last_sync TIMESTAMP,
+                sync_enabled INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT,
+                pending_count INTEGER NOT NULL DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        # Insert or update for the first user (id=1)
+        cur.execute("""
+            INSERT INTO brain_repo_configs (user_id, github_token_encrypted, updated_at)
+            VALUES (1, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(user_id) DO UPDATE SET
+                github_token_encrypted=excluded.github_token_encrypted,
+                updated_at=CURRENT_TIMESTAMP
+        """, (encrypted,))
+        conn.commit()
+        conn.close()
+    except Exception as exc:
+        print(f"  {YELLOW}!{RESET} Could not save PAT to database: {exc}")
+
+
 def ask_multi(prompt: str, options: list[dict], defaults: list[str] = None) -> list[str]:
     """Multi-select with checkboxes."""
     if defaults is None:
@@ -1738,6 +1868,28 @@ def main():
         # Provider choice
         print(f"  {BOLD}{T('ai_provider')}{RESET}")
         provider_choice = choose_provider()
+        print()
+
+        # ── Brain Repo (versioning) ────────────────────────
+        brain_repo_enabled = ask_bool(T("brain_repo_enable_prompt"), default=False)
+        if brain_repo_enabled:
+            brain_method = ask_choice(
+                T("brain_repo_auth_method"),
+                options=["PAT", T("brain_repo_defer_to_web")],
+            )
+            if brain_method == "PAT":
+                print(f"\n{T('brain_repo_pat_instructions')}")
+                pat = ask_password(T("brain_repo_pat_prompt"))
+                if pat:
+                    # Generate BRAIN_REPO_MASTER_KEY if not in env
+                    _ensure_brain_master_key()
+                    # Save PAT — will be completed in the web wizard
+                    _save_brain_repo_pat(pat)
+                    print(f"\n{T('brain_repo_pat_saved')}")
+                else:
+                    print(T("brain_repo_pat_skipped"))
+            else:
+                print(f"\n{T('brain_repo_configure_later')}")
         print()
 
         # Who are you?

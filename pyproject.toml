@@ -27,6 +27,7 @@ dependencies = [
     "google-genai>=0.3",
     "anthropic>=0.25",
     "marker-pdf>=1.6.1",
+    "watchdog>=4.0",
     "sqlparse>=0.4,<1.0",
 ]
 

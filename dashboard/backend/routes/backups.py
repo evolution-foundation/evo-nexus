@@ -310,7 +310,7 @@ def download_s3_backup(key):
 
 @bp.route("/api/backups/config")
 def backup_config():
-    """Return backup configuration (S3 status, etc)."""
+    """Return backup configuration (Local always, S3 + Brain Repo if configured)."""
     denied = _require("config", "view")
     if denied:
         return denied
@@ -324,9 +324,36 @@ def backup_config():
     except ImportError:
         boto3_available = False
 
+    # Brain Repo status — best-effort. Hidden from response if user has no
+    # config yet (so the UI can render a 'not configured' card without
+    # depending on a 404 path). Returned object mirrors BrainRepoConfig.to_dict.
+    brain_repo_configured = False
+    brain_repo_info = None
+    try:
+        from models import BrainRepoConfig
+        cfg = BrainRepoConfig.query.filter_by(user_id=current_user.id).first()
+        if cfg is not None and cfg.github_token_encrypted:
+            brain_repo_configured = True
+            brain_repo_info = cfg.to_dict()
+    except Exception:
+        # Fail open — if BrainRepoConfig isn't migrated yet, just hide the section
+        pass
+
+    # Crypto-readiness — the UI uses this to render a warning if the brain
+    # repo has a config but the server can't actually encrypt/decrypt tokens
+    # right now (e.g. master key lost, cryptography module missing).
+    try:
+        from brain_repo import is_crypto_ready
+        brain_crypto_ready = is_crypto_ready()
+    except Exception:
+        brain_crypto_ready = False
+
     return jsonify({
         "s3_configured": s3_configured,
         "s3_bucket": s3_bucket,
         "boto3_available": boto3_available,
         "backups_dir": str(BACKUPS_DIR.relative_to(WORKSPACE)),
+        "brain_repo_configured": brain_repo_configured,
+        "brain_repo": brain_repo_info,
+        "brain_crypto_ready": brain_crypto_ready,
     })
