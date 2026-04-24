@@ -25,10 +25,27 @@ fi
 # Ensure logs dir exists (fresh installs / reboots after manual cleanup)
 mkdir -p "$SCRIPT_DIR/logs"
 
-# Kill existing services (including scheduler)
+# Kill existing services (including scheduler).
+#
+# The Python patterns used to be `python.*app.py` and `python.*scheduler.py`,
+# which match *any* `app.py` or `scheduler.py` run in Python anywhere on the
+# host — not just ours. On a machine with multiple projects (reported in
+# issue #18) that would kill unrelated processes. Prefer to target the Flask
+# listener by its actual port; fall back to a strict pattern pinned to the
+# Python binary we spawn and the absolute script path so at worst we match
+# siblings inside this repo, never strangers.
 pkill -f 'terminal-server/bin/server.js' 2>/dev/null
-pkill -f 'python.*app.py' 2>/dev/null
-pkill -f 'python.*scheduler.py' 2>/dev/null
+DASHBOARD_PORT="${EVONEXUS_PORT:-8080}"
+if command -v fuser >/dev/null 2>&1; then
+  fuser -k -n tcp "$DASHBOARD_PORT" 2>/dev/null || true
+elif command -v lsof >/dev/null 2>&1; then
+  pids=$(lsof -ti "tcp:$DASHBOARD_PORT" 2>/dev/null || true)
+  [ -n "$pids" ] && kill $pids 2>/dev/null || true
+fi
+# Also kill by pinned interpreter + absolute script path (no generic python wildcard).
+VENV_PY="$SCRIPT_DIR/.venv/bin/python"
+pkill -f "$VENV_PY $SCRIPT_DIR/dashboard/backend/app.py" 2>/dev/null || true
+pkill -f "$VENV_PY $SCRIPT_DIR/scheduler.py" 2>/dev/null || true
 sleep 1
 
 # Start terminal-server (must run FROM the project root for agent discovery)

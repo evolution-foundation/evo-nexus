@@ -25,22 +25,32 @@ SKILLS_DIR = WORKSPACE / ".claude" / "skills"
 PLUGINS_DIR = WORKSPACE / "plugins"
 DB_PATH = WORKSPACE / "dashboard" / "data" / "dashboard.db"
 
+#
+# Each entry declares the env vars that must all be set for the integration to
+# be considered "configured". When only one key matters (e.g. a bare token),
+# pass a single-element list. `prefix: True` switches the semantics so that
+# configured = at least one env var starts with any of the listed prefixes —
+# used for multi-account integrations (YouTube/Instagram/LinkedIn/AI Image).
+#
+# Keep this list in sync with `dashboard/frontend/src/lib/integrationMeta.ts`
+# — that file owns the UI schema (labels, hints, ordering) and declares the
+# same env keys for each integration.
 INTEGRATIONS = [
-    {"name": "Omie", "key": "OMIE_APP_KEY", "category": "erp"},
-    {"name": "Bling", "key": "BLING_ACCESS_TOKEN", "category": "erp"},
-    {"name": "Stripe", "key": "STRIPE_SECRET_KEY", "category": "payments"},
-    {"name": "Asaas", "key": "ASAAS_API_KEY", "category": "payments"},
-    {"name": "Todoist", "key": "TODOIST_API_TOKEN", "category": "productivity"},
-    {"name": "Fathom", "key": "FATHOM_API_KEY", "category": "meetings"},
-    {"name": "Discord", "key": "DISCORD_BOT_TOKEN", "category": "community"},
-    {"name": "Telegram", "key": "TELEGRAM_BOT_TOKEN", "category": "messaging"},
-    {"name": "YouTube", "key": "SOCIAL_YOUTUBE_", "category": "social", "prefix": True},
-    {"name": "Instagram", "key": "SOCIAL_INSTAGRAM_", "category": "social", "prefix": True},
-    {"name": "LinkedIn", "key": "SOCIAL_LINKEDIN_", "category": "social", "prefix": True},
-    {"name": "Evolution API", "key": "EVOLUTION_API_KEY", "category": "messaging"},
-    {"name": "Evolution Go", "key": "EVOLUTION_GO_KEY", "category": "messaging"},
-    {"name": "Evo CRM", "key": "EVO_CRM_TOKEN", "category": "crm"},
-    {"name": "AI Image Creator", "key": "AI_IMG_CREATOR_", "category": "creative", "prefix": True},
+    {"name": "Omie", "keys": ["OMIE_APP_KEY", "OMIE_APP_SECRET"], "category": "erp"},
+    {"name": "Bling", "keys": ["BLING_CLIENT_ID", "BLING_CLIENT_SECRET"], "category": "erp"},
+    {"name": "Stripe", "keys": ["STRIPE_SECRET_KEY"], "category": "payments"},
+    {"name": "Asaas", "keys": ["ASAAS_API_KEY"], "category": "payments"},
+    {"name": "Todoist", "keys": ["TODOIST_API_TOKEN"], "category": "productivity"},
+    {"name": "Fathom", "keys": ["FATHOM_API_KEY"], "category": "meetings"},
+    {"name": "Discord", "keys": ["DISCORD_BOT_TOKEN"], "category": "community"},
+    {"name": "Telegram", "keys": ["TELEGRAM_BOT_TOKEN"], "category": "messaging"},
+    {"name": "YouTube", "keys": ["SOCIAL_YOUTUBE_"], "category": "social", "prefix": True},
+    {"name": "Instagram", "keys": ["SOCIAL_INSTAGRAM_"], "category": "social", "prefix": True},
+    {"name": "LinkedIn", "keys": ["SOCIAL_LINKEDIN_"], "category": "social", "prefix": True},
+    {"name": "Evolution API", "keys": ["EVOLUTION_API_KEY", "EVOLUTION_API_URL"], "category": "messaging"},
+    {"name": "Evolution Go", "keys": ["EVOLUTION_GO_KEY", "EVOLUTION_GO_URL"], "category": "messaging"},
+    {"name": "Evo CRM", "keys": ["EVO_CRM_TOKEN", "EVO_CRM_URL"], "category": "crm"},
+    {"name": "AI Image Creator", "keys": ["AI_IMG_CREATOR_"], "category": "creative", "prefix": True},
     # Note: LLM providers (OpenAI, Anthropic, Gemini) are NOT listed here.
     # Agents/classifiers use Claude Code as the runner (subprocess); Knowledge
     # embedder accepts OpenAI as an opt-in via Knowledge Settings.
@@ -342,10 +352,17 @@ def _remove_env_section(env_path: Path, comment: str) -> list[str]:
 def list_integrations():
     results = []
     for integ in INTEGRATIONS:
+        keys = integ["keys"]
         if integ.get("prefix"):
-            configured = any(k.startswith(integ["key"]) for k in os.environ)
+            # At least one env var starts with any of the declared prefixes.
+            configured = any(
+                any(name.startswith(p) for p in keys) for name in os.environ
+            )
         else:
-            configured = bool(os.environ.get(integ["key"]))
+            # All declared keys must be non-empty. Evolution Go / Evo CRM need
+            # both the token and the base URL — a half-configured integration
+            # is not "connected".
+            configured = all(bool(os.environ.get(k)) for k in keys)
 
         results.append({
             "name": integ["name"],
