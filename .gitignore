@@ -59,7 +59,6 @@ dashboard/backend/*.db-shm
 dashboard/backend/*.db-wal
 dashboard/frontend/node_modules/
 dashboard/terminal-server/node_modules/
-dashboard/terminal-server/package-lock.json
 dashboard/frontend/dist/
 
 # ── Evo Method (separate project) ────────

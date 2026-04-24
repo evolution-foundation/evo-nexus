@@ -5,6 +5,13 @@ from functools import wraps
 from flask import Blueprint, request, jsonify, abort
 from flask_login import login_user, logout_user, login_required, current_user
 from models import db, User, AuditLog, Role, BrainRepoConfig, has_permission, audit, needs_setup, needs_onboarding, get_role_permissions, get_role_agent_access, get_role_workspace_folders, ALL_RESOURCES, AGENT_LAYERS
+from auth_security import (
+    clear_login_throttles,
+    get_active_login_lockout,
+    normalize_login_key,
+    password_policy_violations,
+    record_login_failure,
+)
 
 bp = Blueprint("auth", __name__)
 
@@ -24,6 +31,22 @@ def require_permission(resource, action):
     return decorator
 
 
+def _require_password_strength(password: str, *, username: str = "", email: str = ""):
+    violations = password_policy_violations(password, username=username, email=email)
+    if violations:
+        abort(400, description="; ".join(violations))
+
+
+def _lockout_description(lock_until: datetime) -> str:
+    remaining = max(0, int((lock_until - datetime.now(timezone.utc)).total_seconds()))
+    minutes = max(1, (remaining + 59) // 60)
+    return f"Too many login attempts. Try again in {minutes} minute(s)."
+
+
+def _as_text(value) -> str:
+    return "" if value is None else str(value)
+
+
 # ── Setup (first run only) ───────────────────────────
 
 @bp.route("/api/auth/needs-setup")
@@ -40,17 +63,16 @@ def setup():
     if not data:
         abort(400, description="Missing JSON body")
 
-    username = data.get("username", "").strip()
-    email = data.get("email", "").strip()
-    display_name = data.get("display_name", "").strip()
-    password = data.get("password", "")
+    username = _as_text(data.get("username")).strip()
+    email = _as_text(data.get("email")).strip()
+    display_name = _as_text(data.get("display_name")).strip()
+    password = _as_text(data.get("password"))
 
     if not username or not password:
         abort(400, description="Username and password are required")
     if not email:
         abort(400, description="Email is required for license registration")
-    if len(password) < 6:
-        abort(400, description="Password must be at least 6 characters")
+    _require_password_strength(password, username=username, email=email)
 
     # Save workspace config if provided
     workspace_data = data.get("workspace")
@@ -147,23 +169,48 @@ def login():
     if not data:
         abort(400)
 
-    username = data.get("username", "")
-    password = data.get("password", "")
+    username = _as_text(data.get("username")).strip()
+    password = _as_text(data.get("password"))
+    normalized_username = normalize_login_key(username)
+
+    if not username or not password:
+        abort(400, description="Username and password are required")
+
+    lock_until = get_active_login_lockout(normalized_username, request.remote_addr)
+    if lock_until and lock_until > datetime.now(timezone.utc):
+        audit(
+            None,
+            "login_locked",
+            detail=f"username={normalized_username or '<empty>'}; ip={request.remote_addr or '<unknown>'}",
+        )
+        abort(429, description=_lockout_description(lock_until))
 
     user = User.query.filter_by(username=username, is_active=True).first()
     if not user or not user.check_password(password):
-        # Log failed attempt
+        lock_until = record_login_failure(normalized_username, request.remote_addr)
         entry = AuditLog(
             username=username,
             action="login_failed",
             ip_address=request.remote_addr,
         )
         db.session.add(entry)
+        if lock_until and lock_until > datetime.now(timezone.utc):
+            db.session.add(
+                AuditLog(
+                    username=username,
+                    action="login_locked",
+                    ip_address=request.remote_addr,
+                    detail=_lockout_description(lock_until),
+                )
+            )
+            db.session.commit()
+            abort(429, description=_lockout_description(lock_until))
         db.session.commit()
         abort(401, description="Invalid username or password")
 
     login_user(user, remember=True)
     user.last_login = datetime.now(timezone.utc)
+    clear_login_throttles(normalized_username, request.remote_addr)
     db.session.commit()
 
     audit(user, "login")
@@ -207,14 +254,13 @@ def me():
 @bp.route("/api/auth/change-password", methods=["POST"])
 @login_required
 def change_password():
-    data = request.get_json()
-    old_pw = data.get("old_password", "")
-    new_pw = data.get("new_password", "")
+    data = request.get_json() or {}
+    old_pw = _as_text(data.get("old_password"))
+    new_pw = _as_text(data.get("new_password"))
 
     if not current_user.check_password(old_pw):
         abort(400, description="Current password is incorrect")
-    if len(new_pw) < 6:
-        abort(400, description="New password must be at least 6 characters")
+    _require_password_strength(new_pw, username=current_user.username, email=current_user.email or "")
 
     current_user.set_password(new_pw)
     db.session.commit()
@@ -236,9 +282,9 @@ def list_users():
 @login_required
 @require_permission("users", "manage")
 def create_user():
-    data = request.get_json()
-    username = data.get("username", "").strip()
-    password = data.get("password", "")
+    data = request.get_json() or {}
+    username = _as_text(data.get("username")).strip()
+    password = _as_text(data.get("password"))
     role = data.get("role", "viewer")
 
     if not username or not password:
@@ -248,11 +294,12 @@ def create_user():
     valid_roles = [r.name for r in Role.query.all()]
     if role not in valid_roles:
         abort(400, description=f"Invalid role. Valid: {', '.join(valid_roles)}")
+    _require_password_strength(password, username=username, email=_as_text(data.get("email")).strip())
 
     user = User(
         username=username,
-        email=data.get("email", "").strip() or None,
-        display_name=data.get("display_name", "").strip() or username,
+        email=_as_text(data.get("email")).strip() or None,
+        display_name=_as_text(data.get("display_name")).strip() or username,
         role=role,
         created_by=current_user.id,
     )
@@ -269,12 +316,12 @@ def create_user():
 @require_permission("users", "manage")
 def update_user(user_id):
     user = User.query.get_or_404(user_id)
-    data = request.get_json()
+    data = request.get_json() or {}
 
     if "display_name" in data:
-        user.display_name = data["display_name"]
+        user.display_name = _as_text(data["display_name"]).strip()
     if "email" in data:
-        user.email = data["email"] or None
+        user.email = _as_text(data["email"]).strip() or None
     valid_roles = [r.name for r in Role.query.all()]
     if "role" in data and data["role"] in valid_roles:
         if user.id == current_user.id and data["role"] != user.role:
@@ -285,7 +332,9 @@ def update_user(user_id):
     if "is_active" in data:
         user.is_active = data["is_active"]
     if "password" in data and data["password"]:
-        user.set_password(data["password"])
+        new_password = _as_text(data["password"])
+        _require_password_strength(new_password, username=user.username, email=user.email or "")
+        user.set_password(new_password)
 
     db.session.commit()
     return jsonify(user.to_dict())

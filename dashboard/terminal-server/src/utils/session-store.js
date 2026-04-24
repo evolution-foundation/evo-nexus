@@ -1,12 +1,16 @@
 const fs = require('fs').promises;
+const fsSync = require('fs');
 const path = require('path');
 const os = require('os');
 
 class SessionStore {
-    constructor() {
+    constructor(options = {}) {
         // Store sessions in user's home directory
-        this.storageDir = path.join(os.homedir(), '.claude-code-web');
+        this.storageDir = options.storageDir || path.join(os.homedir(), '.claude-code-web');
         this.sessionsFile = path.join(this.storageDir, 'sessions.json');
+        this.sessionTtlMs = options.sessionTtlMs ?? (24 * 60 * 60 * 1000);
+        this.maxFileAgeDays = options.maxFileAgeDays ?? 7;
+        fsSync.mkdirSync(this.storageDir, { recursive: true });
         this.initializeStorage();
     }
 
@@ -23,38 +27,42 @@ class SessionStore {
         try {
             // Ensure storage directory exists
             await fs.mkdir(this.storageDir, { recursive: true });
+
+            const now = Date.now();
             
             // Convert Map to array for JSON serialization
-            const sessionsArray = Array.from(sessions.entries()).map(([id, session]) => ({
-                id,
-                name: session.name || 'Unnamed Session',
-                created: session.created || new Date(),
-                lastActivity: session.lastActivity || new Date(),
-                workingDir: session.workingDir || process.cwd(),
-                agentName: session.agentName || null,
-                active: false, // Always set to false when saving (processes won't persist)
-                outputBuffer: Array.isArray(session.outputBuffer) ? session.outputBuffer.slice(-100) : [], // Keep last 100 lines
-                connections: [], // Clear connections (they won't persist)
-                lastAccessed: session.lastAccessed || Date.now(),
-                // Chat mode data
-                mode: session.mode || null,
-                chatHistory: Array.isArray(session.chatHistory) ? session.chatHistory.slice(-50) : [], // Keep last 50 messages
-                sdkSessionId: session.sdkSessionId || null,
-                // Ticket binding (Feature 1.3)
-                ticketId: session.ticketId || null,
-                // Archive flag
-                archived: session.archived || false,
-                // Session-specific usage tracking
-                sessionStartTime: session.sessionStartTime || null,
-                sessionUsage: session.sessionUsage || {
-                    requests: 0,
-                    inputTokens: 0,
-                    outputTokens: 0,
-                    cacheTokens: 0,
-                    totalCost: 0,
-                    models: {}
-                }
-            }));
+            const sessionsArray = Array.from(sessions.entries())
+                .filter(([, session]) => !this.isSessionStale(session, now))
+                .map(([id, session]) => ({
+                    id,
+                    name: session.name || 'Unnamed Session',
+                    created: session.created || new Date(),
+                    lastActivity: session.lastActivity || new Date(),
+                    workingDir: session.workingDir || process.cwd(),
+                    agentName: session.agentName || null,
+                    active: false, // Always set to false when saving (processes won't persist)
+                    outputBuffer: Array.isArray(session.outputBuffer) ? session.outputBuffer.slice(-100) : [], // Keep last 100 lines
+                    connections: [], // Clear connections (they won't persist)
+                    lastAccessed: session.lastAccessed || Date.now(),
+                    // Chat mode data
+                    mode: session.mode || null,
+                    chatHistory: Array.isArray(session.chatHistory) ? session.chatHistory.slice(-50) : [], // Keep last 50 messages
+                    sdkSessionId: session.sdkSessionId || null,
+                    // Ticket binding (Feature 1.3)
+                    ticketId: session.ticketId || null,
+                    // Archive flag
+                    archived: session.archived || false,
+                    // Session-specific usage tracking
+                    sessionStartTime: session.sessionStartTime || null,
+                    sessionUsage: session.sessionUsage || {
+                        requests: 0,
+                        inputTokens: 0,
+                        outputTokens: 0,
+                        cacheTokens: 0,
+                        totalCost: 0,
+                        models: {}
+                    }
+                }));
 
             const data = {
                 version: '1.0',
@@ -115,7 +123,7 @@ class SessionStore {
                 const now = new Date();
                 const daysSinceSave = (now - savedAt) / (1000 * 60 * 60 * 24);
                 
-                if (daysSinceSave > 7) {
+                if (daysSinceSave > this.maxFileAgeDays) {
                     console.log('Sessions are too old, starting fresh');
                     return new Map();
                 }
@@ -123,8 +131,14 @@ class SessionStore {
 
             // Convert array back to Map
             const sessions = new Map();
+            let droppedStale = 0;
             for (const session of parsed.sessions) {
                 if (!session || !session.id) continue; // Skip invalid sessions
+
+                if (this.isSessionStale(session, Date.now(), parsed.savedAt)) {
+                    droppedStale += 1;
+                    continue;
+                }
                 
                 // Synthesize uuids for legacy chatHistory entries that lack them
                 const chatHistory = (session.chatHistory || []).map((msg, i) => {
@@ -152,6 +166,9 @@ class SessionStore {
                 });
             }
 
+            if (droppedStale > 0) {
+                console.log(`Dropped ${droppedStale} stale sessions from disk`);
+            }
             console.log(`Restored ${sessions.size} sessions from disk`);
             return sessions;
         } catch (error) {
@@ -196,6 +213,31 @@ class SessionStore {
                 error: error.message
             };
         }
+    }
+
+    _sessionTouchTimestamp(session, fallbackSavedAt = null) {
+        const candidates = [
+            session?.lastActivity,
+            session?.lastAccessed,
+            session?.created,
+            fallbackSavedAt,
+        ];
+        for (const candidate of candidates) {
+            if (candidate === null || candidate === undefined || candidate === '') continue;
+            const value = candidate instanceof Date ? candidate.getTime() : new Date(candidate).getTime();
+            if (Number.isFinite(value)) return value;
+        }
+        return null;
+    }
+
+    isSessionStale(session, now = Date.now(), fallbackSavedAt = null) {
+        if (!session || session.archived || session.active) return false;
+        if (session.connections instanceof Set ? session.connections.size > 0 : Array.isArray(session.connections) && session.connections.length > 0) {
+            return false;
+        }
+        const lastTouch = this._sessionTouchTimestamp(session, fallbackSavedAt);
+        if (lastTouch === null) return false;
+        return (now - lastTouch) > this.sessionTtlMs;
     }
 }
 

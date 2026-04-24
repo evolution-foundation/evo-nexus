@@ -3,6 +3,7 @@
 import os
 import sys
 import secrets
+import re
 from pathlib import Path
 from datetime import timedelta
 
@@ -20,10 +21,32 @@ load_dotenv(WORKSPACE / ".env")
 # Add social-auth to path
 sys.path.insert(0, str(WORKSPACE / "social-auth"))
 
+
+def _is_production() -> bool:
+    env = (
+        os.environ.get("EVONEXUS_ENV")
+        or os.environ.get("FLASK_ENV")
+        or os.environ.get("ENV")
+        or ""
+    ).strip().lower()
+    return env in {"production", "prod"}
+
+
+def _cors_allowed_origins():
+    raw = os.environ.get("CORS_ALLOWED_ORIGINS", "").strip()
+    if raw:
+        if raw == "*":
+            return "*"
+        origins = [origin.strip() for origin in re.split(r"[,\s]+", raw) if origin.strip()]
+        return origins or "*"
+    return "*" if not _is_production() else []
+
 app = Flask(__name__, static_folder=None)
 # Persist secret key so sessions survive restarts
 _secret_key = os.environ.get("EVONEXUS_SECRET_KEY")
 if not _secret_key:
+    if _is_production():
+        raise RuntimeError("EVONEXUS_SECRET_KEY must be set in production")
     _key_file = WORKSPACE / "dashboard" / "data" / ".secret_key"
     _key_file.parent.mkdir(parents=True, exist_ok=True)
     if _key_file.exists():
@@ -68,7 +91,7 @@ except AttributeError:
     # Flask <2.2 exposed this through app.config; keep compatibility.
     app.config["JSON_AS_ASCII"] = False
 
-CORS(app, origins=["http://localhost:5173"], supports_credentials=True)
+CORS(app, origins=_cors_allowed_origins(), supports_credentials=True)
 
 # --------------- Database ---------------
 from models import db, User, BrainRepoConfig, needs_setup, seed_roles, seed_systems
@@ -720,6 +743,7 @@ PUBLIC_PATHS = {
     "/api/auth/login",
     "/api/auth/needs-setup",
     "/api/auth/setup",
+    "/api/health",
     "/api/auth/needs-onboarding",
     "/api/config/workspace-status",
     "/api/version",
@@ -817,6 +841,7 @@ from routes.shares import bp as shares_bp
 from routes.heartbeats import bp as heartbeats_bp
 from routes.goals import bp as goals_bp
 from routes.tickets import bp as tickets_bp
+from routes.health import bp as health_bp
 from routes.knowledge import bp as knowledge_bp
 from routes.knowledge_public import bp as knowledge_public_bp
 from routes.knowledge_proxy import bp as knowledge_proxy_bp
@@ -869,6 +894,7 @@ app.register_blueprint(shares_bp)
 app.register_blueprint(heartbeats_bp)
 app.register_blueprint(goals_bp)
 app.register_blueprint(tickets_bp)
+app.register_blueprint(health_bp)
 app.register_blueprint(knowledge_bp)
 app.register_blueprint(knowledge_public_bp)
 app.register_blueprint(knowledge_proxy_bp)

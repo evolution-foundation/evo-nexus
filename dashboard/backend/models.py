@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import UserMixin
 import bcrypt
+from sqlalchemy import UniqueConstraint
 
 db = SQLAlchemy()
 
@@ -73,6 +74,22 @@ class AuditLog(db.Model):
             "ip_address": self.ip_address,
             "created_at": self.created_at.strftime("%Y-%m-%dT%H:%M:%S.%fZ") if self.created_at else None,
         }
+
+
+class LoginThrottle(db.Model):
+    __tablename__ = "login_throttles"
+    __table_args__ = (
+        UniqueConstraint("dimension", "lookup_key", name="uq_login_throttles_dimension_lookup_key"),
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    dimension = db.Column(db.String(20), nullable=False)  # username | ip
+    lookup_key = db.Column(db.String(191), nullable=False, index=True)
+    failed_attempts = db.Column(db.Integer, nullable=False, default=0)
+    first_failed_at = db.Column(db.DateTime, nullable=True)
+    last_failed_at = db.Column(db.DateTime, nullable=True)
+    locked_until = db.Column(db.DateTime, nullable=True)
+    updated_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
 
 # All available resources and their possible actions

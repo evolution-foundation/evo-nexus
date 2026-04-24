@@ -36,3 +36,4 @@ When working with subprocess calls:
 - **Validate and sanitize** all user-controlled input before passing to system commands
 - **Validate file paths** with `.resolve()` + `startswith()` to prevent directory traversal
 - See `dashboard/backend/routes/triggers.py` for the reference safe pattern
+- **Set `EVONEXUS_SECRET_KEY` in production**; the dashboard will refuse to boot without it.
