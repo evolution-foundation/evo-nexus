@@ -468,7 +468,7 @@ function DestinationsPanel({
               </Link>
               {(cryptoBroken || brain?.last_error) && (
                 <Link
-                  to="/onboarding"
+                  to="/onboarding?reconfigure=brain"
                   className={`${pillBtn} bg-[#f87171]/10 text-[#f87171] border border-[#3a1515] hover:bg-[#f87171]/20`}
                 >
                   {t('backups.destinations.reconnect')}
@@ -479,7 +479,7 @@ function DestinationsPanel({
         ) : (
           <div className="mt-1">
             <Link
-              to="/onboarding"
+              to="/onboarding?reconfigure=brain"
               className={`${pillBtn} bg-[#00FFA7]/10 text-[#00FFA7] border border-[#00FFA7]/20 hover:bg-[#00FFA7]/20`}
             >
               {t('backups.destinations.configure')}
@@ -1275,7 +1275,7 @@ export default function Backups() {
               <p className="text-sm text-[#8a9aae]">{t('backups.brainTab.notConnectedTitle')}</p>
               <p className="text-xs mt-1">{t('backups.brainTab.notConnectedHint')}</p>
               <Link
-                to="/onboarding"
+                to="/onboarding?reconfigure=brain"
                 className="mt-4 px-4 py-2 rounded-lg bg-[#00FFA7]/10 text-[#00FFA7] border border-[#00FFA7]/20 hover:bg-[#00FFA7]/20 text-sm font-medium transition-colors"
               >{t('backups.destinations.configure')}</Link>
             </div>

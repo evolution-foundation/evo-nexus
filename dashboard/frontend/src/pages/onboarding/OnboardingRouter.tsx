@@ -32,8 +32,21 @@ export default function OnboardingRouter() {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
+    // Allow re-entry into a specific sub-flow even after onboarding is completed.
+    // "?reconfigure=brain" enters the brain-repo connect step directly — used by the
+    // "Configure" buttons on /backups and /settings/brain-repo when the user already
+    // completed onboarding but never connected a brain repo (or disconnected it).
+    const params = new URLSearchParams(window.location.search)
+    const reconfigure = params.get('reconfigure')
+
     api.get('/onboarding/state')
       .then((data: OnboardingState) => {
+        if (reconfigure === 'brain') {
+          setFlow('first-time')
+          setWantBrainRepo(true)
+          setStep(3)
+          return
+        }
         // If already completed or skipped, go to agents
         if (data.onboarding_state === 'completed' || data.onboarding_state === 'skipped') {
           navigate('/agents', { replace: true })

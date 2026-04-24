@@ -298,7 +298,7 @@ export default function BrainRepo() {
             {t('brainRepoSettings.empty.desc')}
           </p>
           <a
-            href="/onboarding"
+            href="/onboarding?reconfigure=brain"
             className="inline-block mt-4 px-4 py-2 rounded-lg bg-[#00FFA7] text-[#080c14] hover:bg-[#00e69a] text-sm font-semibold transition-colors"
           >
             {t('brainRepoSettings.empty.btn')}
