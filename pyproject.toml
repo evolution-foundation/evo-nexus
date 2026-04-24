@@ -1,6 +1,6 @@
 [project]
 name = "evo-nexus"
-version = "0.30.4"
+version = "0.31.0"
 description = "Unofficial open source toolkit for Claude Code — AI-powered business operating system"
 requires-python = ">=3.10"
 dependencies = [
