@@ -1,0 +1,106 @@
+# ============================================================================
+# EvoNexus — docker-compose.yml para usuários finais (imagens do Docker Hub)
+#
+# Uso rápido:
+#   $ curl -O https://raw.githubusercontent.com/EvolutionAPI/evo-nexus/main/docker-compose.hub.yml
+#   $ docker compose -f docker-compose.hub.yml up -d
+#   $ open http://localhost:8080
+#
+# Tudo (providers, integrações, chaves de API, secrets) é configurado
+# pela UI após o primeiro boot — abra http://localhost:8080 e siga o
+# wizard. Nenhum arquivo .env precisa ser editado à mão.
+#
+# Para DEVS que querem buildar a imagem local a partir do código-fonte,
+# veja docker-compose.yml (que usa `build:` em vez de `image:`).
+#
+# Para produção em Docker Swarm / Portainer, veja evonexus.stack.yml
+# e README.swarm.md.
+# ============================================================================
+
+services:
+  # Dashboard — Flask + React + terminal embutido + Claude CLI
+  # Abra http://localhost:8080 após o boot.
+  dashboard:
+    image: evoapicloud/evo-nexus-dashboard:latest
+    container_name: evonexus-dashboard
+    ports:
+      - "8080:8080"     # Dashboard (UI + API)
+      - "32352:32352"   # Terminal server (WebSocket)
+    environment:
+      - TZ=America/Sao_Paulo
+      - EVONEXUS_PORT=8080
+      - TERMINAL_SERVER_PORT=32352
+      - FORWARDED_ALLOW_IPS=*
+    volumes:
+      # Volumes nomeados mantêm a configuração entre reinícios.
+      # Tudo que você configurar pela UI (providers, integrações, chaves)
+      # vive em `evonexus_config`.
+      - evonexus_config:/workspace/config
+      - evonexus_workspace:/workspace/workspace
+      - evonexus_dashboard_data:/workspace/dashboard/data
+      - evonexus_memory:/workspace/memory
+      - evonexus_adw_logs:/workspace/ADWs/logs
+      - evonexus_agent_memory:/workspace/.claude/agent-memory
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/api/version"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # Telegram — bot que escuta mensagens e delega para agentes
+  # Opcional: remova este serviço se não for usar Telegram.
+  # Espera ANTHROPIC_API_KEY aparecer no .env (configurado pela UI) antes
+  # de iniciar — não fica em crash-loop enquanto você configura.
+  telegram:
+    image: evoapicloud/evo-nexus-runtime:latest
+    container_name: evonexus-telegram
+    command: ["claude", "--channels", "plugin:telegram@claude-plugins-official", "--dangerously-skip-permissions"]
+    environment:
+      - TZ=America/Sao_Paulo
+      - REQUIRE_ANTHROPIC_KEY=1
+    volumes:
+      - evonexus_config:/workspace/config
+      - evonexus_workspace:/workspace/workspace
+      - evonexus_memory:/workspace/memory
+      - evonexus_adw_logs:/workspace/ADWs/logs
+      - evonexus_agent_memory:/workspace/.claude/agent-memory
+    stdin_open: true
+    tty: true
+    restart: unless-stopped
+    depends_on:
+      dashboard:
+        condition: service_healthy
+
+  # Scheduler — executa rotinas automáticas (daily, weekly, monthly).
+  # Opcional: remova este serviço se não for usar rotinas automatizadas.
+  scheduler:
+    image: evoapicloud/evo-nexus-runtime:latest
+    container_name: evonexus-scheduler
+    command: ["uv", "run", "python", "scheduler.py"]
+    environment:
+      - TZ=America/Sao_Paulo
+      - REQUIRE_ANTHROPIC_KEY=1
+    volumes:
+      - evonexus_config:/workspace/config
+      - evonexus_workspace:/workspace/workspace
+      - evonexus_memory:/workspace/memory
+      - evonexus_adw_logs:/workspace/ADWs/logs
+      - evonexus_agent_memory:/workspace/.claude/agent-memory
+    restart: unless-stopped
+    depends_on:
+      dashboard:
+        condition: service_healthy
+
+# ----------------------------------------------------------------------------
+# Volumes nomeados — seus dados vivem aqui. Backup: `docker volume ls` +
+# `docker run --rm -v evonexus_config:/src -v $PWD:/dst alpine tar czf /dst/config.tgz -C /src .`
+# ----------------------------------------------------------------------------
+volumes:
+  evonexus_config:
+  evonexus_workspace:
+  evonexus_dashboard_data:
+  evonexus_memory:
+  evonexus_adw_logs:
+  evonexus_agent_memory:
