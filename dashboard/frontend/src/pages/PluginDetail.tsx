@@ -539,10 +539,10 @@ export default function PluginDetail() {
               ) : null
             )}
           </dl>
-          {manifest['description'] && (
+          {typeof manifest['description'] === 'string' && manifest['description'] && (
             <div className="mt-4 pt-4 border-t border-[#21262d]">
               <dt className="text-xs text-[#667085] mb-1">{t('common.description')}</dt>
-              <dd className="text-sm text-[#D0D5DD]">{manifest['description'] as string}</dd>
+              <dd className="text-sm text-[#D0D5DD]">{manifest['description']}</dd>
             </div>
           )}
           {capabilities.length > 0 && (

@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.32.1] - 2026-04-24
+
+Patch release fixing a `tsc -b` strict-mode type error in `PluginDetail.tsx` that broke fresh frontend builds (`npm run build` fails with TS2322 on `manifest['description']`). Local incremental builds passed because `.tsbuildinfo` cached the file as clean; fresh installs hit the error on first compile.
+
+### Fixed
+
+- **`PluginDetail.tsx`** — narrow `manifest['description']` with `typeof === 'string'` before using it as a truthy check and JSX child. Previously `Record<string, unknown>` lookup was cast only in the `<dd>` body, not in the conditional, so `tsc -b` rejected the truthy check as `unknown` in JSX.
+
 ## [0.32.0] - 2026-04-24
 
 Minor release introducing the **Plugin System v1** — a full extensibility layer with 15 capabilities, pre-install security scanning, per-capability toggles, update diff previews, and a reference plugin (`pm-essentials`). Ships alongside a security-hardening pass (PRD #37) and a batch of community-reported fixes.
