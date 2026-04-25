@@ -48,7 +48,10 @@ const NEEDS_APPROVAL = new Set([
  * Extracts YAML frontmatter for metadata and the body as the prompt.
  */
 function loadAgentFile(agentName, cwd) {
-  const agentPath = path.join(cwd, '.claude', 'agents', `${agentName}.md`);
+  // Agent definitions live at the workspace root — cwd varies per ticket session.
+  const rootPath = path.join(WORKSPACE_ROOT, '.claude', 'agents', `${agentName}.md`);
+  const cwdPath = path.join(cwd, '.claude', 'agents', `${agentName}.md`);
+  const agentPath = fs.existsSync(rootPath) ? rootPath : cwdPath;
   if (!fs.existsSync(agentPath)) {
     console.warn(`[chat-bridge] Agent file not found: ${agentPath}`);
     return null;
