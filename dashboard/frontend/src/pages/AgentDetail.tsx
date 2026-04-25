@@ -20,9 +20,13 @@ interface MemoryFile {
 
 type Tab = 'sessions' | 'profile' | 'memory'
 
-// Terminal-server URL (same logic as AgentTerminal)
-const isLocal = import.meta.env.DEV || /^(localhost|127\.0\.0\.1)$/i.test(window.location.hostname)
-const TS_HTTP = isLocal
+// Terminal-server URL — always go through the dashboard's /terminal proxy in
+// production builds. Direct cross-port fetches (e.g. localhost:32352 from a
+// page served at localhost:8080) are blocked by the dashboard's
+// `connect-src 'self'` CSP directive even when the network path works.
+// In Vite dev mode (no proxy mounted) we fall back to a direct connection.
+const isViteDev = import.meta.env.DEV
+const TS_HTTP = isViteDev
   ? `http://${window.location.hostname}:32352`
   : `${window.location.origin}/terminal`
 

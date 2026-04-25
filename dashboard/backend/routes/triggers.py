@@ -237,18 +237,26 @@ def test_trigger(trigger_id):
     db.session.add(execution)
     db.session.commit()
 
+    # Capture IDs BEFORE handing off to the worker thread. After the request
+    # context tears down, the SQLAlchemy session attached to ``execution`` and
+    # ``trigger`` closes — touching ``.id`` from inside the thread raises
+    # DetachedInstanceError. Snapshotting plain ints avoids re-attaching.
+    execution_id = execution.id
+    trigger_id_int = trigger.id
+    trigger_name = trigger.name
+
     from flask import current_app
     app = current_app._get_current_object()
 
     def _run():
         with app.app_context():
-            _execute_trigger(trigger.id, execution.id, test_event)
+            _execute_trigger(trigger_id_int, execution_id, test_event)
 
     thread = threading.Thread(target=_run, daemon=True)
     thread.start()
 
-    audit(current_user, "test", "triggers", f"Tested trigger #{trigger.id}: {trigger.name}")
-    return jsonify({"status": "started", "execution_id": execution.id})
+    audit(current_user, "test", "triggers", f"Tested trigger #{trigger_id_int}: {trigger_name}")
+    return jsonify({"status": "started", "execution_id": execution_id})
 
 
 @bp.route("/api/triggers/<int:trigger_id>/regenerate-secret", methods=["POST"])
@@ -319,12 +327,18 @@ def webhook_receiver(trigger_id):
     db.session.add(execution)
     db.session.commit()
 
+    # Capture IDs BEFORE handing off to the worker thread (see test_trigger
+    # for the same DetachedInstanceError issue) — accessing ``execution.id``
+    # or ``trigger.id`` after the request session closes blows up.
+    execution_id = execution.id
+    trigger_id_int = trigger.id
+
     from flask import current_app
     app = current_app._get_current_object()
 
     def _run():
         with app.app_context():
-            _execute_trigger(trigger.id, execution.id, event_data)
+            _execute_trigger(trigger_id_int, execution_id, event_data)
 
     thread = threading.Thread(target=_run, daemon=True)
     thread.start()
@@ -375,8 +389,17 @@ def _validate_webhook_signature(req, trigger) -> bool:
         return hmac.compare_digest(sig_header, expected)
 
     else:
-        # F2: All sources require signature validation — no bypass for custom
-        sig_header = req.headers.get("X-Webhook-Signature", "")
+        # F2: All sources require signature validation — no bypass for custom.
+        # Accept the canonical X-Webhook-Signature header first, then fall back
+        # to X-Signature (the header ClickUp uses) so a `source: custom`
+        # trigger can be wired to ClickUp without a dedicated source type.
+        # Both must carry HMAC-SHA256 of the raw body, hex-encoded, with an
+        # optional `sha256=` prefix.
+        sig_header = (
+            req.headers.get("X-Webhook-Signature")
+            or req.headers.get("X-Signature")
+            or ""
+        )
         if not sig_header:
             return False
         if sig_header.startswith("sha256="):
