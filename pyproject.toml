@@ -30,6 +30,7 @@ dependencies = [
     "watchdog>=4.0",
     "sqlparse>=0.4,<1.0",
     "jsonschema>=4.21",
+    "flask-limiter>=3.5",
 ]
 
 [project.scripts]

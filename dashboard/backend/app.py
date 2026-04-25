@@ -93,6 +93,12 @@ except AttributeError:
 
 CORS(app, origins=_cors_allowed_origins(), supports_credentials=True)
 
+# --------------- Rate limiting (in-memory, single-process Flask) ---------------
+# Vault audit §2.S1 CRITICAL: all public endpoints require rate limiting.
+# The limiter singleton lives in rate_limit.py to avoid circular imports with blueprints.
+from rate_limit import limiter
+limiter.init_app(app)
+
 # --------------- Database ---------------
 from models import db, User, BrainRepoConfig, needs_setup, seed_roles, seed_systems
 db.init_app(app)
