@@ -577,6 +577,14 @@ class PluginWritableResource(BaseModel):
     )
     # Optional JSON Schema for payload validation (jsonschema library)
     json_schema: Optional[WritableResourceJsonSchema] = None
+    # Wave 2.1.x: optional endpoint-level RBAC. When set, only authenticated
+    # users whose ``current_user.role`` is in this list may POST/PUT/DELETE this
+    # resource.  Empty/None means any authenticated user passes (legacy default).
+    # Role 'admin' always passes regardless of the list (super-user override).
+    # Plugins use this to gate writable resources by role without needing a host
+    # PR or app-layer wrapper.  See evonexus-plugin-nutri for split-endpoint
+    # patterns (patients_admin vs patients_clinical).
+    requires_role: Optional[List[Annotated[str, Field(min_length=1, max_length=64)]]] = None
 
     @field_validator("id")
     @classmethod
@@ -594,6 +602,18 @@ class PluginWritableResource(BaseModel):
             raise ValueError(
                 f"WritableResource table '{v}' must match ^[a-z][a-z0-9_]*$"
             )
+        return v
+
+    @field_validator("requires_role")
+    @classmethod
+    def requires_role_pattern(cls, v: Optional[List[str]]) -> Optional[List[str]]:
+        if v is None:
+            return v
+        for role in v:
+            if not re.match(r"^[a-z][a-z0-9-]*$", role):
+                raise ValueError(
+                    f"requires_role entry '{role}' must match ^[a-z][a-z0-9-]*$ (kebab-case)"
+                )
         return v
 
 

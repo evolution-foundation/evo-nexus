@@ -2121,10 +2121,17 @@ def readonly_data(slug: str, query_name: str):
     if not sql:
         return jsonify({"error": "Invalid query declaration"}), 500
 
-    # Build query params from request.args — only declared params allowed
+    # Build query params from request.args — only declared params allowed.
+    # Wave 2.1.x reserved params (current_user_id, current_user_role) are
+    # injected server-side below and MUST NOT come from the client.
+    _RESERVED_PARAMS = {"current_user_id", "current_user_role"}
     declared_params = query_decl.get("params", {})
     params: dict = {}
     for key, value in request.args.items():
+        if key in _RESERVED_PARAMS:
+            return jsonify({
+                "error": f"Parameter '{key}' is reserved and cannot be supplied by the client"
+            }), 400
         if key not in declared_params:
             return jsonify({"error": f"Parameter '{key}' not declared in manifest"}), 400
         params[key] = value
@@ -2145,6 +2152,15 @@ def readonly_data(slug: str, query_name: str):
             params["limit"] = 1000
     elif ":limit" in sql:
         params["limit"] = 1000
+
+    # Wave 2.1.x — auto-inject current_user identity bind params (Gap 5 fix
+    # from evonexus-plugin-nutri Step 3). Plugins reference these as
+    # :current_user_id and :current_user_role in their SQL to enforce
+    # server-side scoping (e.g. `WHERE primary_nutritionist_id = :current_user_id`).
+    # These keys are reserved — manifest params with the same name are
+    # silently overridden.  Always present, regardless of declaration.
+    params["current_user_id"] = getattr(current_user, "id", None)
+    params["current_user_role"] = getattr(current_user, "role", "viewer")
 
     try:
         conn = _get_db()
@@ -2226,6 +2242,19 @@ def writable_data(slug: str, resource_id: str):
             table, slug_under,
         )
         return jsonify({"error": "Internal manifest error"}), 500
+
+    # Wave 2.1.x — endpoint-level RBAC enforcement (Gap 1 fix from
+    # evonexus-plugin-nutri Step 3 RBAC decision). When requires_role is set
+    # in the manifest, only users whose role is in the list may mutate.
+    # 'admin' always passes (super-user override).
+    requires_role = resource_decl.get("requires_role")
+    if requires_role:
+        actor_role = getattr(current_user, "role", "viewer")
+        if actor_role != "admin" and actor_role not in requires_role:
+            return jsonify({
+                "error": f"Resource '{resource_id}' requires role in {requires_role}, "
+                         f"current role is '{actor_role}'"
+            }), 403
 
     allowed_columns: list[str] = resource_decl.get("allowed_columns") or []
     method = request.method
