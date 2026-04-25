@@ -124,10 +124,3 @@ If the user wants to see details of what changed, they ask.
 - **If unsure about the category**, use `[Operations]` as fallback
 - **Execute first, report after** — no intermediate report
 
-
-### Notify via Telegram
-
-Upon completion, send **exactly ONE** Telegram message — do NOT call `reply()` more than once per run:
-- Use the Telegram MCP: `reply(chat_id="YOUR_CHAT_ID", text="...")`
-- Format: emoji + routine name + main result (1-3 lines, all combined in a single message)
-- If the routine had no updates, send anyway with "no updates"
