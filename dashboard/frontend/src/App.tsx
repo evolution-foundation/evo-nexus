@@ -106,7 +106,19 @@ interface OnboardingUser {
 
 function AppContent() {
   const location = useLocation()
-  const routeKey = location.key || location.pathname
+  // Section-stable key: collapse all subpaths of /workspace, /agents/:name,
+  // /tickets/:id, /skills/:name, /docs into a single key per section so the
+  // SectionBoundary doesn't remount the page on every URL update (which would
+  // wipe component state — e.g. expanded folders, selected file, refs).
+  const routeKey = (() => {
+    const p = location.pathname
+    if (p === '/workspace' || p.startsWith('/workspace/')) return '/workspace'
+    if (p === '/docs' || p.startsWith('/docs/')) return '/docs'
+    if (/^\/agents\/[^/]+/.test(p)) return p.split('/').slice(0, 3).join('/')
+    if (/^\/tickets\/[^/]+/.test(p)) return p.split('/').slice(0, 3).join('/')
+    if (/^\/skills\/[^/]+/.test(p)) return p.split('/').slice(0, 3).join('/')
+    return p
+  })()
   const isDocs = location.pathname === '/docs' || location.pathname.startsWith('/docs/')
   const isShare = location.pathname.startsWith('/share/')
   const isOnboarding = location.pathname.startsWith('/onboarding')

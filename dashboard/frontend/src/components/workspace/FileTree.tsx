@@ -105,8 +105,12 @@ function TreeItem({ node, level, selectedPath, onSelect, onNavigate, searchTerm 
 
   const handleClick = () => {
     if (node.is_dir) {
-      if (!expanded) loadChildren()
-      setExpanded(prev => !prev)
+      if (!expanded) {
+        loadChildren()
+        setExpanded(true)
+      } else {
+        setExpanded(false)
+      }
       onSelect(node.path, true)
     } else {
       onSelect(node.path, false)

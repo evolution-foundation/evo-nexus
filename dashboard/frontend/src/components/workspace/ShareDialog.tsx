@@ -1,10 +1,18 @@
-import { useState } from 'react'
-import { X, Copy, Check, Share2, Loader2 } from 'lucide-react'
+import { useState, useEffect } from 'react'
+import { X, Copy, Check, Share2, Loader2, RefreshCw, Eye, Clock } from 'lucide-react'
 import { api } from '../../lib/api'
 
 interface ShareDialogProps {
   path: string
   onClose: () => void
+}
+
+interface ExistingShare {
+  token: string
+  url: string
+  expires_at: string | null
+  view_count: number
+  created_at: string | null
 }
 
 const EXPIRY_OPTIONS = [
@@ -15,23 +23,84 @@ const EXPIRY_OPTIONS = [
   { value: null, label: 'Sem expiração' },
 ]
 
+function formatExpiry(iso: string | null): string {
+  if (!iso) return 'Sem expiração'
+  const date = new Date(iso)
+  const now = new Date()
+  const diffMs = date.getTime() - now.getTime()
+  if (diffMs <= 0) return 'Expirado'
+  const diffH = Math.floor(diffMs / (1000 * 60 * 60))
+  if (diffH < 1) return `Expira em <1h`
+  if (diffH < 24) return `Expira em ${diffH}h`
+  const diffD = Math.floor(diffH / 24)
+  return `Expira em ${diffD}d`
+}
+
 export default function ShareDialog({ path, onClose }: ShareDialogProps) {
   const [expiresIn, setExpiresIn] = useState<string | null>('7d')
   const [shareUrl, setShareUrl] = useState<string | null>(null)
+  const [existing, setExisting] = useState<ExistingShare | null>(null)
   const [loading, setLoading] = useState(false)
+  const [checking, setChecking] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
+
+  // On open: check for an existing active share
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      try {
+        const data = await api.get(`/shares/by-path?path=${encodeURIComponent(path)}`)
+        if (cancelled) return
+        setExisting({
+          token: data.token,
+          url: data.url,
+          expires_at: data.expires_at,
+          view_count: data.view_count ?? 0,
+          created_at: data.created_at,
+        })
+        setShareUrl(data.url)
+      } catch {
+        // 404 = no active share, fine
+      } finally {
+        if (!cancelled) setChecking(false)
+      }
+    })()
+    return () => { cancelled = true }
+  }, [path])
 
   const handleCreate = async () => {
     setLoading(true)
     setError(null)
     try {
       const data = await api.post('/shares', { path, expires_in: expiresIn })
-      // Build the full public URL using the current host
       const base = `${window.location.protocol}//${window.location.host}`
-      setShareUrl(`${base}/share/${data.token}`)
+      const url = `${base}/share/${data.token}`
+      setShareUrl(url)
+      setExisting({
+        token: data.token,
+        url,
+        expires_at: data.expires_at,
+        view_count: 0,
+        created_at: data.created_at,
+      })
     } catch {
       setError('Erro ao criar link de compartilhamento. Tente novamente.')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleRevokeAndRegenerate = async () => {
+    if (!existing) return
+    setLoading(true)
+    setError(null)
+    try {
+      await api.delete(`/shares/${existing.token}`)
+      setExisting(null)
+      setShareUrl(null)
+    } catch {
+      setError('Erro ao revogar link existente.')
     } finally {
       setLoading(false)
     }
@@ -44,6 +113,9 @@ export default function ShareDialog({ path, onClose }: ShareDialogProps) {
       setTimeout(() => setCopied(false), 2000)
     })
   }
+
+  const showExisting = existing && shareUrl
+  const showGenerator = !checking && !showExisting
 
   return (
     <div
@@ -95,8 +167,40 @@ export default function ShareDialog({ path, onClose }: ShareDialogProps) {
             </p>
           </div>
 
-          {/* Expiration selector — only show before link is generated */}
-          {!shareUrl && (
+          {/* Loading state on initial check */}
+          {checking && (
+            <div className="flex items-center gap-2 px-3 py-2 text-xs" style={{ color: 'var(--text-muted)' }}>
+              <Loader2 size={13} className="animate-spin" />
+              Verificando links existentes…
+            </div>
+          )}
+
+          {/* Existing active share — show it instead of generating new */}
+          {showExisting && (
+            <>
+              <div
+                className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs"
+                style={{ background: 'rgba(0,255,167,0.08)', color: 'var(--evo-green)', border: '1px solid rgba(0,255,167,0.2)' }}
+              >
+                <Check size={13} />
+                <span>Este arquivo já tem um link ativo. Reutilizando.</span>
+              </div>
+
+              <div className="flex items-center gap-4 text-xs" style={{ color: 'var(--text-muted)' }}>
+                <span className="flex items-center gap-1">
+                  <Clock size={12} />
+                  {formatExpiry(existing!.expires_at)}
+                </span>
+                <span className="flex items-center gap-1">
+                  <Eye size={12} />
+                  {existing!.view_count} {existing!.view_count === 1 ? 'visualização' : 'visualizações'}
+                </span>
+              </div>
+            </>
+          )}
+
+          {/* Expiration selector — only show when generating new */}
+          {showGenerator && (
             <div>
               <p className="text-xs mb-1.5" style={{ color: 'var(--text-muted)' }}>Expiração</p>
               <div className="flex flex-wrap gap-2">
@@ -128,7 +232,7 @@ export default function ShareDialog({ path, onClose }: ShareDialogProps) {
           {/* Generated URL */}
           {shareUrl && (
             <div>
-              <p className="text-xs mb-1.5" style={{ color: 'var(--text-muted)' }}>Link público gerado</p>
+              <p className="text-xs mb-1.5" style={{ color: 'var(--text-muted)' }}>Link público</p>
               <div className="flex gap-2">
                 <input
                   readOnly
@@ -163,6 +267,26 @@ export default function ShareDialog({ path, onClose }: ShareDialogProps) {
           className="flex justify-end gap-2 px-5 py-4"
           style={{ borderTop: '1px solid var(--border)' }}
         >
+          {showExisting && (
+            <button
+              onClick={handleRevokeAndRegenerate}
+              disabled={loading}
+              className="flex items-center gap-1.5 px-4 py-2 text-sm rounded-lg transition-colors mr-auto"
+              style={{
+                color: '#f87171',
+                border: '1px solid rgba(239,68,68,0.3)',
+                background: 'transparent',
+                opacity: loading ? 0.5 : 1,
+                cursor: loading ? 'not-allowed' : 'pointer',
+              }}
+              onMouseEnter={(e) => { if (!loading) e.currentTarget.style.background = 'rgba(239,68,68,0.1)' }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}
+              title="Revoga o link atual e gera um novo (links antigos param de funcionar)"
+            >
+              {loading ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />}
+              Revogar e gerar novo
+            </button>
+          )}
           <button
             onClick={onClose}
             className="px-4 py-2 text-sm rounded-lg transition-colors"
@@ -170,9 +294,9 @@ export default function ShareDialog({ path, onClose }: ShareDialogProps) {
             onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--surface-hover)' }}
             onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}
           >
-            {shareUrl ? 'Fechar' : 'Cancelar'}
+            Fechar
           </button>
-          {!shareUrl && (
+          {showGenerator && (
             <button
               onClick={handleCreate}
               disabled={loading}

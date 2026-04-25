@@ -152,6 +152,11 @@ export default function Workspace() {
   // Overwrite promise resolvers
   const overwriteResolverRef = useRef<((v: boolean) => void) | null>(null)
 
+  // Track which paths we already know are directories so the URL→state effect
+  // can skip the redundant /api/workspace/file probe (the file probe returns
+  // 400 for directories — harmless but noisy and re-triggers setSelectedPath)
+  const knownDirsRef = useRef<Set<string>>(new Set())
+
   const showToast = useCallback((message: string, type: 'success' | 'error' = 'success') => {
     const id = ++toastCounter
     setToasts(prev => [...prev, { id, message, type }])
@@ -189,6 +194,15 @@ export default function Workspace() {
       decoded = `workspace/${decoded}`
     }
     if (decoded === selectedPath) return
+    // If we already know this path is a directory (e.g. user just clicked on
+    // it in the tree), skip the file probe — it would 400 and noisily re-fire
+    // setSelectedPath. Just confirm via tree and set state.
+    if (knownDirsRef.current.has(decoded)) {
+      setSelectedPath(decoded)
+      setIsDir(true)
+      setMode('preview')
+      return
+    }
     ;(async () => {
       try {
         // Probe as file first; fall back to dir on 400
@@ -206,6 +220,7 @@ export default function Workspace() {
           credentials: 'include',
         })
         if (treeRes.ok) {
+          knownDirsRef.current.add(decoded)
           setSelectedPath(decoded)
           setIsDir(true)
           setMode('preview')
@@ -273,6 +288,7 @@ export default function Workspace() {
   const handleSelect = useCallback((path: string, dir: boolean) => {
     // Directories: just navigate, no tab
     if (dir) {
+      knownDirsRef.current.add(path)
       saveCurrentTabState()
       setSelectedPath(path)
       setIsDir(true)

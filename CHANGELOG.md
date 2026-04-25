@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.32.3] - 2026-04-25
+
+Patch release fixing a long-standing Workspace UI bug where folders refused to open and the dev console flooded with `400 Path is a directory` requests, plus a small UX win on the file share dialog (reuse existing share links instead of generating a new token every time). Also includes the upstream PR #51 (private-repo plugin update flow + ClickUp webhook compat + DetachedInstanceError).
+
+### Fixed
+
+- **`dashboard/frontend/src/App.tsx`** — section-stable `routeKey` for the `SectionBoundary`. Previously every `navigate({replace:true})` inside `/workspace/*`, `/agents/:name`, `/tickets/:id`, `/skills/:name` and `/docs` produced a new `location.key`, which changed the boundary's React `key` and remounted the entire page. In the Workspace this wiped `selectedPath`, `expanded` state in `TreeItem`, and refs on every folder click — folders never stayed open and the URL→state effect re-fired the file probe (`GET /api/workspace/file?path=workspace/development` → 400) on every mount. Now subpaths within the same section share one stable key; the boundary still resets between sections.
+- **`dashboard/frontend/src/components/workspace/FileTree.tsx`** — split the toggle in `TreeItem.handleClick` into explicit open / close branches. The previous `setExpanded(prev => !prev)` toggle was vulnerable to any re-trigger flipping a freshly-opened folder back closed.
+- **`dashboard/frontend/src/pages/Workspace.tsx`** — added `knownDirsRef` so the URL→`selectedPath` deep-link effect can skip the redundant `GET /api/workspace/file?path=…` probe when the path is already known to be a directory (e.g. user just clicked it). The probe used to 400 on every directory navigation, polluting server logs and racing with `setSelectedPath` re-renders.
+
+### Changed
+
+- **`dashboard/backend/routes/shares.py`** — new `GET /api/shares/by-path?path=X` endpoint returning the most recent **active** (enabled + non-expired) share for a path, or 404. Same permission gate (`workspace.manage`) and folder-access check as `POST /api/shares`.
+- **`dashboard/frontend/src/components/workspace/ShareDialog.tsx`** — on open, probe `by-path` and reuse any existing active share instead of always minting a new token. The dialog now shows the existing link with formatted expiry, view counter, and a destructive **Revoke and regenerate** action when you actually want to rotate the link. New share creation only happens when there isn't one already.
+
+### Included from PR #51
+
+- **Plugins + triggers** — private-repo update flow, ClickUp webhook compatibility, and a `DetachedInstanceError` fix landed via PR #51 ahead of this patch.
+
 ## [0.32.2] - 2026-04-24
 
 Patch release working around a bug in `@anthropic-ai/claude-agent-sdk` (v0.2.104+) where Linux auto-discovery tries the `-musl` platform package before glibc regardless of the host's actual libc. On glibc VPS installs (Ubuntu / Debian) with both platform packages present in `node_modules`, the SDK spawned the musl binary and failed with `Claude Code native binary not found` because the musl dynamic loader was absent — breaking every chat session on the affected VPS with no local repro. See upstream [issue #296](https://github.com/anthropics/claude-agent-sdk-typescript/issues/296).
