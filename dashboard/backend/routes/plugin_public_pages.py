@@ -238,7 +238,78 @@ def portal_page(slug: str, route_prefix: str, token: str):
     )
 
     bundle_path = page_config.get("bundle", "")
+
+    # Wave 2.1.x — content negotiation: browsers send Accept: text/html and
+    # expect a rendered page; programmatic clients (or asset prefetchers) can
+    # fetch the raw bundle by NOT sending text/html in Accept (or by hitting
+    # /p/{slug}/public-assets/{file} directly, which does not require a token).
+    #
+    # When the caller wants HTML, generate a minimal shell that loads the bundle
+    # and instantiates the declared custom element. Without this, browsers see
+    # the JS source. With this, the portal renders.
+    accept = (request.headers.get("Accept") or "").lower()
+    wants_html = "text/html" in accept and "application/javascript" not in accept
+    if wants_html:
+        return _serve_html_shell(slug, page_config, token)
+
     return _serve_bundle(slug, bundle_path)
+
+
+def _serve_html_shell(slug: str, page_config: dict, token: str) -> Response:
+    """Render a minimal HTML page that boots the plugin's custom element.
+
+    The shell is generated server-side so plugin authors only ship a JS bundle
+    (custom element definition). The bundle is fetched as a module from
+    /p/{slug}/public-assets/{file} (no auth required for assets — they contain
+    no patient data; data lives behind the token-gated /data endpoint).
+
+    The custom element receives the URL token via ``data-token`` attribute so
+    the bundle does not need to re-parse window.location.
+    """
+    from html import escape as h
+    bundle_path = page_config.get("bundle", "") or ""
+    if not bundle_path.startswith("ui/public/"):
+        abort(404)
+    bundle_relative = bundle_path[len("ui/public/"):]
+    custom_element = page_config.get("custom_element_name") or ""
+    if not custom_element or not all(c.isalnum() or c in "-" for c in custom_element):
+        # Defense in depth — schema already validates this on install
+        abort(500)
+    label = page_config.get("description") or page_config.get("label") or "Portal"
+
+    # CSP for the shell:
+    #  - script-src 'self' allows the bundle module from same origin (public-assets/)
+    #  - style-src 'self' 'unsafe-inline' covers minimal inline shell styling
+    #  - img-src 'self' data: covers logos embedded as data URIs (brand workaround)
+    #  - connect-src 'self' so the bundle can fetch /p/{slug}/{route}/{token}/data
+    asset_url = f"/p/{h(slug)}/public-assets/{h(bundle_relative)}"
+    body = (
+        "<!doctype html>"
+        "<html lang=\"pt-BR\"><head>"
+        "<meta charset=\"utf-8\">"
+        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+        "<meta name=\"robots\" content=\"noindex, nofollow\">"
+        f"<title>{h(label)}</title>"
+        "<style>"
+        "html,body{margin:0;padding:0;background:#f7f7f9;"
+        "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;}"
+        "</style>"
+        "</head><body>"
+        f"<{custom_element} data-token=\"{h(token)}\" data-slug=\"{h(slug)}\"></{custom_element}>"
+        f"<script type=\"module\" src=\"{asset_url}\"></script>"
+        "</body></html>"
+    )
+    resp = Response(body, mimetype="text/html; charset=utf-8")
+    resp.headers["X-Content-Type-Options"] = "nosniff"
+    resp.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data:; "
+        "connect-src 'self'; "
+        "frame-ancestors 'none'"
+    )
+    return resp
 
 
 @bp.route("/p/<slug>/<route_prefix>/<token>/data", methods=["GET"])
