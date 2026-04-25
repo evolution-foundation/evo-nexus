@@ -13,34 +13,29 @@ interface AgentTerminalProps {
 
 // Terminal connection URL resolution.
 //
-// Default heuristic:
-//   - Dev mode OR a private-network hostname (loopback, RFC1918, RFC6598 CGNAT,
-//     link-local, IPv6 ::1 / fe80:) → connect directly to terminal-server:32352.
-//   - Anything else (public hostname / domain) → use /terminal on the same
-//     origin, assuming a reverse proxy is rewriting the path.
+// We always go through the dashboard's /terminal proxy in production builds.
+// Direct cross-port fetches (e.g. localhost:32352 from a page served at
+// localhost:8080) are blocked by the dashboard's `connect-src 'self'` CSP
+// directive even when the network path would work. The proxy gives us:
+//   1. Same-origin requests pass CSP `'self'`.
+//   2. No CORS preflight (same origin).
+//   3. Works through SSH tunnels, Tailscale Funnel, or any reverse proxy
+//      that only exposes the dashboard port.
 //
-// Escape hatch for mixed scenarios (e.g. reverse proxy sitting in front of a
-// private IP): set VITE_TERMINAL_URL at build time to force a specific base
-// URL. When set, it overrides the heuristic entirely. Trailing slash is
-// stripped so both `https://x.y/terminal` and `https://x.y/terminal/` work.
+// Escape hatch for cases where the proxy can't be used (e.g. a static
+// dashboard build hosted somewhere unrelated to the terminal-server): set
+// VITE_TERMINAL_URL at build time to force a specific base URL. When set,
+// it overrides the proxy. Trailing slash is stripped so both
+// `https://x.y/terminal` and `https://x.y/terminal/` work.
+//
+// In Vite's `npm run dev` mode (port 5173, no proxy mounted) we fall back
+// to a direct connection to terminal-server. That path is local-only by
+// definition.
 const rawOverride = (import.meta.env.VITE_TERMINAL_URL as string | undefined)?.trim()
 const terminalOverride = rawOverride ? rawOverride.replace(/\/+$/, '') : null
 
 const hostname = window.location.hostname
-const isPrivateHost =
-  /^localhost$/i.test(hostname) ||
-  /^127\./.test(hostname) ||
-  /^10\./.test(hostname) ||
-  /^192\.168\./.test(hostname) ||
-  /^169\.254\./.test(hostname) ||
-  /^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(hostname) ||
-  /^100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\./.test(hostname) || // RFC6598 CGNAT
-  hostname === '::1' ||
-  /^\[::1\]$/.test(hostname) ||
-  /^fe80:/i.test(hostname) ||
-  /^\[fe80:/i.test(hostname)
-
-const isLocal = import.meta.env.DEV || isPrivateHost
+const isViteDev = import.meta.env.DEV
 
 // Resolve an override URL into the (httpBase, wsBase) pair the rest of the
 // component expects. Accepts either http(s):// or ws(s):// — both schemes
@@ -66,13 +61,13 @@ const override = terminalOverride ? resolveOverride(terminalOverride) : null
 
 const CC_WEB_HTTP = override
   ? override.http
-  : isLocal
+  : isViteDev
     ? `http://${hostname}:32352`
     : `${window.location.origin}/terminal`
 
 const CC_WEB_WS = override
   ? override.ws
-  : isLocal
+  : isViteDev
     ? `ws://${hostname}:32352`
     : `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/terminal`
 

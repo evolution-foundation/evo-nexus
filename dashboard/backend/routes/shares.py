@@ -130,6 +130,41 @@ def list_shares():
     return jsonify({"shares": [s.to_dict() for s in shares]})
 
 
+@bp.route("/api/shares/by-path", methods=["GET"])
+@login_required
+@require_permission("workspace", "manage")
+def get_active_share_by_path():
+    """Return the most recent ACTIVE (enabled + not expired) share for a path,
+    so the UI can reuse it instead of generating a new token every time."""
+    path = (request.args.get("path") or "").strip()
+    if not path:
+        return jsonify({"error": "path is required", "code": "bad_path"}), 400
+
+    if not has_workspace_folder_access(current_user.role, path):
+        return jsonify({"error": "Access to this workspace folder is restricted", "code": "forbidden"}), 403
+
+    now = datetime.now(timezone.utc)
+    candidates = (
+        FileShare.query
+        .filter_by(path=path, enabled=True)
+        .order_by(FileShare.created_at.desc())
+        .all()
+    )
+    for share in candidates:
+        if share.expires_at is not None:
+            expires = share.expires_at
+            if expires.tzinfo is None:
+                expires = expires.replace(tzinfo=timezone.utc)
+            if now > expires:
+                continue
+        base_url = request.host_url.rstrip("/")
+        return jsonify({
+            **share.to_dict(),
+            "url": f"{base_url}/share/{share.token}",
+        })
+    return jsonify({"error": "No active share for this path", "code": "not_found"}), 404
+
+
 @bp.route("/api/shares/<token>", methods=["DELETE"])
 @login_required
 @require_permission("workspace", "manage")

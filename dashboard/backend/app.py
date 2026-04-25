@@ -834,6 +834,7 @@ from routes.docs import bp as docs_bp
 from routes.mempalace import bp as mempalace_bp
 from routes.tasks import bp as tasks_bp
 from routes.triggers import bp as triggers_bp
+from routes.terminal_proxy import bp as terminal_proxy_bp, register_websocket_proxy as _register_terminal_ws
 from routes.backups import bp as backups_bp
 from routes.providers import bp as providers_bp
 from routes.settings import bp as settings_bp
@@ -887,6 +888,25 @@ app.register_blueprint(docs_bp)
 app.register_blueprint(mempalace_bp)
 app.register_blueprint(tasks_bp)
 app.register_blueprint(triggers_bp)
+app.register_blueprint(terminal_proxy_bp)
+
+# Mount the terminal-server WebSocket proxy on the same Sock instance the
+# rest of the app uses. Done after the blueprint is registered so route
+# names are unique. Without this, browsers connecting from a host other
+# than the one running the Node terminal-server (LAN, Tailscale Funnel,
+# SSH tunnel without the dynamic port forwarded) cannot reach it directly
+# due to CORS preflight + private-network-access policies.
+try:
+    from flask_sock import Sock as _Sock
+    _terminal_sock = _Sock(app)
+    _register_terminal_ws(_terminal_sock)
+except Exception as _exc:
+    import logging as _logging
+    _logging.getLogger(__name__).warning(
+        "terminal_proxy: failed to mount WebSocket proxy: %s — terminal "
+        "interactions will require direct access to the terminal-server port.",
+        _exc,
+    )
 app.register_blueprint(backups_bp)
 app.register_blueprint(providers_bp)
 app.register_blueprint(settings_bp)

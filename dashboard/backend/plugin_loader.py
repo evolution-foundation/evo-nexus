@@ -290,10 +290,23 @@ class PluginInstaller:
             staging_slug = f"{owner}-{repo}-{ref}".replace("/", "-")
             try:
                 return PluginInstaller.fetch_from_tarball(tar_url, staging_slug, auth_token=auth_token)
-            except RuntimeError:
-                # fallback: try as tag ref
+            except RuntimeError as branch_err:
+                # fallback: try as tag ref. If that also fails, surface a
+                # unified error so the caller knows both branch and tag
+                # namespaces were tried — otherwise the bare
+                # "refs/tags/<ref>: 404" message is misleading when the ref
+                # was actually a branch name.
                 tar_url_tag = f"https://codeload.github.com/{owner}/{repo}/tar.gz/refs/tags/{ref}"
-                return PluginInstaller.fetch_from_tarball(tar_url_tag, staging_slug, auth_token=auth_token)
+                try:
+                    return PluginInstaller.fetch_from_tarball(
+                        tar_url_tag, staging_slug, auth_token=auth_token
+                    )
+                except RuntimeError as tag_err:
+                    raise RuntimeError(
+                        f"ref '{ref}' not found in {owner}/{repo} "
+                        f"(tried branches and tags). "
+                        f"Branch: {branch_err}. Tag: {tag_err}."
+                    ) from tag_err
 
         if s.startswith("https://"):
             # Use a safe staging slug derived from the URL
@@ -477,12 +490,23 @@ class PluginInstaller:
                     tar_url, staging_slug, auth_token=auth_token
                 )
                 return path, sha
-            except RuntimeError:
+            except RuntimeError as branch_err:
                 tar_url_tag = f"https://codeload.github.com/{owner}/{repo}/tar.gz/refs/tags/{ref}"
-                path, sha = PluginInstaller.fetch_from_tarball_with_sha(
-                    tar_url_tag, staging_slug, auth_token=auth_token
-                )
-                return path, sha
+                try:
+                    path, sha = PluginInstaller.fetch_from_tarball_with_sha(
+                        tar_url_tag, staging_slug, auth_token=auth_token
+                    )
+                    return path, sha
+                except RuntimeError as tag_err:
+                    # Both branch and tag namespaces exhausted — raise a
+                    # unified error rather than the bare tag 404 so callers
+                    # can distinguish ref-not-found from private-repo auth
+                    # failures. Kept in sync with ``resolve_source`` above.
+                    raise RuntimeError(
+                        f"ref '{ref}' not found in {owner}/{repo} "
+                        f"(tried branches and tags). "
+                        f"Branch: {branch_err}. Tag: {tag_err}."
+                    ) from tag_err
 
         # Plain https:// tarball
         staging_slug = re.sub(r"[^a-zA-Z0-9_-]+", "-", s)[-80:]

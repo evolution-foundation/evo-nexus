@@ -30,8 +30,11 @@ async function buildError(res: Response): Promise<Error> {
 }
 
 export const api = {
-  get: async (path: string) => {
-    const res = await fetch(`${API}/api${path}`, { credentials: 'include' });
+  get: async (path: string, extraHeaders?: HeadersInit) => {
+    const res = await fetch(`${API}/api${path}`, {
+      credentials: 'include',
+      headers: extraHeaders,
+    });
     if (!res.ok) throw await buildError(res);
     return res.json();
   },

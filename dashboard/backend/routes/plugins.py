@@ -2158,7 +2158,10 @@ def serve_widget(slug: str, subpath: str):
 # ---------------------------------------------------------------------------
 
 # Module-level preview cache: key=(slug, source_url), value=(fetched_at_float, result_dict)
-_PREVIEW_CACHE: dict[tuple[str, str], tuple[float, dict]] = {}
+# Cache key: (slug, source_url, has_auth_token). has_auth_token flag prevents
+# leaking private-repo previews to unauthenticated callers — the value of the
+# token is deliberately not part of the key (no secrets in memory indices).
+_PREVIEW_CACHE: dict[tuple[str, str, bool], tuple[float, dict]] = {}
 _PREVIEW_CACHE_LOCK = threading.Lock()
 _PREVIEW_CACHE_TTL = 300  # seconds
 
@@ -2264,7 +2267,9 @@ def _diff_capabilities(
     return added, removed, modified
 
 
-def _compute_preview(slug: str, source_url: str) -> dict:
+def _compute_preview(
+    slug: str, source_url: str, auth_token: str | None = None
+) -> dict:
     """Fetch candidate manifest and compute diff against installed manifest.
 
     Pure read-only: no DB writes, no file writes to plugins/{slug}/.
@@ -2273,6 +2278,12 @@ def _compute_preview(slug: str, source_url: str) -> dict:
     tarball_sha7 derivation: SHA256 of sorted manifest.files SHAs concatenated.
     If manifest.files is empty, falls back to SHA256 of serialized manifest JSON.
     First 7 chars of the hex digest are returned (deterministic, no re-download needed).
+
+    Args:
+        slug: Installed plugin slug.
+        source_url: Candidate source (github:..., https://...).
+        auth_token: Optional GitHub PAT — required for private repos. Sent as
+            ``Authorization: token <pat>`` header by ``resolve_source``.
     """
     from plugin_schema import load_plugin_manifest
     from plugin_loader import PluginInstaller, _parse_version
@@ -2316,7 +2327,7 @@ def _compute_preview(slug: str, source_url: str) -> dict:
 
     # Resolve candidate source (may hit network / tmp — outside the lock)
     try:
-        new_plugin_dir = PluginInstaller.resolve_source(source_url)
+        new_plugin_dir = PluginInstaller.resolve_source(source_url, auth_token=auth_token)
     except ValueError as exc:
         raise ValueError(f"invalid_source: {exc}") from exc
     except RuntimeError as exc:
@@ -2422,6 +2433,11 @@ def preview_plugin_update(slug: str):
     """Read-only diff preview before applying an update.
 
     Query param: ?source=<url>  (defaults to installed source_url when omitted)
+    Optional header ``X-Plugin-Auth-Token``: GitHub PAT required to fetch
+    candidate from a private repository (same semantics as ``auth_token`` on
+    ``POST /api/plugins/preview``). Kept out of the query string so it does
+    not leak into access logs.
+
     Returns 200 with diff JSON (or up_to_date: true).
     Never writes to disk or DB.
     """
@@ -2440,7 +2456,12 @@ def preview_plugin_update(slug: str):
     if not source_url:
         return jsonify({"error": "invalid_source", "message": "No source URL provided and none stored"}), 400
 
-    cache_key = (slug, source_url)
+    # Optional GitHub PAT for private repos (header only — never logged)
+    auth_token = request.headers.get("X-Plugin-Auth-Token") or None
+
+    # Cache key includes auth_token presence (not value) to avoid sharing
+    # private-repo results across unauthenticated requests.
+    cache_key = (slug, source_url, bool(auth_token))
 
     # Cache read — lock only around dict access, not network I/O
     with _PREVIEW_CACHE_LOCK:
@@ -2452,7 +2473,7 @@ def preview_plugin_update(slug: str):
 
     # Cache miss — compute outside lock
     try:
-        result = _compute_preview(slug, source_url)
+        result = _compute_preview(slug, source_url, auth_token=auth_token)
     except ValueError as exc:
         msg = str(exc)
         if msg.startswith("invalid_source:"):
@@ -2543,10 +2564,21 @@ def update_plugin(slug: str):
         data = request.get_json(force=True, silent=True) or {}
         source_url = data.get("source_url", installed_source)
 
+        # Optional GitHub PAT for private repos. Mirrors /api/plugins/install —
+        # body field first, falling back to ``X-Plugin-Auth-Token`` header for
+        # callers that reuse the same header they sent to update/preview.
+        auth_token = (
+            data.get("auth_token")
+            or request.headers.get("X-Plugin-Auth-Token")
+            or None
+        )
+
         # 3. Resolve new plugin source (accepts local path, github:..., https://...)
         from plugin_loader import PluginInstaller
         try:
-            new_plugin_dir = PluginInstaller.resolve_source(source_url)
+            new_plugin_dir = PluginInstaller.resolve_source(
+                source_url, auth_token=auth_token
+            )
         except ValueError as exc:
             return jsonify({"error": "invalid_source", "message": str(exc)}), 400
         except RuntimeError as exc:
