@@ -713,6 +713,104 @@ class PluginPublicPage(BaseModel):
         return v
 
 
+class PluginPreUninstallHook(BaseModel):
+    """Pre-uninstall hook declaration (B3 safe_uninstall).
+
+    Executed as a sandboxed subprocess before the uninstall wizard proceeds.
+    The hook must produce a file in ``output_dir`` when ``must_produce_file``
+    is true — if it does not, the uninstall is blocked.
+    """
+
+    # Relative path to the hook script inside the plugin directory
+    script: Annotated[str, Field(min_length=1, max_length=500)]
+    # Output directory pattern (supports {slug} and {timestamp} interpolation)
+    output_dir: Annotated[str, Field(min_length=1, max_length=500)]
+    # Seconds before the subprocess is killed (max 600)
+    timeout_seconds: int = 600
+    # If true, uninstall is blocked when the hook exits cleanly but produces no file
+    must_produce_file: bool = True
+
+    @field_validator("script")
+    @classmethod
+    def script_relative(cls, v: str) -> str:
+        if v.startswith("/") or ".." in v:
+            raise ValueError(
+                f"pre_uninstall_hook.script '{v}' must be relative and must not traverse upward"
+            )
+        return v
+
+    @field_validator("timeout_seconds")
+    @classmethod
+    def timeout_in_range(cls, v: int) -> int:
+        if not 1 <= v <= 600:
+            raise ValueError("timeout_seconds must be between 1 and 600")
+        return v
+
+
+class PluginUserConfirmation(BaseModel):
+    """User confirmation gate for safe_uninstall (B3).
+
+    Defines the checkbox label and the exact phrase the user must type
+    to enable the Uninstall button.  Phrase matching is case-sensitive.
+    """
+
+    checkbox_label: Annotated[str, Field(min_length=1, max_length=1000)]
+    typed_phrase: Annotated[str, Field(min_length=1, max_length=200)]
+
+
+class PluginSafeUninstall(BaseModel):
+    """Safe uninstall declaration for plugins holding regulated data (B3).
+
+    When ``enabled`` is true the host enforces:
+    1. A 3-step wizard (pre-hook → checkbox → typed phrase + ZIP password).
+    2. Preserved tables are NOT dropped and are renamed ``_orphan_{slug}_{table}``.
+    3. Host-entity cascades respect ``preserved_host_entities`` filters.
+    4. Reinstall detects orphaned tables and restores access after SHA256 verify.
+
+    Plugins not declaring this block continue to use the default cascade-DELETE.
+    """
+
+    enabled: bool = False
+    # Human-readable regulatory reason shown to the admin before they confirm
+    reason: Optional[str] = None
+    # Pre-uninstall hook run before the wizard
+    pre_uninstall_hook: Optional[PluginPreUninstallHook] = None
+    # Checkbox + typed phrase gate
+    user_confirmation: Optional[PluginUserConfirmation] = None
+    # Tables that must NOT be dropped on uninstall (renamed to _orphan_{slug}_{table})
+    preserved_tables: List[str] = Field(default_factory=list)
+    # Host-managed entity classes to partially preserve (table → WHERE clause EXCLUDING rows to delete)
+    # Dict mapping host table name to a SQL WHERE expression for rows that SHOULD be preserved.
+    # e.g. {"tickets": "source_plugin = 'nutri' AND linked_resource LIKE 'nutri_patients/%'"}
+    preserved_host_entities: Dict[str, str] = Field(default_factory=dict)
+    # If true, Uninstall button is completely disabled in the UI (for active audit windows, etc.)
+    block_uninstall: bool = False
+
+    @field_validator("preserved_tables")
+    @classmethod
+    def table_names_identifier(cls, v: List[str]) -> List[str]:
+        for name in v:
+            if not re.match(r"^[a-z][a-z0-9_]*$", name):
+                raise ValueError(
+                    f"preserved_tables entry '{name}' must match ^[a-z][a-z0-9_]*$"
+                )
+        return v
+
+    @field_validator("preserved_host_entities")
+    @classmethod
+    def host_entity_tables_known(cls, v: Dict[str, str]) -> Dict[str, str]:
+        _ALLOWED_HOST_TABLES = frozenset({
+            "triggers", "tickets", "goal_tasks", "goals", "projects", "missions"
+        })
+        for table in v:
+            if table not in _ALLOWED_HOST_TABLES:
+                raise ValueError(
+                    f"preserved_host_entities key '{table}' is not a known host entity table. "
+                    f"Allowed: {sorted(_ALLOWED_HOST_TABLES)}"
+                )
+        return v
+
+
 class PluginUIEntryPoints(BaseModel):
     """Typed container for ui_entry_points in plugin.yaml (Wave 2.1).
 
@@ -786,6 +884,11 @@ class PluginManifest(BaseModel):
     # Declared under public_pages: in plugin.yaml.
     # Requires Capability.public_pages in capabilities list.
     public_pages: Optional[List[PluginPublicPage]] = None
+
+    # --- B3: Safe uninstall with data preservation ---
+    # Declared under safe_uninstall: in plugin.yaml.
+    # Requires Capability.safe_uninstall in capabilities list.
+    safe_uninstall: Optional[PluginSafeUninstall] = None
 
     @field_validator("id")
     @classmethod
@@ -933,6 +1036,66 @@ class PluginManifest(BaseModel):
             seen_paths.add(page.path)
         return self
 
+
+    @model_validator(mode="after")
+    def safe_uninstall_requires_capability(self) -> "PluginManifest":
+        """B3: safe_uninstall block requires Capability.safe_uninstall in capabilities."""
+        if self.safe_uninstall and Capability.safe_uninstall not in self.capabilities:
+            raise ValueError(
+                "safe_uninstall is declared but Capability.safe_uninstall is missing "
+                "from capabilities list."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def safe_uninstall_preserved_tables_slug_prefixed(self) -> "PluginManifest":
+        """B3: preserved_tables must start with {slug_under}."""
+        if not self.safe_uninstall or not self.safe_uninstall.preserved_tables:
+            return self
+        slug_under = self.id.replace("-", "_") + "_"
+        for table in self.safe_uninstall.preserved_tables:
+            if not table.lower().startswith(slug_under):
+                raise ValueError(
+                    f"safe_uninstall.preserved_tables entry '{table}' does not start "
+                    f"with required prefix '{slug_under}'. "
+                    "Preserved tables must be plugin-owned."
+                )
+        return self
+
+    @model_validator(mode="after")
+    def safe_uninstall_enabled_requires_confirmation(self) -> "PluginManifest":
+        """B3: if safe_uninstall.enabled is true, user_confirmation is required."""
+        su = self.safe_uninstall
+        if su and su.enabled and not su.block_uninstall and not su.user_confirmation:
+            raise ValueError(
+                "safe_uninstall.enabled is true but user_confirmation is not declared. "
+                "Admin must confirm with a checkbox + typed phrase."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def readonly_data_no_orphan_table_references(self) -> "PluginManifest":
+        """Vault B3.S4: readonly_data SQL must not reference _orphan_* tables.
+
+        Orphan tables are renamed on uninstall to prevent hostile reinstall from
+        accessing them via readonly_data declarations.
+        """
+        if not self.readonly_data:
+            return self
+        _TABLE_RE = re.compile(
+            r"\b(?:FROM|JOIN)\s+([a-zA-Z_][a-zA-Z0-9_]*)",
+            re.IGNORECASE,
+        )
+        for query in self.readonly_data:
+            tables = _TABLE_RE.findall(query.sql)
+            for table in tables:
+                if table.lower().startswith("_orphan_"):
+                    raise ValueError(
+                        f"ReadonlyQuery '{query.id}' references orphan table '{table}'. "
+                        "Queries must not reference _orphan_* tables — these are preserved "
+                        "from a previous uninstall and are inaccessible under the plugin namespace."
+                    )
+        return self
 
     @model_validator(mode="after")
     def public_pages_require_capability(self) -> "PluginManifest":

@@ -9,6 +9,7 @@ import {
 import { api } from '../lib/api'
 import type { Plugin } from '../components/PluginCard'
 import UpdatePreviewModal from '../components/UpdatePreviewModal'
+import PluginUninstall, { type SafeUninstallSpec } from '../components/PluginUninstall'
 
 interface HealthResult {
   slug: string
@@ -147,6 +148,9 @@ export default function PluginDetail() {
   // Wave 2.0 — Icon fallback state
   const [iconError, setIconError] = useState(false)
 
+  // B3 — Safe uninstall wizard state
+  const [showUninstallWizard, setShowUninstallWizard] = useState(false)
+
   // Wave 2.3 — MCP restart banner dismiss (persisted via localStorage)
   const mcpBannerKey = `mcp-restart-dismissed-${slug}`
   const [mcpBannerDismissed, setMcpBannerDismissed] = useState<boolean>(
@@ -191,16 +195,24 @@ export default function PluginDetail() {
     }
   }
 
-  async function handleUninstall() {
-    if (!slug || !window.confirm(t('plugins.confirmUninstall'))) return
-    setRemoving(true)
-    try {
-      await api.delete(`/plugins/${slug}`)
-      navigate('/plugins')
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : t('common.unexpectedError'))
-      setRemoving(false)
+  function handleUninstall() {
+    if (!slug) return
+    // B3: If plugin declares safe_uninstall.enabled, open the wizard instead of window.confirm.
+    const manifest = (plugin as unknown as Record<string, unknown> | null)?.manifest_json as Record<string, unknown> | undefined
+    const safeUninstall = (manifest?.safe_uninstall ?? {}) as SafeUninstallSpec
+    if (safeUninstall?.enabled) {
+      setShowUninstallWizard(true)
+      return
     }
+    // Legacy path: simple confirm dialog
+    if (!window.confirm(t('plugins.confirmUninstall'))) return
+    setRemoving(true)
+    api.delete(`/plugins/${slug}`)
+      .then(() => navigate('/plugins'))
+      .catch((e: unknown) => {
+        setError(e instanceof Error ? e.message : t('common.unexpectedError'))
+        setRemoving(false)
+      })
   }
 
   async function handleToggle() {
@@ -425,7 +437,21 @@ export default function PluginDetail() {
     mcpItems.length > 0 ||
     integrationItems.length > 0
 
+  // B3: Extract safe_uninstall spec from manifest for the wizard
+  const _manifest = (plugin as unknown as Record<string, unknown> | null)?.manifest_json as Record<string, unknown> | undefined
+  const _safeUninstallSpec = (_manifest?.safe_uninstall ?? {}) as SafeUninstallSpec
+
   return (
+    <>
+    {/* B3: Safe uninstall wizard overlay */}
+    {showUninstallWizard && slug && (
+      <PluginUninstall
+        slug={slug}
+        safeUninstall={_safeUninstallSpec}
+        onClose={() => setShowUninstallWizard(false)}
+        onUninstalled={() => navigate('/plugins')}
+      />
+    )}
     <div className="max-w-3xl mx-auto">
       {/* Back */}
       <button
@@ -679,5 +705,6 @@ export default function PluginDetail() {
         />
       )}
     </div>
+    </>
   )
 }

@@ -73,11 +73,12 @@ export const api = {
     if (!res.ok) throw await buildError(res);
     return res.json();
   },
-  delete: async (path: string) => {
+  delete: async (path: string, body?: unknown) => {
     const res = await fetch(`${API}/api${path}`, {
       method: 'DELETE',
-      headers: { ...XHR_HEADER },
+      headers: { 'Content-Type': 'application/json', ...XHR_HEADER },
       credentials: 'include',
+      body: body ? JSON.stringify(body) : undefined,
     });
     if (!res.ok) throw await buildError(res);
     return res.json();

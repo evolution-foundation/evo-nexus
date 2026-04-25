@@ -609,6 +609,27 @@ with app.app_context():
         _conn.commit()
     # --- End Wave 2.2r migration ---
 
+    # --- B3 safe_uninstall migration: plugin_orphans table ---
+    _existing_tables_b3 = {row[0] for row in _cur.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    if "plugin_orphans" not in _existing_tables_b3:
+        _cur.executescript("""
+            CREATE TABLE IF NOT EXISTS plugin_orphans (
+                id TEXT PRIMARY KEY,
+                slug TEXT NOT NULL,
+                tablename TEXT NOT NULL,
+                orphaned_at TEXT NOT NULL,
+                orphaned_by_user_id INTEGER,
+                original_plugin_version TEXT,
+                original_sha256 TEXT,
+                original_publisher_url TEXT,
+                recovered_at TEXT,
+                UNIQUE(slug, tablename)
+            );
+            CREATE INDEX IF NOT EXISTS idx_plugin_orphans_slug ON plugin_orphans(slug);
+        """)
+        _conn.commit()
+    # --- End B3 safe_uninstall migration ---
+
     # Fix corrupted datetime columns (NULL or non-string values crash SQLAlchemy)
     for _tbl, _col in [("roles", "created_at"), ("users", "created_at"), ("users", "last_login")]:
         try:
