@@ -62,6 +62,10 @@ class Capability(str, Enum):
     # Wave 2.1 — full-screen plugin UI pages + writable data
     ui_pages = "ui_pages"
     writable_data = "writable_data"
+    # B2.0 — unauthenticated public pages served by the host (token-bound)
+    public_pages = "public_pages"
+    # B3 — safe uninstall with data preservation and 3-step wizard
+    safe_uninstall = "safe_uninstall"
 
 
 class PluginMcpServer(BaseModel):
@@ -303,6 +307,13 @@ class ReadonlyQuery(BaseModel):
     id: Annotated[str, Field(min_length=1, max_length=100)]
     description: Annotated[str, Field(min_length=1, max_length=500)]
     sql: Annotated[str, Field(min_length=1)]
+    # B2.0: expose this query on the public portal without host auth.
+    # Value is the PluginPublicPage.id that gates access.
+    public_via: Optional[str] = None
+    # B2.0: named SQL parameter in ``sql`` that receives the URL token value.
+    # Required when public_via is set.  The parameter must appear in ``sql``
+    # as :token_param (e.g. ``WHERE magic_link_token = :token``).
+    bind_token_param: Optional[str] = None
 
     @field_validator("id")
     @classmethod
@@ -586,6 +597,122 @@ class PluginWritableResource(BaseModel):
         return v
 
 
+class PluginPublicPageTokenSource(BaseModel):
+    """Token source declaration for a public page (B2.0).
+
+    The host validates the incoming token against ``column`` in ``table``
+    using a parametric query.  Table must be slug-prefixed (enforced by the
+    PluginManifest validator ``public_pages_tables_slug_prefixed``).
+
+    B2.0 v1 deliberately does NOT support a ``revoked_when`` SQL fragment to
+    prevent SQL injection.  Revocation is the plugin's responsibility: nulling
+    or rotating the token column value causes the next request to 404.
+    """
+
+    # Plugin-owned table containing the token column (validated slug-prefixed)
+    table: Annotated[str, Field(min_length=1, max_length=200)]
+    # Column in ``table`` that holds the token value
+    column: Annotated[str, Field(min_length=1, max_length=100)]
+
+    @field_validator("table")
+    @classmethod
+    def table_identifier(cls, v: str) -> str:
+        if not re.match(r"^[a-z][a-z0-9_]*$", v):
+            raise ValueError(
+                f"token_source.table '{v}' must match ^[a-z][a-z0-9_]*$"
+            )
+        return v
+
+    @field_validator("column")
+    @classmethod
+    def column_identifier(cls, v: str) -> str:
+        if not re.match(r"^[a-z][a-z0-9_]*$", v):
+            raise ValueError(
+                f"token_source.column '{v}' must match ^[a-z][a-z0-9_]*$"
+            )
+        return v
+
+
+class PluginPublicPage(BaseModel):
+    """A public (unauthenticated) page declared in plugin.yaml under public_pages (B2.0).
+
+    The host registers ``/p/{slug}/{route_prefix}/{token}`` as a public route
+    and validates the token against ``token_source.column`` in ``token_source.table``
+    on every request.  Only B2.0 (read-only, no PIN) is supported in v1.
+    B2.1 (PIN + writable + auto_set_columns) is deferred.
+    """
+
+    # Unique identifier within this plugin's public_pages list
+    id: Annotated[str, Field(min_length=1, max_length=100)]
+    # Human-readable label for audit logs and admin UI
+    description: Annotated[str, Field(min_length=1, max_length=500)]
+    # URL prefix segment, without leading/trailing slashes (e.g. "portal")
+    route_prefix: Annotated[str, Field(min_length=1, max_length=100)]
+    # Token source — which plugin table/column the URL token is validated against
+    token_source: PluginPublicPageTokenSource
+    # Plugin JS bundle path (must be under ui/public/)
+    bundle: Annotated[str, Field(min_length=1, max_length=500)]
+    # Web component tag name registered by the bundle
+    custom_element_name: Annotated[str, Field(min_length=1, max_length=200)]
+    # auth_mode: only "token" is supported in B2.0 (B2.1 will add "pin")
+    auth_mode: Literal["token"] = "token"
+    # Rate limit override per page (requests/minute/IP); defaults to global limiter
+    rate_limit_per_ip: Optional[int] = None
+    # Optional action name to write to the audit log on each page view
+    audit_action: Optional[str] = None
+
+    @field_validator("id")
+    @classmethod
+    def id_pattern(cls, v: str) -> str:
+        if not re.match(r"^[a-z0-9_]+$", v):
+            raise ValueError(f"PluginPublicPage id '{v}' must match ^[a-z0-9_]+$")
+        return v
+
+    @field_validator("route_prefix")
+    @classmethod
+    def route_prefix_clean(cls, v: str) -> str:
+        """No leading/trailing slashes; only lowercase alphanum + hyphens."""
+        v = v.strip("/")
+        if not re.match(r"^[a-z0-9][a-z0-9-]*[a-z0-9]$|^[a-z0-9]$", v):
+            raise ValueError(
+                f"route_prefix '{v}' must be lowercase alphanum+hyphens, no slashes"
+            )
+        return v
+
+    @field_validator("bundle")
+    @classmethod
+    def bundle_in_public_subtree(cls, v: str) -> str:
+        """Bundle must live under ui/public/ to prevent leaking authenticated bundles."""
+        if not v.startswith("ui/public/"):
+            raise ValueError(
+                f"PluginPublicPage bundle '{v}' must start with 'ui/public/' "
+                "(authenticated ui_pages bundles are not accessible from public routes)."
+            )
+        ext = Path(v).suffix.lower()
+        if ext not in {".js", ".mjs"}:
+            raise ValueError(
+                f"PluginPublicPage bundle '{v}' must have a .js or .mjs extension."
+            )
+        return v
+
+    @field_validator("custom_element_name")
+    @classmethod
+    def custom_element_name_has_hyphen(cls, v: str) -> str:
+        if "-" not in v:
+            raise ValueError(
+                f"custom_element_name '{v}' must contain at least one hyphen "
+                "(Web Components specification requirement)."
+            )
+        return v
+
+    @field_validator("rate_limit_per_ip")
+    @classmethod
+    def rate_limit_positive(cls, v: Optional[int]) -> Optional[int]:
+        if v is not None and v < 1:
+            raise ValueError("rate_limit_per_ip must be a positive integer")
+        return v
+
+
 class PluginUIEntryPoints(BaseModel):
     """Typed container for ui_entry_points in plugin.yaml (Wave 2.1).
 
@@ -654,6 +781,11 @@ class PluginManifest(BaseModel):
     # Each entry declares a named integration with env vars + optional health check.
     # env_vars_needed is kept as deprecated warning-only for backwards compatibility.
     integrations: Optional[List["PluginIntegration"]] = None
+
+    # --- B2.0: Public pages (unauthenticated, token-bound) ---
+    # Declared under public_pages: in plugin.yaml.
+    # Requires Capability.public_pages in capabilities list.
+    public_pages: Optional[List[PluginPublicPage]] = None
 
     @field_validator("id")
     @classmethod
@@ -799,6 +931,73 @@ class PluginManifest(BaseModel):
                 )
             seen_ids.add(page.id)
             seen_paths.add(page.path)
+        return self
+
+
+    @model_validator(mode="after")
+    def public_pages_require_capability(self) -> "PluginManifest":
+        """B2.0: public_pages block requires Capability.public_pages in capabilities."""
+        if self.public_pages and Capability.public_pages not in self.capabilities:
+            raise ValueError(
+                "public_pages is declared but Capability.public_pages is missing "
+                "from capabilities list."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def public_pages_tables_slug_prefixed(self) -> "PluginManifest":
+        """B2.0: token_source.table must start with {slug_under} (same guard as readonly/writable)."""
+        if not self.public_pages:
+            return self
+        slug_under = self.id.replace("-", "_") + "_"
+        for page in self.public_pages:
+            table = page.token_source.table
+            if not table.lower().startswith(slug_under):
+                raise ValueError(
+                    f"PluginPublicPage '{page.id}' token_source.table '{table}' "
+                    f"does not start with required prefix '{slug_under}'. "
+                    "Public page token sources must only reference the plugin's own tables."
+                )
+        return self
+
+    @model_validator(mode="after")
+    def public_pages_ids_unique(self) -> "PluginManifest":
+        """B2.0: public page ids and route_prefixes must be unique within a plugin."""
+        if not self.public_pages:
+            return self
+        seen_ids: set[str] = set()
+        seen_prefixes: set[str] = set()
+        for page in self.public_pages:
+            if page.id in seen_ids:
+                raise ValueError(
+                    f"Duplicate PluginPublicPage id '{page.id}' in public_pages."
+                )
+            if page.route_prefix in seen_prefixes:
+                raise ValueError(
+                    f"Duplicate PluginPublicPage route_prefix '{page.route_prefix}' in public_pages."
+                )
+            seen_ids.add(page.id)
+            seen_prefixes.add(page.route_prefix)
+        return self
+
+    @model_validator(mode="after")
+    def readonly_public_via_references_valid_page(self) -> "PluginManifest":
+        """B2.0: readonly_data[].public_via must reference a declared public_pages[].id."""
+        has_public_via = [q for q in self.readonly_data if q.public_via]
+        if not has_public_via:
+            return self
+        page_ids = {p.id for p in (self.public_pages or [])}
+        for query in has_public_via:
+            if query.public_via not in page_ids:
+                raise ValueError(
+                    f"ReadonlyQuery '{query.id}' references public_via='{query.public_via}' "
+                    "which is not declared in public_pages."
+                )
+            if not query.bind_token_param:
+                raise ValueError(
+                    f"ReadonlyQuery '{query.id}' has public_via set but bind_token_param "
+                    "is missing. The query must declare which SQL parameter receives the token."
+                )
         return self
 
 
