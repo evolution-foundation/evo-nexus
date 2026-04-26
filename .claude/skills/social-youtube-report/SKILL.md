@@ -64,8 +64,3 @@ workspace/social/reports/youtube/[C] YYYY-MM-DD-youtube-{period}.html
 ```
 
 Criar diretório if it does not exist.
-
-### Step 7 — Telegram
-
-Notify: `reply(chat_id="946857210", text="...")`
-Format: emoji + canal + inscritos + delta + melhor vídeo

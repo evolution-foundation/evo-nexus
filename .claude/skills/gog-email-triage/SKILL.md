@@ -354,11 +354,3 @@ See `skills/gog/_shared/references/testing.md` for complete test plan.
 - If email subject/sender contains obvious credentials or secrets, redact in output
 
 - For recurring newsletters, suggest creating a filter/rule rather than manual archiving
-
-
-### Notify via Telegram
-
-Upon completion, send a short summary via Telegram to the user:
-- Use the Telegram MCP: `reply(chat_id="YOUR_CHAT_ID", text="...")`
-- Format: emoji + routine name + main result (1-3 lines)
-- If the routine had no updates, send anyway with "no updates"

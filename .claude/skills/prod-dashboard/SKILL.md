@@ -142,10 +142,3 @@ Present a short summary:
 **Health:** Product {status} | Community {status} | Financial {status} | Routines {status}
 **Alerts:** {N} attention points
 ```
-
-### Notify via Telegram
-
-Upon completion, send a short summary via Telegram to the user:
-- Use the Telegram MCP: `reply(chat_id="YOUR_CHAT_ID", text="...")`
-- Format: emoji + routine name + health status of each area (1-3 lines)
-- If there were no updates, send anyway with "no updates"

@@ -178,9 +178,3 @@ Create the directory `workspace/community/reports/monthly/` if it does not exist
 **Sentiment:** {trend} | **Resolution:** {X}%
 **Highlights:** {N} features, {N} bugs, {N} docs gaps
 ```
-
-### Notify via Telegram
-
-Upon completion, send a short summary via Telegram to the user:
-- Use the Telegram MCP: `reply(chat_id="YOUR_CHAT_ID", text="...")`
-- Format: emoji + "Community Monthly" + MAM + sentiment + highlights (2-3 lines)

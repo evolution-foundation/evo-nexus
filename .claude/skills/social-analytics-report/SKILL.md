@@ -137,16 +137,3 @@ workspace/social/reports/consolidated/[C] YYYY-MM-DD-social-analytics.html
 ```
 
 Create directory if it does not exist.
-
-### Step 9 — Telegram
-
-Notify: `reply(chat_id="YOUR_CHAT_ID", text="...")`
-Format:
-```
-📊 Social Analytics — {period}
-👥 Total followers: {N} ({delta})
-📹 YouTube: {subs} sub | {eng}% eng
-📸 Instagram: {followers} fol | {eng}% eng  
-💼 LinkedIn: profile connected
-🏆 Top: "{best content}" ({platform}, {eng}%)
-```

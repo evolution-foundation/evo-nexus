@@ -164,9 +164,3 @@ Create the directory `workspace/finance/reports/weekly/` if it does not exist.
 **MRR total:** R$ X,XXX (Stripe: R$ X,XXX | Evo Academy: R$ X,XXX) | **Projected 30d balance:** R$ XX,XXX
 **Alerts:** {N} overdue accounts | {N} pending invoices
 ```
-
-### Notify via Telegram
-
-Upon completion, send a short summary via Telegram to the user:
-- Use the Telegram MCP: `reply(chat_id="YOUR_CHAT_ID", text="...")`
-- Format: emoji + "Financial Weekly" + revenue vs expenses + MRR + alerts (2-3 lines)

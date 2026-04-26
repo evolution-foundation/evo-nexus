@@ -182,9 +182,3 @@ Create the directory `workspace/finance/reports/monthly/` if it does not exist.
 **Checklist:** X/10 completed
 **Finance team pending items:** {N} items
 ```
-
-### Notify via Telegram
-
-Upon completion, send a short summary via Telegram to the user:
-- Use the Telegram MCP: `reply(chat_id="YOUR_CHAT_ID", text="...")`
-- Format: emoji + "Monthly Close" + month's result + pending items (2-3 lines)
