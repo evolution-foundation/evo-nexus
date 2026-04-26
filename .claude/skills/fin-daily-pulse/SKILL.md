@@ -157,9 +157,9 @@ workspace/finance/reports/daily/[C] YYYY-MM-DD-financial-pulse.html
 
 Create the directory `workspace/finance/reports/daily/` if it does not exist.
 
-## Step 8 — Confirm and notify (ONE Telegram message only)
+## Step 8 — Confirm
 
-Output the completion summary, then send **exactly one** Telegram message. Do NOT call `reply` more than once per run.
+Output the completion summary in the terminal:
 
 ```
 ## Financial Pulse generated
@@ -171,6 +171,4 @@ Output the completion summary, then send **exactly one** Telegram message. Do NO
 **Alerts:** {N} attention points
 ```
 
-Call `reply` **once** with a short summary (do not send the full markdown above — send a compact version):
-
-- Format: `[emoji] Financial Pulse [date] | MRR: R$ X,XXX | Receita: R$ X,XXX | Churn: X% | [N] alertas`
+Do NOT send a Telegram message here — the caller handles notifications.

@@ -317,11 +317,13 @@ def run_skill(
         )
         if chat_id:
             prompt += (
-                f"\n\nAo concluir TODOS os passos acima, envie UMA única mensagem Telegram via:"
-                f'\nreply(chat_id="{chat_id}", text="...")'
-                f"\nFormato: emoji + nome da rotina + principais resultados em 2-3 linhas."
-                f"\nCRÍTICO: chame reply() EXATAMENTE UMA VEZ, somente aqui no final."
-                f" Não envie mensagens intermediárias nem de progresso."
+                f"\n\n---\n"
+                f"NOTIFICAÇÃO TELEGRAM — executar SOMENTE após concluir TODOS os passos acima.\n"
+                f"Use a ferramenta Telegram reply com chat_id={chat_id} e um texto compacto:\n"
+                f"  emoji + nome da rotina + data + principais resultados em 2-3 linhas.\n"
+                f"REGRA ABSOLUTA: chame a ferramenta reply UMA ÚNICA VEZ, no final de tudo.\n"
+                f"Nunca chame reply para progresso, confirmação intermediária ou teste.\n"
+                f"---"
             )
     return run_claude(prompt, log_name or skill_name, timeout, agent=agent)
 
