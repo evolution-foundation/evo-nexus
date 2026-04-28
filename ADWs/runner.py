@@ -303,29 +303,47 @@ def run_skill(
 
     Args:
         notify_telegram: Controls post-skill Telegram notification.
-            False (default) — no notification (skill must NOT call reply() either).
-            True            — appends notification instruction; reads chat_id from
-                              TELEGRAM_CHAT_ID env var.
+            False (default) — no notification.
+            True            — Python sends ONE Telegram after the skill; reads
+                              chat_id from TELEGRAM_CHAT_ID env var.
             "<chat_id>"     — same as True but overrides the chat_id.
+
+    The agent is asked to output a line "TELEGRAM_MSG: <text>" in its stdout.
+    Python reads that line and calls send_telegram() exactly once.
+    The agent NEVER calls the Telegram MCP tool directly.
     """
-    prompt = f"Execute the skill /{skill_name} {args}".strip()
+    chat_id = None
     if notify_telegram:
         chat_id = (
             notify_telegram
             if isinstance(notify_telegram, str)
             else os.environ.get("TELEGRAM_CHAT_ID", "")
+        ) or None
+
+    prompt = f"Execute the skill /{skill_name} {args}".strip()
+    if chat_id:
+        prompt += (
+            f"\n\n---\n"
+            f"Ao finalizar, escreva na última linha do output:\n"
+            f"TELEGRAM_MSG: [emoji] [nome da rotina] [data] | [resultado 1] | [resultado 2]\n"
+            f"Apenas UMA linha TELEGRAM_MSG:. NÃO use a ferramenta Telegram/reply — "
+            f"o sistema Python lê essa linha e envia a notificação automaticamente.\n"
+            f"---"
         )
-        if chat_id:
-            prompt += (
-                f"\n\n---\n"
-                f"NOTIFICAÇÃO TELEGRAM — executar SOMENTE após concluir TODOS os passos acima.\n"
-                f"Use a ferramenta Telegram reply com chat_id={chat_id} e um texto compacto:\n"
-                f"  emoji + nome da rotina + data + principais resultados em 2-3 linhas.\n"
-                f"REGRA ABSOLUTA: chame a ferramenta reply UMA ÚNICA VEZ, no final de tudo.\n"
-                f"Nunca chame reply para progresso, confirmação intermediária ou teste.\n"
-                f"---"
-            )
-    return run_claude(prompt, log_name or skill_name, timeout, agent=agent)
+
+    result = run_claude(prompt, log_name or skill_name, timeout, agent=agent)
+
+    if chat_id and result.get("returncode", -1) == 0:
+        stdout = result.get("stdout", "")
+        for line in reversed(stdout.splitlines()):
+            line = line.strip()
+            if line.startswith("TELEGRAM_MSG:"):
+                msg = line[len("TELEGRAM_MSG:"):].strip()
+                if msg:
+                    send_telegram(msg, chat_id=chat_id)
+                break  # only ever send one message
+
+    return result
 
 
 def run_script(func, log_name: str = "unnamed", timeout: int = 120) -> dict:

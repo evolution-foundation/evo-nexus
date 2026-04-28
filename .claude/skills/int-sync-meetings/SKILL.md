@@ -184,15 +184,13 @@ When finished, present a short summary:
 
 Without listing tasks one by one — just counts. If the user wants details, they ask.
 
-### Step 9 — Notify via Telegram
+### Step 9 — Notification line
 
-Only send if at least one new meeting was processed (i.e., you did NOT stop at Step 2).
+Only if at least one new meeting was processed, write this as the last line of your output:
 
-Use the Telegram reply tool with the user's chat_id and a short summary:
-- Format: emoji + title + meeting count + task count
-- One line only
+TELEGRAM_MSG: 🎙️ Sync Fathom — N reunião(ões) processada(s) | N tarefas criadas
 
-If there are no new meetings (stopped at Step 2), do **NOT** send any Telegram message — stay completely silent.
+If no new meetings were processed (stopped at Step 2), do NOT write a TELEGRAM_MSG line.
 
 ## Notes
 
