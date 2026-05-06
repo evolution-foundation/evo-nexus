@@ -1,86 +1,88 @@
 # Contributing to EvoNexus
 
-Thank you for your interest in contributing to EvoNexus! This document provides guidelines for contributing.
+Thanks for your interest in contributing to EvoNexus! This document
+outlines how to contribute effectively.
+
+## Code of Conduct
+
+All contributors are expected to be respectful, inclusive, and professional.
+Harassment, discrimination, or abusive behavior will not be tolerated.
 
 ## How to Contribute
 
-### Reporting Issues
+### Reporting Bugs
 
-- Use [GitHub Issues](https://github.com/EvolutionAPI/evo-nexus/issues) to report bugs or request features
-- Include steps to reproduce, expected behavior, and actual behavior
-- Include your OS, Python version, and Node.js version
+1. Check existing [issues](https://github.com/EvolutionAPI/evo-nexus/issues)
+   to avoid duplicates
+2. Open a new issue with:
+   - Clear, descriptive title
+   - Steps to reproduce
+   - Expected vs actual behavior
+   - Environment details (OS, version, dependencies)
+   - Logs or screenshots when relevant
 
-### Cloning the repository
+### Suggesting Features
 
-The repository history currently carries legacy PNG avatar blobs that inflate
-a full clone to roughly 290 MB even though the working tree is only ~13 MB.
-Until the one-time history rewrite tracked in [#26](https://github.com/EvolutionAPI/evo-nexus/issues/26)
-lands, we recommend cloning with blob filtering — git fetches objects on
-demand instead of downloading the entire history up front:
+1. Open an issue describing:
+   - The problem you're trying to solve
+   - Your proposed solution
+   - Alternatives you considered
+2. Wait for maintainer feedback before starting implementation
 
-```bash
-# Recommended — ~10 MB, full log/blame still work, blobs lazy-load
-git clone --filter=blob:none https://github.com/EvolutionAPI/evo-nexus.git
-
-# Alternative if you only need the working tree (no history) — ~8 MB
-git clone --depth 1 --branch develop https://github.com/EvolutionAPI/evo-nexus.git
-```
-
-Both forms support all normal read operations. `--filter=blob:none` is
-preferred for regular contribution work because `git log`, `git blame` and
-`git show` still function; the first time you access an older blob git
-fetches it on demand.
-
-### Pull Requests
+### Submitting Pull Requests
 
 1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/my-feature`)
-3. Make your changes
-4. Test locally (`make setup` + `make dashboard-app`)
-5. Commit with a clear message
-6. Push and open a PR
+2. Create a feature branch from `develop`:
+   ```bash
+   git checkout -b feat/your-feature-name
+   ```
+3. Make your changes following the project's coding standards
+4. Write or update tests for your changes
+5. Ensure all tests pass and the code lints clean
+6. Commit using [Conventional Commits](https://www.conventionalcommits.org/):
+   ```
+   feat: add new feature
+   fix: resolve bug in X
+   docs: update README
+   refactor: simplify Y
+   test: add coverage for Z
+   ```
+7. Push to your fork and open a PR against `develop`
+8. Fill out the PR template with context, testing notes, and screenshots if
+   applicable
 
-### What to Contribute
+## Development Setup
 
-**High impact areas:**
-- New agents for business domains (HR, Legal, Customer Success, Product)
-- New integration clients (Slack, Outlook, HubSpot, QuickBooks)
-- New skills for existing agents
-- Dashboard improvements (new pages, charts, features)
-- Documentation and guides
-- Bug fixes
-- Test coverage
+See [README.md](./README.md) for project-specific setup instructions.
 
-### Creating a New Agent
+## Code Standards
 
-1. Create `.claude/agents/my-agent.md` — follow the pattern in existing agents
-2. Create `.claude/commands/my-agent.md` — slash command to invoke it
-3. Add skills in `.claude/skills/prefix-*/SKILL.md`
-4. Add routines in `ADWs/routines/custom/my_routine.py` (custom routines are gitignored — only core routines live in `ADWs/routines/`)
-5. Add HTML template in `.claude/templates/html/`
-6. Update `config/routines.yaml.example` with the new routine
+- Follow the existing code style of the project
+- Run linters and formatters before committing
+- Add tests for new features and bug fixes
+- Document public APIs and non-obvious behavior
+- Keep commits atomic and focused
 
-### Creating a New Skill
+## Branch Strategy
 
-1. Create `.claude/skills/prefix-name/SKILL.md`
-2. Follow the YAML frontmatter format (name, description)
-3. Keep SKILL.md under 500 lines
-4. Add examples if helpful
+- `main` — stable production-ready code
+- `develop` — integration branch for upcoming releases
+- `feat/*`, `fix/*`, `chore/*` — short-lived branches off `develop`
 
-### Creating a New Integration
+## Trademark Notice
 
-1. Create script in `.claude/skills/int-name/scripts/client.py`
-2. Create `.claude/skills/int-name/SKILL.md`
-3. Add required env vars to `.env.example`
-4. Document in the skill's SKILL.md
+By contributing, you agree that your contributions will be licensed under the
+Apache License 2.0 (see [LICENSE](./LICENSE)). Trademarks and brand assets are
+governed separately by [TRADEMARKS.md](./TRADEMARKS.md).
 
-## Code Style
+## Questions?
 
-- **Python**: Follow PEP 8, use type hints where helpful
-- **TypeScript/React**: Follow existing patterns in `dashboard/frontend/`
-- **Markdown**: Use clear headers, keep skills concise
-- **Commits**: Use conventional commits (`feat:`, `fix:`, `docs:`)
+- **Community**: [evolutionfoundation.com.br/community](https://evolutionfoundation.com.br/community)
+- **Documentation**: [docs.evolutionfoundation.com.br](https://docs.evolutionfoundation.com.br)
+- **Email**: suporte@evofoundation.com.br
 
-## License
+Thanks for helping make EvoNexus better!
 
-By contributing, you agree that your contributions will be licensed under the MIT License.
+---
+
+© 2026 Evolution Foundation
