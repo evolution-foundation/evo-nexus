@@ -12,7 +12,7 @@ Harassment, discrimination, or abusive behavior will not be tolerated.
 
 ### Reporting Bugs
 
-1. Check existing [issues](https://github.com/EvolutionAPI/evo-nexus/issues)
+1. Check existing [issues](https://github.com/evolution-foundation/evo-nexus/issues)
    to avoid duplicates
 2. Open a new issue with:
    - Clear, descriptive title

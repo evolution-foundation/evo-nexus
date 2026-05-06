@@ -15,7 +15,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/EvolutionAPI/evo-nexus/releases/latest"><img src="https://img.shields.io/github/v/release/EvolutionAPI/evo-nexus?include_prereleases&label=version&color=00ffa7" alt="Latest version" /></a>
+  <a href="https://github.com/evolution-foundation/evo-nexus/releases/latest"><img src="https://img.shields.io/github/v/release/evolution-foundation/evo-nexus?include_prereleases&label=version&color=00ffa7" alt="Latest version" /></a>
   <a href="https://opensource.org/licenses/Apache-2.0"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License: Apache 2.0" /></a>
   <a href="https://docs.evolutionfoundation.com.br"><img src="https://img.shields.io/badge/Docs-evolutionfoundation.com.br-00ffa7" alt="Documentation" /></a>
   <a href="https://evolutionfoundation.com.br/community"><img src="https://img.shields.io/badge/Community-Join%20us-white" alt="Community" /></a>
@@ -46,7 +46,7 @@ It turns a single CLI installation into a team of **38 specialized agents** orga
 
 ## Part of the Evolution Foundation ecosystem
 
-EvoNexus is one of the projects maintained by Evolution Foundation. It is the operating layer that orchestrates the Foundation's own work — including the development of [Evo CRM Community](https://github.com/EvolutionAPI/evo-crm-community), [Evolution API](https://github.com/EvolutionAPI/evolution-api) and [Evolution Go](https://github.com/EvolutionAPI/evolution-go).
+EvoNexus is one of the projects maintained by Evolution Foundation. It is the operating layer that orchestrates the Foundation's own work — including the development of [Evo CRM Community](https://github.com/evolution-foundation/evo-crm-community), [Evolution API](https://github.com/evolution-foundation/evolution-api) and [Evolution Go](https://github.com/evolution-foundation/evolution-go).
 
 ### Why EvoNexus?
 
@@ -101,7 +101,7 @@ EvoNexus is one of the projects maintained by Evolution Foundation. It is the op
 ### Method 1 — Docker (no setup, runs anywhere)
 
 ```bash
-curl -O https://raw.githubusercontent.com/EvolutionAPI/evo-nexus/main/docker-compose.hub.yml
+curl -O https://raw.githubusercontent.com/evolution-foundation/evo-nexus/main/docker-compose.hub.yml
 docker compose -f docker-compose.hub.yml up -d
 open http://localhost:8080
 ```
@@ -117,7 +117,7 @@ npx @evoapi/evo-nexus
 ### Method 3 — Manual clone (developers / contributors)
 
 ```bash
-git clone --depth 1 https://github.com/EvolutionAPI/evo-nexus.git
+git clone --depth 1 https://github.com/evolution-foundation/evo-nexus.git
 cd evo-nexus
 
 # Interactive setup wizard
