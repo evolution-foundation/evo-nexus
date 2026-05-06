@@ -1,0 +1,26 @@
+EvoNexus
+Copyright 2026 Evolution Foundation
+
+This product includes software developed by Evolution Foundation
+(https://evolutionfoundation.com.br).
+
+Trademark notice
+"Evolution Foundation", "Evolution" and "EvoNexus" are trademarks of
+Evolution Foundation. The EvoNexus logo, wordmark, and visual identity
+are governed by the Trademark and Brand Assets Policy included in this
+repository (TRADEMARKS.md).
+
+Third-party attributions
+
+EvoNexus integrates with and is built around the Claude Code CLI by Anthropic.
+EvoNexus is an independent, unofficial project — it is not affiliated with,
+endorsed by, or sponsored by Anthropic, PBC. "Claude" and "Claude Code" are
+trademarks of Anthropic, PBC.
+
+This product includes software derived from oh-my-claudecode (OMC)
+(https://github.com/yeachan-heo/oh-my-claudecode) by Yeachan Heo, originally
+licensed under MIT. 19 of the 21 engineering agents and all dev-* skills in
+EvoNexus are derived from OMC v4.11.4. The 2 native agents (helm-conductor,
+mirror-retro) and the 6-phase workflow are EvoNexus-native additions.
+
+See NOTICE.md for the complete list of derived components and modifications.
