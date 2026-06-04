@@ -865,6 +865,16 @@ except ImportError:
 # that triggered "Flask app is not registered with this 'SQLAlchemy' instance"
 # on every boot, leaving auto-sync permanently off.
 try:
+    # Clear any orphaned sync lock left by a previous process killed mid-sync
+    # (e.g. restart during a watcher sync) BEFORE starting the watcher — else
+    # every enqueue fails the `WHERE sync_in_progress=0` guard and auto-sync
+    # stays dead for up to JOB_STALE_SECONDS until the janitor reclaims it.
+    from brain_repo.job_runner import reclaim_orphaned_locks_on_startup
+    reclaim_orphaned_locks_on_startup(app)
+except Exception:
+    pass  # best-effort; the janitor still reclaims stale locks on its schedule
+
+try:
     from brain_repo.watcher import start_brain_watcher
     start_brain_watcher(WORKSPACE, flask_app=app)
 except Exception as _bw_exc:

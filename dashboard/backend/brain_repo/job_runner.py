@@ -49,6 +49,15 @@ log = logging.getLogger(__name__)
 # instead of racing.
 _job_lock = threading.Lock()
 
+# Trailing-run coalescing: when enqueue_sync is called while a job is already
+# running, we can't start a second pipeline — but we must not silently drop the
+# request either (files written during that window would never be mirrored).
+# Instead we set _rerun_requested[user_id] = True.  run_sync_pipeline checks
+# this flag in its finally block, and if set, enqueues exactly ONE additional
+# trailing run.  N concurrent requests during one job → 1 trailing run, not N.
+# Protected by _job_lock so the flag check + clear + re-enqueue is atomic.
+_rerun_requested: dict[int, bool] = {}
+
 # Active kind when _job_lock is held — routed to BrainRepoConfig.sync_job_kind
 # so the UI shows "Sync in progress", "Creating milestone", or "Initializing
 # brain repo" without needing a separate field.
@@ -231,6 +240,17 @@ def build_ignore_callback(
         ignored: list[str] = []
         src_dir_path = Path(src_dir)
         for n in names:
+            # Never copy .gitignore files from source watched paths into the
+            # brain repo.  A nested .gitignore with wildcard rules (e.g.
+            # workspace/marketing/_state/.gitignore containing "*") would be
+            # honoured by the brain repo's own git, silently excluding the
+            # very content we want to back up.  The brain repo has its own
+            # root-level .gitignore that filters secrets/build artefacts; we
+            # must not let source-tree .gitignore files override it.
+            if n == ".gitignore":
+                ignored.append(n)
+                continue
+
             full = src_dir_path / n
             try:
                 rel = full.resolve().relative_to(workspace_root).as_posix()
@@ -352,6 +372,11 @@ def run_sync_pipeline(
     Called from a daemon thread. Never raises — all errors funnel into
     _release_db_lock(error=...) so the UI gets a status and the lock
     always releases.
+
+    After releasing the DB lock, checks _rerun_requested[user_id].  If set
+    (meaning one or more enqueue_sync calls arrived while this job was
+    running), clears the flag and enqueues exactly one trailing sync so the
+    final disk state is always reflected in the brain repo.
     """
     with _job_lock:
         # The DB lock is already set by enqueue_sync before the thread
@@ -417,6 +442,29 @@ def run_sync_pipeline(
             log.exception("job_runner %s raised unexpectedly", kind)
         finally:
             _release_db_lock(flask_app, user_id, success=success, error=error)
+
+        # Trailing-run check — runs inside _job_lock so the pop + enqueue is
+        # atomic against concurrent enqueue_sync calls.  The DB lock has been
+        # released above (by _release_db_lock in finally), so _acquire_db_lock
+        # inside enqueue_sync can succeed.
+        rerun = _rerun_requested.pop(user_id, False)
+        if rerun:
+            log.info(
+                "job_runner %s: trailing run requested, re-enqueueing for user %s",
+                kind, user_id,
+            )
+            # Spawn the trailing thread while still holding _job_lock so no
+            # other enqueue can sneak in between pop and the new acquire.
+            # The new thread will block on _job_lock itself and start only
+            # after this with-block exits.
+            t = threading.Thread(
+                target=run_sync_pipeline,
+                args=(flask_app, user_id, workspace),
+                kwargs={"kind": JOB_KIND_WATCHER, "commit_message": "auto: trailing watcher sync"},
+                name=f"brain-repo-trailing-{user_id}",
+                daemon=True,
+            )
+            t.start()
 
 
 def run_bootstrap_pipeline(
@@ -540,8 +588,21 @@ def enqueue_sync(
     tag_name: str | None = None,
     commit_message: str | None = None,
 ) -> bool:
-    """Spawn a daemon thread running run_sync_pipeline. Returns False if busy."""
+    """Spawn a daemon thread running run_sync_pipeline. Returns False if busy.
+
+    When a job is already running (returns False), sets _rerun_requested so
+    that run_sync_pipeline will enqueue exactly one trailing run after the
+    current job finishes — guaranteeing consistency even when files are
+    written during a busy window.
+    """
     if not _acquire_db_lock(flask_app, user_id, kind):
+        # Coalescing: N concurrent misses during one job → 1 trailing run.
+        with _job_lock:
+            _rerun_requested[user_id] = True
+        log.debug(
+            "enqueue_sync: job already running for user %s, trailing run requested",
+            user_id,
+        )
         return False
 
     t = threading.Thread(
@@ -598,6 +659,37 @@ def request_cancel(flask_app, user_id: int) -> bool:
         )
         db.session.commit()
         return rows == 1
+
+
+def reclaim_orphaned_locks_on_startup(flask_app) -> int:
+    """Clear ANY sync_in_progress lock at process startup (no age gate).
+
+    At startup no sync can legitimately be in flight yet — this process just
+    began and it is the only one that mirrors. So a ``sync_in_progress=True``
+    row can only be the residue of a previous process killed mid-sync (e.g. a
+    service restart during a watcher sync), which otherwise leaves auto-sync
+    DEAD for up to JOB_STALE_SECONDS (20 min) until the janitor reclaims it.
+    Sibling of git_ops._clear_stale_lock for the .git/index.lock case.
+    Returns the count cleared.
+    """
+    from models import BrainRepoConfig, db  # type: ignore[import]
+
+    with flask_app.app_context():
+        stale = BrainRepoConfig.query.filter(
+            BrainRepoConfig.sync_in_progress == True,  # noqa: E712
+        ).all()
+        count = 0
+        for config in stale:
+            config.sync_in_progress = False
+            config.sync_started_at = None
+            config.sync_job_kind = None
+            config.cancel_requested = False
+            config.last_error = "orphaned lock cleared at startup (process restart during sync)"
+            count += 1
+        if count:
+            db.session.commit()
+            log.warning("job_runner: cleared %d orphaned sync lock(s) at startup", count)
+        return count
 
 
 def reclaim_stale_locks(flask_app) -> int:
