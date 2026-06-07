@@ -885,7 +885,11 @@ export default function AgentChat({ agent, sessionId, accentColor = '#00FFA7', e
     }
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
-      sendMessage()
+      // Don't send while the agent is running: a new message aborts the
+      // in-flight query (chat-bridge stopSession), so the user's follow-up
+      // silently kills the response they're waiting on. Mirror the Send
+      // button, which is already disabled via `canSend` when status === 'running'.
+      if (status !== 'running') sendMessage()
     }
   }
 
