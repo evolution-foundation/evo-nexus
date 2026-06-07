@@ -114,3 +114,62 @@ test('TerminalServer purges stale sessions and reports health', async () => {
 
   server.close();
 });
+
+const ChatLogger = require('../src/utils/chat-logger');
+
+function makeChatLog(baseFolder, fileName, lines) {
+  const chatDir = path.join(baseFolder, 'workspace', 'ADWs', 'logs', 'chat');
+  fs.mkdirSync(chatDir, { recursive: true });
+  fs.writeFileSync(path.join(chatDir, fileName), lines.map((l) => JSON.stringify(l)).join('\n') + '\n');
+}
+
+test('ChatLogger.listSessions parses agent and session id (agent names may contain underscores)', () => {
+  const baseFolder = makeTempDir('evonexus-listsessions-');
+  const chatDir = path.join(baseFolder, 'workspace', 'ADWs', 'logs', 'chat');
+  fs.mkdirSync(chatDir, { recursive: true });
+  fs.writeFileSync(path.join(chatDir, 'oracle_abc12345.jsonl'), '');
+  fs.writeFileSync(path.join(chatDir, 'my_agent_def67890.jsonl'), '');
+  fs.writeFileSync(path.join(chatDir, 'not-a-log.txt'), 'ignored');
+
+  const logger = new ChatLogger(baseFolder);
+  const sessions = logger.listSessions().sort((a, b) => a.sessionId.localeCompare(b.sessionId));
+
+  assert.equal(sessions.length, 2);
+  assert.deepEqual(sessions[0], { agentName: 'oracle', sessionId: 'abc12345' });
+  assert.deepEqual(sessions[1], { agentName: 'my_agent', sessionId: 'def67890' });
+});
+
+test('TerminalServer rebuilds the session index from chat logs when the cache is empty', async () => {
+  const baseFolder = makeTempDir('evonexus-selfheal-');
+  makeChatLog(baseFolder, 'oracle_abc12345.jsonl', [
+    { role: 'user', text: 'Hello there', ts: Date.now(), uuid: 'u1' },
+    { role: 'assistant', text: 'Hi!', ts: Date.now(), uuid: 'a1' },
+  ]);
+
+  const server = new TerminalServer({
+    port: 0,
+    dev: false,
+    sessionGcIntervalMs: 0,
+    autoSaveIntervalMs: 0,
+  });
+  await server.ready;
+
+  // Point the logger at our temp logs and start from an empty cache.
+  server.chatLogger = new ChatLogger(baseFolder);
+  server.claudeSessions = new Map();
+
+  const recovered = server.rebuildSessionsFromLogs();
+
+  assert.equal(recovered, 1);
+  assert.equal(server.claudeSessions.has('abc12345'), true);
+  const recoveredSession = server.claudeSessions.get('abc12345');
+  assert.equal(recoveredSession.agentName, 'oracle');
+  assert.equal(recoveredSession.mode, 'chat');
+  assert.equal(recoveredSession.name, 'Hello there');
+  assert.equal(recoveredSession.chatHistory.length, 2);
+
+  // Idempotent: a second pass must not duplicate already-present sessions.
+  assert.equal(server.rebuildSessionsFromLogs(), 0);
+
+  server.close();
+});
