@@ -58,10 +58,62 @@ class TerminalServer {
       this.claudeSessions = sessions;
       if (sessions.size > 0) {
         console.log(`Loaded ${sessions.size} persisted sessions`);
+      } else {
+        // The cache (sessions.json) is empty or was lost — e.g. a container
+        // redeploy where its directory wasn't on a volume. Rebuild the list
+        // from the durable chat logs so conversations don't disappear.
+        const recovered = this.rebuildSessionsFromLogs();
+        if (recovered > 0) {
+          console.log(`Session cache empty — recovered ${recovered} session(s) from chat logs`);
+          await this.saveSessionsToDisk();
+        }
       }
     } catch (error) {
       console.error('Failed to load persisted sessions:', error);
     }
+  }
+
+  /**
+   * Rebuild the in-memory session index from the durable chat logs.
+   *
+   * sessions.json is only a fast-access cache; the JSONL logs under
+   * workspace/ADWs/logs/chat are the source of truth (see ChatLogger). If the
+   * cache is lost, the conversation list would otherwise come back empty even
+   * though the history is intact on disk. This reads each log back so the list
+   * self-heals.
+   *
+   * Only adds sessions not already present, so it never duplicates cached ones.
+   * Timestamps come from the log, so stale sessions are still dropped by the
+   * normal TTL policy on the next save / GC pass. Returns the count recovered.
+   */
+  rebuildSessionsFromLogs() {
+    let recovered = 0;
+    for (const { agentName, sessionId } of this.chatLogger.listSessions()) {
+      if (this.claudeSessions.has(sessionId)) continue;
+      const messages = this.chatLogger.read(agentName, sessionId);
+      if (!messages.length) continue;
+      const firstUser = messages.find((m) => m.role === 'user' && m.text);
+      const lastTs = messages[messages.length - 1].ts || Date.now();
+      this.claudeSessions.set(sessionId, {
+        id: sessionId,
+        name: firstUser ? firstUser.text.slice(0, 60) : `${agentName} session`,
+        created: new Date(lastTs),
+        lastActivity: new Date(lastTs),
+        lastAccessed: Date.now(),
+        workingDir: this.baseFolder,
+        agentName,
+        active: false,
+        outputBuffer: [],
+        connections: new Set(),
+        mode: 'chat',
+        chatHistory: messages,
+        sdkSessionId: null,
+        ticketId: null,
+        archived: false,
+      });
+      recovered += 1;
+    }
+    return recovered;
   }
 
   setupAutoSave() {

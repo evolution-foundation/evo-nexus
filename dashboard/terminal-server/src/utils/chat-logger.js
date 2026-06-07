@@ -132,6 +132,29 @@ class ChatLogger {
   exists(agentName, sessionId) {
     return fs.existsSync(this._logPath(agentName, sessionId));
   }
+
+  /**
+   * List every chat session that has a durable log on disk.
+   *
+   * Parses the JSONL filenames ({agentName}_{shortId}.jsonl). Agent names may
+   * contain underscores (see _logPath), so the session id is the segment after
+   * the LAST underscore. Returns [{ agentName, sessionId }] (empty on error).
+   */
+  listSessions() {
+    try {
+      const out = [];
+      for (const file of fs.readdirSync(this.logsDir)) {
+        if (!file.endsWith('.jsonl')) continue;
+        const base = file.slice(0, -'.jsonl'.length);
+        const i = base.lastIndexOf('_');
+        if (i <= 0 || i === base.length - 1) continue; // need non-empty agent and id
+        out.push({ agentName: base.slice(0, i), sessionId: base.slice(i + 1) });
+      }
+      return out;
+    } catch {
+      return [];
+    }
+  }
 }
 
 module.exports = ChatLogger;
