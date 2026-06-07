@@ -156,6 +156,16 @@ def register_websocket_proxy(sock) -> None:
         target = f"{TERMINAL_WS_BASE}/ws"
         try:
             upstream = create_connection(target, timeout=10)
+            # websocket-client's `timeout` arg also becomes the socket READ
+            # timeout and persists after connect. Left as-is, upstream.recv()
+            # in the _pump_upstream_to_client thread below raises a timeout
+            # every 10s on an idle chat, tearing the bridge down. The frontend
+            # then reconnects on a ~10s loop (visible as the chat flashing
+            # "connecting", or "Invalid frame header" in the browser console).
+            # Clear it so recv() blocks until real data arrives or the socket
+            # closes; genuine disconnects still surface via the client receive
+            # loop (its own 30s timeout) and the frontend ping/pong heartbeat.
+            upstream.settimeout(None)
         except Exception as exc:
             log.warning("terminal_proxy: upstream WS connect failed: %s", exc)
             try:
