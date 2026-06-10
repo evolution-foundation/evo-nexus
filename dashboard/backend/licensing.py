@@ -4,12 +4,14 @@ Privacy-first: only records who installed. No continuous monitoring.
 
 Protocol:
   POST /v1/register/direct  — register with email/name, receive api_key
+  POST /v1/register/auto    — headless register by email (must exist server-side)
   POST /v1/activate         — validate existing api_key on startup
   GET  /api/geo             — geo-lookup from client IP
 """
 
 import hashlib
 import hmac as hmac_mod
+import os
 import socket
 import uuid
 import logging
@@ -155,6 +157,24 @@ def direct_register(email: str, name: str, instance_id: str,
     return _post("/v1/register/direct", payload)
 
 
+# ── Auto Registration (email-only, headless) ──
+
+def auto_register(email: str, instance_id: str) -> dict:
+    """Headless registration using only the operator email.
+
+    The customer must already exist on the licensing server (one prior manual
+    registration). Used by the EVOLUTION_OPERATOR_EMAIL env-var flow.
+
+    Returns {api_key, customer_id, tier, status}.
+    """
+    return _post("/v1/register/auto", {
+        "email": email,
+        "tier": TIER,
+        "instance_id": instance_id,
+        "version": VERSION,
+    })
+
+
 # ── Activation (startup with existing api_key) ──
 
 def activate(instance_id: str, api_key: str) -> bool:
@@ -260,8 +280,54 @@ def initialize_runtime():
 
 # ── Auto-register for existing installs ──────
 
+def try_auto_register_from_env(instance_id: str) -> bool:
+    """Headless activation via EVOLUTION_OPERATOR_EMAIL env var.
+
+    Requires the email to already exist on the licensing server (one prior
+    manual registration). Returns True on success.
+
+    Failures are silent — caller falls back to the existing admin-based or
+    manual setup flow.
+    """
+    email = os.environ.get("EVOLUTION_OPERATOR_EMAIL", "").strip()
+    if not email:
+        return False
+
+    try:
+        result = auto_register(email=email, instance_id=instance_id)
+    except requests.HTTPError as e:
+        status = e.response.status_code if e.response is not None else "?"
+        if status == 404:
+            logger.info("Auto-activation skipped — email not registered yet (first time?).")
+        else:
+            logger.warning(f"Auto-activation rejected ({status}): falling back to manual flow.")
+        return False
+    except Exception as e:
+        logger.warning(f"Auto-activation skipped — {e}")
+        return False
+
+    api_key = result.get("api_key")
+    if not api_key:
+        logger.warning("Auto-activation response missing api_key")
+        return False
+
+    set_runtime_config("api_key", api_key)
+    set_runtime_config("tier", result.get("tier", TIER))
+    if result.get("customer_id"):
+        set_runtime_config("customer_id", str(result["customer_id"]))
+    set_runtime_config("version", VERSION)
+    set_runtime_config("registered_at", datetime.now(timezone.utc).isoformat())
+
+    ctx = get_context()
+    ctx.api_key = api_key
+    ctx.instance_id = instance_id
+    logger.info("License activated automatically via EVOLUTION_OPERATOR_EMAIL")
+    return True
+
+
 def auto_register_if_needed():
-    """If users exist but no license, register retroactively."""
+    """If no license yet, try EVOLUTION_OPERATOR_EMAIL first, then fall back to
+    the admin-based retroactive flow."""
     try:
         instance_id = get_runtime_config("instance_id")
         api_key = get_runtime_config("api_key")
@@ -270,6 +336,15 @@ def auto_register_if_needed():
             initialize_runtime()
             return
 
+        if not instance_id:
+            instance_id = generate_instance_id()
+            set_runtime_config("instance_id", instance_id)
+
+        # First-class path: silent activation from env var.
+        if try_auto_register_from_env(instance_id):
+            return
+
+        # Fallback: if there's an admin user already, register retroactively.
         from models import User
         if User.query.count() == 0:
             return
@@ -277,10 +352,6 @@ def auto_register_if_needed():
         admin = User.query.filter_by(role="admin").first()
         if not admin or not admin.email:
             return
-
-        if not instance_id:
-            instance_id = generate_instance_id()
-            set_runtime_config("instance_id", instance_id)
 
         setup_perform(
             email=admin.email or "",
