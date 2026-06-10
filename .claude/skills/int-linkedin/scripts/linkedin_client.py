@@ -233,6 +233,41 @@ if __name__ == "__main__":
             result = org_followers(acc)
         elif cmd == "summary":
             result = all_accounts_summary()
+        elif cmd == "smoke":
+            import time as _time
+            _t0 = _time.time()
+            _steps = []
+            _overall = "PASS"
+
+            # step 1: auth — load accounts
+            _ts = _time.time()
+            try:
+                _accounts = _get_accounts()
+                _steps.append({"step": "auth", "status": "PASS", "duration_ms": round((_time.time() - _ts) * 1000)})
+            except Exception as _e:
+                _steps.append({"step": "auth", "status": "FAIL", "error": str(_e)[:300], "duration_ms": round((_time.time() - _ts) * 1000)})
+                _overall = "FAIL"
+                _accounts = []
+
+            # step 2: profile read
+            _ts = _time.time()
+            if not _accounts:
+                _steps.append({"step": "profile_read", "status": "SKIP", "duration_ms": 0})
+            else:
+                try:
+                    _acc = _accounts[0]
+                    _r = profile(_acc)
+                    if "error" in _r:
+                        _steps.append({"step": "profile_read", "status": "FAIL", "error": str(_r["error"])[:300], "duration_ms": round((_time.time() - _ts) * 1000)})
+                        _overall = "FAIL"
+                    else:
+                        _steps.append({"step": "profile_read", "status": "PASS", "duration_ms": round((_time.time() - _ts) * 1000)})
+                except Exception as _e:
+                    _steps.append({"step": "profile_read", "status": "FAIL", "error": str(_e)[:300], "duration_ms": round((_time.time() - _ts) * 1000)})
+                    _overall = "FAIL"
+
+            print(json.dumps({"overall": _overall, "steps": _steps, "duration_ms": round((_time.time() - _t0) * 1000)}, indent=2))
+            sys.exit(0)
         else:
             print(f"Unknown command: {cmd}")
             sys.exit(1)

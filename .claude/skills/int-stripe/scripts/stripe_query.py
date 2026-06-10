@@ -165,9 +165,59 @@ def cmd_update(args):
     print(json.dumps(result, indent=2))
 
 
+def cmd_smoke(args):
+    """E2E gate read-only — valida auth + balance. Sempre exit 0 + JSON."""
+    import time as _time
+
+    try:
+        out = {"steps": [], "overall": "PASS"}
+        t0 = _time.monotonic()
+
+        def _ms(since):
+            return round((_time.monotonic() - since) * 1000)
+
+        # Step 1: auth (API key presente)
+        ts = _time.monotonic()
+        try:
+            key = os.environ.get("STRIPE_SECRET_KEY")
+            if not key:
+                out["steps"].append({"step": "auth", "status": "FAIL", "error": "STRIPE_SECRET_KEY ausente", "duration_ms": _ms(ts)})
+                out["overall"] = "FAIL"
+                print(json.dumps({**out, "duration_ms": _ms(t0)}))
+                return
+            out["steps"].append({"step": "auth", "status": "PASS", "duration_ms": _ms(ts)})
+        except Exception as exc:
+            out["steps"].append({"step": "auth", "status": "FAIL", "error": str(exc)[:300], "duration_ms": _ms(ts)})
+            out["overall"] = "FAIL"
+            print(json.dumps({**out, "duration_ms": _ms(t0)}))
+            return
+
+        # Step 2: retrieve balance (cheap read-only endpoint)
+        ts = _time.monotonic()
+        try:
+            req = urllib.request.Request(
+                f"{BASE_URL}/balance",
+                headers={"Authorization": f"Bearer {key}"},
+            )
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                data = json.loads(resp.read())
+            currency = data.get("available", [{}])[0].get("currency", "?") if data.get("available") else "?"
+            out["steps"].append({"step": "balance", "status": "PASS", "currency": currency, "duration_ms": _ms(ts)})
+        except Exception as exc:
+            out["steps"].append({"step": "balance", "status": "FAIL", "error": str(exc)[:300], "duration_ms": _ms(ts)})
+            out["overall"] = "FAIL"
+
+        print(json.dumps({**out, "duration_ms": _ms(t0)}))
+    except BaseException as exc:
+        print(json.dumps({"overall": "FAIL", "steps": [], "error": str(exc)[:300], "duration_ms": 0}))
+
+
 def main():
     parser = argparse.ArgumentParser(description="Query Stripe via REST API")
     sub = parser.add_subparsers(dest="command")
+
+    # smoke
+    sub.add_parser("smoke", help="E2E gate read-only — valida auth + balance")
 
     # list
     list_p = sub.add_parser("charges"); list_p.set_defaults(command="list", resource="charges")
@@ -209,7 +259,9 @@ def main():
         parser.print_help()
         sys.exit(1)
 
-    if args.command == "list":
+    if args.command == "smoke":
+        cmd_smoke(args)
+    elif args.command == "list":
         cmd_list(args)
     elif args.command == "get":
         cmd_get(args)
