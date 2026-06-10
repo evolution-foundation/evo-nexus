@@ -105,7 +105,11 @@ class BrainRepoWatcher:
 
         watched_any = False
         for rel_path in WATCH_PATHS:
-            watch_target = self._brain_repo_dir / rel_path
+            # Watch the SOURCE (install_dir / working tree) — that's where the user
+            # actually edits files. Pre-fix this pointed at brain_repo_dir, which is
+            # the SYNC TARGET and only changes when copytree runs (no useful signal),
+            # so auto-sync never fired for user edits.
+            watch_target = self._install_dir / rel_path
             if watch_target.exists():
                 self._observer.schedule(
                     self._handler,
