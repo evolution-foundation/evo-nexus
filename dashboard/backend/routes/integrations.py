@@ -861,7 +861,7 @@ def test_integration(name: str):
             return fail("TODOIST_API_TOKEN não configurado")
         try:
             r = http.get(
-                "https://api.todoist.com/rest/v2/projects",
+                "https://api.todoist.com/api/v1/projects",
                 headers={"Authorization": f"Bearer {token}"},
                 timeout=8,
             )
