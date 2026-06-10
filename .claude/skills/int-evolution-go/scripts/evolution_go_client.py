@@ -43,6 +43,72 @@ def get_config():
     return url.rstrip("/"), key
 
 
+def _retry_http_call_client(do_call, max_attempts=3, base_delay=2.0, max_delay=8.0):
+    """Exponential backoff + jitter for Evolution Go API calls.
+
+    Retries on HTTP 5xx, urllib.error.URLError, and socket.timeout (transient).
+    NEVER retries on HTTP 4xx (deterministic client errors).
+
+    Returns the result of do_call() on success.
+    Raises the last exception after max_attempts are exhausted.
+    Raises immediately on HTTP 4xx (no retry).
+    """
+    last_exc = None
+    for attempt in range(max_attempts):
+        try:
+            return do_call()
+        except urllib.error.HTTPError as e:
+            if e.code < 500:
+                # 4xx — deterministic, raise immediately (caller decides sys.exit vs raise)
+                raise
+            last_exc = e
+            if attempt < max_attempts - 1:
+                delay = min(base_delay ** attempt + random.uniform(0, 0.5), max_delay)
+                print(
+                    json.dumps({
+                        "evt": "api_request_retry",
+                        "attempt": attempt + 1,
+                        "max_attempts": max_attempts,
+                        "http_status": e.code,
+                        "delay_s": round(delay, 2),
+                    })
+                )
+                time.sleep(delay)
+            else:
+                print(
+                    json.dumps({
+                        "evt": "api_request_failed",
+                        "attempt": attempt + 1,
+                        "max_attempts": max_attempts,
+                        "http_status": e.code,
+                        "category": "transient",
+                    })
+                )
+        except (urllib.error.URLError, socket.timeout) as e:
+            last_exc = e
+            if attempt < max_attempts - 1:
+                delay = min(base_delay ** attempt + random.uniform(0, 0.5), max_delay)
+                print(
+                    json.dumps({
+                        "evt": "api_request_retry",
+                        "attempt": attempt + 1,
+                        "max_attempts": max_attempts,
+                        "error": str(e),
+                        "delay_s": round(delay, 2),
+                    })
+                )
+                time.sleep(delay)
+            else:
+                print(
+                    json.dumps({
+                        "evt": "api_request_failed",
+                        "attempt": attempt + 1,
+                        "max_attempts": max_attempts,
+                        "error": str(e),
+                        "category": "transient",
+                    })
+                )
+    raise last_exc
 def api_request(method, path, data=None):
     """Make an HTTP request to the Evolution Go API."""
     base_url, api_key = get_config()
@@ -192,6 +258,30 @@ def cmd_summary(args):
         print(json.dumps(instances, indent=2))
 
 
+# ── Proxy Management ────────────────────────────────────────────────
+
+def cmd_set_proxy(args):
+    """Set proxy on an instance."""
+    proxy = {
+        "host": args.host,
+        "port": int(args.port),
+        "protocol": args.protocol,
+        "username": args.username,
+        "password": args.password,
+    }
+    result = api_request("POST", f"/instance/proxy/{args.instanceId}", data=proxy)
+    print(json.dumps(result, indent=2))
+
+
+def cmd_get_proxy(args):
+    """Get proxy configuration of an instance."""
+    result = api_request("GET", f"/instance/proxy/{args.instanceId}")
+    print(json.dumps(result, indent=2))
+
+
+def cmd_delete_proxy(args):
+    result = api_request("DELETE", f"/instance/proxy/{args.instanceId}")
+    print(json.dumps(result, indent=2))
 # ── Send Messages ────────────────────────────────────────────────────
 
 def cmd_send_text(args):
@@ -399,12 +489,23 @@ def main():
     p.add_argument("instanceId", help="Instance ID to delete")
     p.add_argument("--json", action="store_true")
 
-    p = sub.add_parser("delete_proxy", help="Remove proxy from instance")
-    p.add_argument("instanceId", help="Instance ID")
-    p.add_argument("--json", action="store_true")
-
     p = sub.add_parser("summary", help="Overview of all instances with status")
     p.add_argument("--json", action="store_true")
+
+    # ── Proxy Management ──
+    p = sub.add_parser("set_proxy", help="Set proxy on an instance")
+    p.add_argument("instanceId", help="Instance ID")
+    p.add_argument("--host", required=True, help="Proxy host")
+    p.add_argument("--port", required=True, help="Proxy port")
+    p.add_argument("--protocol", default="http", help="Proxy protocol")
+    p.add_argument("--username", required=True, help="Proxy username")
+    p.add_argument("--password", required=True, help="Proxy password")
+
+    p = sub.add_parser("get_proxy", help="Get proxy configuration of an instance")
+    p.add_argument("instanceId", help="Instance ID")
+
+    p = sub.add_parser("delete_proxy", help="Remove proxy from an instance")
+    p.add_argument("instanceId", help="Instance ID")
 
     # ── Send Messages ──
     p = sub.add_parser("send_text", help="Send text message")
