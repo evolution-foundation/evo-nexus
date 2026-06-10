@@ -518,7 +518,39 @@ def detect():
 @bp.route("/api/brain-repo/snapshots")
 @login_required
 def snapshots():
-    """List available restore snapshots (daily / weekly / milestones / head)."""
+    """List available restore snapshots (daily / weekly / milestones / head).
+
+    Accepts an explicit ``token`` + ``repo_url`` pair (query string) for the
+    restore-wizard preview flow, which lists snapshots *before* persisting a
+    BrainRepoConfig. When either is missing it falls back to the stored
+    config — the path used by ``/settings/brain-repo`` and reconnect flows.
+
+    This mirrors the same opt-in token override that ``/api/brain-repo/detect``
+    already accepts, and unblocks the wizard catch-22 where snapshot preview
+    used to require a persisted config that the wizard never wrote.
+    """
+    override_token = request.args.get("token", "").strip()
+    override_repo_url = request.args.get("repo_url", "").strip()
+
+    if override_token and override_repo_url:
+        try:
+            from brain_repo.github_api import get_repo_info, list_snapshots
+        except ImportError:
+            return jsonify({"daily": [], "weekly": [], "milestones": [], "head": None})
+
+        _ok, repo_info = get_repo_info(override_token, override_repo_url)
+        owner = (repo_info.get("owner", {}) or {}).get("login", "")
+        name = repo_info.get("name", "")
+        if not owner or not name:
+            abort(400, description="repo_url did not resolve to a GitHub repo for this token")
+
+        try:
+            result = list_snapshots(override_token, owner, name)
+        except Exception as exc:
+            log.warning("snapshots: list_snapshots failed (override): %s", exc)
+            abort(400, description=f"Could not list snapshots: {exc}")
+        return jsonify(result)
+
     config = _get_config()
     if not config or not config.github_token_encrypted:
         abort(400, description="Brain repo not connected")
@@ -557,20 +589,28 @@ def restore_start():
     # master key") — when False, KB import silently degrades to metadata-only,
     # which is the safe default.
     kb_key_matches = bool(data.get("kb_key_matches", False))
+    override_token = (data.get("token") or "").strip()
+    override_repo_url = (data.get("repo_url") or "").strip()
 
     if not ref:
         abort(400, description="ref required")
 
-    config = _get_config()
-    if not config or not config.github_token_encrypted:
-        abort(400, description="Brain repo not connected")
+    # The wizard restore flow runs before a BrainRepoConfig is persisted, so it
+    # passes token + repo_url explicitly. /settings/brain-repo and reconnect
+    # paths still rely on the stored config (no override → falls through).
+    if override_token and override_repo_url:
+        token = override_token
+        repo_url = override_repo_url
+    else:
+        config = _get_config()
+        if not config or not config.github_token_encrypted:
+            abort(400, description="Brain repo not connected")
 
-    token = _decrypt_token(config)
-    if not token:
-        abort(400, description="Could not decrypt stored token")
+        token = _decrypt_token(config)
+        if not token:
+            abort(400, description="Could not decrypt stored token")
 
-    # Capture needed values before entering generator (avoids app context issues)
-    repo_url = config.repo_url
+        repo_url = config.repo_url
     # install_dir is where SWAP_DIRS (memory/workspace/customizations/config-safe)
     # get replaced — i.e. the EvoNexus workspace root, NOT the brain-repo clone
     # path. Confusing these two is what broke the restore endpoint.

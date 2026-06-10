@@ -17,13 +17,15 @@ interface RestoreStep {
 
 interface RestoreExecuteProps {
   snapshot: SelectedSnapshot
+  token: string
+  repoUrl: string
   onComplete: () => void
   onRetry: () => void
 }
 
 const API = import.meta.env.DEV ? 'http://localhost:8080' : ''
 
-export default function RestoreExecute({ snapshot, onComplete, onRetry }: RestoreExecuteProps) {
+export default function RestoreExecute({ snapshot, token, repoUrl, onComplete, onRetry }: RestoreExecuteProps) {
   const { t } = useTranslation()
   const [progress, setProgress] = useState(0)
   const [steps, setSteps] = useState<RestoreStep[]>([])
@@ -38,11 +40,19 @@ export default function RestoreExecute({ snapshot, onComplete, onRetry }: Restor
 
     const run = async () => {
       try {
+        // Forward token + repoUrl alongside the snapshot ref so the backend
+        // can resolve the GitHub remote without a persisted BrainRepoConfig
+        // (the wizard runs before /connect has been called — catch-22 fix).
         const res = await fetch(`${API}/api/brain-repo/restore/start`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
           credentials: 'include',
-          body: JSON.stringify({ ref: snapshot.ref, include_kb: snapshot.includeKb }),
+          body: JSON.stringify({
+            ref: snapshot.ref,
+            include_kb: snapshot.includeKb,
+            token,
+            repo_url: repoUrl,
+          }),
           signal: ctrl.signal,
         })
 
@@ -135,7 +145,7 @@ export default function RestoreExecute({ snapshot, onComplete, onRetry }: Restor
 
     run()
     return () => ctrl.abort()
-  }, [snapshot, onComplete, t])
+  }, [snapshot, token, repoUrl, onComplete, t])
 
   return (
     <div className="min-h-screen bg-[#080c14] flex items-center justify-center px-4 font-[Inter,-apple-system,sans-serif]">

@@ -20,13 +20,19 @@ interface RestoreFlowProps {
 export default function RestoreFlow({ onComplete, onBack }: RestoreFlowProps) {
   const [step, setStep] = useState<RestoreStep>('select-repo')
   const [repoUrl, setRepoUrl] = useState('')
+  // Token + repoUrl flow through every step because /api/brain-repo/snapshots
+  // and /api/brain-repo/restore/start need them: in the wizard there is no
+  // persisted BrainRepoConfig yet, so the endpoints accept the pair explicitly
+  // (catch-22 fix — see routes/brain_repo.py).
+  const [token, setToken] = useState('')
   const [snapshot, setSnapshot] = useState<SelectedSnapshot | null>(null)
 
   if (step === 'select-repo') {
     return (
       <RestoreSelectRepo
-        onNext={(url: string) => {
+        onNext={(url: string, t: string) => {
           setRepoUrl(url)
+          setToken(t)
           setStep('select-snapshot')
         }}
         onBack={onBack}
@@ -38,6 +44,7 @@ export default function RestoreFlow({ onComplete, onBack }: RestoreFlowProps) {
     return (
       <RestoreSelectSnapshot
         repoUrl={repoUrl}
+        token={token}
         onNext={(s: SelectedSnapshot) => {
           setSnapshot(s)
           setStep('confirm')
@@ -61,6 +68,8 @@ export default function RestoreFlow({ onComplete, onBack }: RestoreFlowProps) {
     return (
       <RestoreExecute
         snapshot={snapshot}
+        token={token}
+        repoUrl={repoUrl}
         onComplete={onComplete}
         onRetry={() => setStep('confirm')}
       />

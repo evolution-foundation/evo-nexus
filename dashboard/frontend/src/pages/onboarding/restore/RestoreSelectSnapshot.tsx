@@ -25,6 +25,7 @@ interface SelectedSnapshot {
 
 interface RestoreSelectSnapshotProps {
   repoUrl: string
+  token: string
   onNext: (snapshot: SelectedSnapshot) => void
   onBack: () => void
 }
@@ -62,7 +63,7 @@ function SnapshotItem({
   )
 }
 
-export default function RestoreSelectSnapshot({ repoUrl, onNext, onBack }: RestoreSelectSnapshotProps) {
+export default function RestoreSelectSnapshot({ repoUrl, token, onNext, onBack }: RestoreSelectSnapshotProps) {
   const { t } = useTranslation()
   const [data, setData] = useState<SnapshotData | null>(null)
   const [loading, setLoading] = useState(true)
@@ -71,11 +72,19 @@ export default function RestoreSelectSnapshot({ repoUrl, onNext, onBack }: Resto
   const [error, setError] = useState('')
 
   useEffect(() => {
-    api.get('/brain-repo/snapshots')
+    // Pass token + repo_url explicitly because the wizard runs before a
+    // BrainRepoConfig is persisted (restore is a first-run path). The
+    // endpoint still falls back to stored config when these are absent.
+    const params = new URLSearchParams()
+    if (token) params.set('token', token)
+    if (repoUrl) params.set('repo_url', repoUrl)
+    const qs = params.toString()
+    const url = qs ? `/brain-repo/snapshots?${qs}` : '/brain-repo/snapshots'
+    api.get(url)
       .then((d: SnapshotData) => setData(d))
       .catch(() => setError(t('restore.selectSnapshot.failed')))
       .finally(() => setLoading(false))
-  }, [repoUrl, t])
+  }, [repoUrl, token, t])
 
   const handleNext = () => {
     if (!selected) {

@@ -12,7 +12,7 @@ interface Repo {
 }
 
 interface RestoreSelectRepoProps {
-  onNext: (repoUrl: string) => void
+  onNext: (repoUrl: string, token: string) => void
   onBack: () => void
 }
 
@@ -65,7 +65,7 @@ export default function RestoreSelectRepo({ onNext, onBack }: RestoreSelectRepoP
       setError(t('restore.selectRepo.selectRepo'))
       return
     }
-    onNext(selectedRepo.html_url)
+    onNext(selectedRepo.html_url, token.trim())
   }
 
   return (
