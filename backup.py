@@ -21,6 +21,23 @@ from pathlib import Path
 WORKSPACE = Path(__file__).parent
 BACKUPS_DIR = WORKSPACE / "backups"
 
+# External paths to include in backup (outside WORKSPACE), mapped to ZIP prefix.
+# auto-memory path is derived from workspace location to avoid hardcoding.
+# Use as_posix() so the slug is consistent across platforms.
+_workspace_slug = WORKSPACE.as_posix().replace("/", "-")  # matches Claude's project slug format
+EXTERNAL_PATHS = {
+    Path.home() / ".claude" / "projects" / _workspace_slug / "memory": "_external/auto-memory",
+}
+
+# Optional macOS LaunchAgent plist — opt-in via env var so upstream code doesn't
+# bake a deployment-specific identifier. Set BACKUP_LAUNCHAGENT_PLIST to the
+# absolute path of your plist file (e.g. ~/Library/LaunchAgents/com.example.plist).
+_launchagent_plist = os.environ.get("BACKUP_LAUNCHAGENT_PLIST", "").strip()
+if _launchagent_plist:
+    _la_path = Path(_launchagent_plist).expanduser()
+    EXTERNAL_PATHS[_la_path] = f"_external/launchagents/{_la_path.name}"
+
+
 # Directories to exclude wherever they appear in the path (reconstructible / heavy)
 EXCLUDE_DIRS = {
     "node_modules",
@@ -364,6 +381,23 @@ def backup_local(s3_upload: bool = False, s3_bucket: str = None) -> Path:
     if not files and backend != "postgres":
         print(f"{YELLOW}No gitignored files found to backup.{RESET}")
         sys.exit(0)
+
+    # Collect external files (e.g. auto-memory outside workspace)
+    # Each entry in EXTERNAL_PATHS can be a file or a directory.
+    external_files: list[tuple[Path, str]] = []
+    for ext_root, zip_prefix in EXTERNAL_PATHS.items():
+        if not ext_root.exists():
+            continue
+        if ext_root.is_file():
+            # Single-file entry: zip_prefix is the full path inside the ZIP
+            external_files.append((ext_root, zip_prefix))
+        else:
+            # Directory entry: rglob all files, preserving relative structure
+            for f in sorted(ext_root.rglob("*")):
+                if f.is_file():
+                    rel_in_zip = zip_prefix + "/" + f.relative_to(ext_root).as_posix()
+                    external_files.append((f, rel_in_zip))
+
 
     BACKUPS_DIR.mkdir(exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
