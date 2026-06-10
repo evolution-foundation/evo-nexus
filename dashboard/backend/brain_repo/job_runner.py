@@ -159,7 +159,7 @@ def _load_config_snapshot(flask_app, user_id: int) -> dict | None:
 # Pipeline steps — each checks cancel before doing work.
 # ────────────────────────────────────────────────────────────────────────
 
-_WATCH_PATHS = ["memory", "workspace", "customizations", "config-safe"]
+_WATCH_PATHS = ["memory", "workspace", "customizations", "config-safe", ".claude/agent-memory"]
 
 # Relative paths (POSIX) that are NEVER mirrored into the brain repo.
 # `workspace/projects/` is where user-cloned git repos live (per the project's
