@@ -188,6 +188,19 @@ _EXCLUDE_DIR_NAMES = {
     ".pytest_cache",
     ".mypy_cache",
     ".ruff_cache",
+    # Per-machine editor / tool config directories. These get created when a user
+    # opens one of the watched paths inside an editor or note-taking app (e.g.
+    # opening memory/ as an Obsidian vault writes memory/.obsidian/; opening the
+    # workspace in VS Code writes .vscode/; JetBrains writes .idea/). The content
+    # is local UI state (open tabs, window geometry, plugin enablement) that
+    # should never propagate across machines via the brain repo.
+    #
+    # Each entry is unambiguously tied to a single application — no generic
+    # names (e.g. ".trash"), since those could plausibly be legitimate user
+    # content that the mirror would silently hide.
+    ".obsidian",
+    ".vscode",
+    ".idea",
 }
 
 # Files above this size skip the mirror entirely. GitHub refuses >100 MB; we
