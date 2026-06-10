@@ -8,6 +8,12 @@ argument-hint: "<competitor or market segment>"
 
 > If you see unfamiliar placeholders or need to check which tools are connected, see [CONNECTORS.md](../../CONNECTORS.md).
 
+> **LIMITES DE FONTE — leia antes de coletar (spec MUST #3):**
+> - **Meta Ad Library API** é restrita a político/social-issue + somente EU em 2026. Para concorrente **comercial**, criativos são UI-only (`facebook.com/ads/library`) — não existe API pública comercial. Não prometa criativos via API; declare este limite no brief.
+> - **Google Ads Transparency Center** não tem API pública (até v23/jan-2026). Não expõe spend, keyword-trigger nem targeting. Somente UI (`adstransparency.google.com`). Declare o limite.
+> - **Spend e keyword-trigger** não são observáveis em nenhuma fonte pública. Qualquer número é estimativa de terceiros (Semrush/DataForSEO) com faixa de erro de 15-30% — rotule sempre.
+> - **DataForSEO** (SERP features, AI Overview, keyword gap) está disponível internamente via `scripts/competitor_intel.py`. Use quando `DATAFORSEO_LOGIN` + `DATAFORSEO_PASSWORD` estiverem no `.env`.
+
 Research competitors and generate a structured competitive analysis comparing positioning, messaging, content strategy, and market presence.
 
 ## Trigger
@@ -33,15 +39,43 @@ Gather the following from the user:
    - Pricing and packaging (if publicly available)
    - Market presence and audience
 
+## Proveniência obrigatória (gate anti-fabricação)
+
+**Todo dado sobre um concorrente exige fonte + URL + data de coleta.** Sem isso, o dado não entra no brief — vai para a tabela de proveniência com status `não verificado / pesquisar`.
+
+Inclua sempre uma tabela de proveniência no início do brief entregue:
+
+| Dado | Fonte | URL | Data coleta | Status |
+|------|-------|-----|-------------|--------|
+| Tagline homepage | Site oficial | https://... | YYYY-MM-DD | verificado |
+| Keyword gap | DataForSEO Labs | docs.dataforseo.com | YYYY-MM-DD | verificado (±20%) |
+| Criativos Meta | Meta Ad Library UI | facebook.com/ads/library | — | não verificado / pesquisar |
+| Spend estimado | — | — | — | não observável (fonte pública inexistente) |
+
+Regras:
+- **Estimativas de terceiros** (DataForSEO, Semrush, SpyFu): sempre rotule com faixa de erro (tipicamente 15-30% em volume).
+- **"Não observável"**: spend, keyword-trigger, targeting Meta/Google — nunca estime, declare o limite.
+- **Memória do modelo não é fonte**: qualquer afirmação sobre o concorrente que não tenha URL verificável nesta sessão vai para `não verificado`.
+
 ## Research Process
 
-For each competitor, research using web search:
+Para cada concorrente, colete nas seguintes prioridades:
 
-1. **Company website** — homepage messaging, product pages, about page, pricing page
-2. **Recent news** — press releases, funding announcements, product launches, partnerships (last 6 months)
-3. **Content strategy** — blog topics, resource types, social media presence, webinars, podcasts
-4. **Review sites and comparisons** — third-party comparisons, analyst mentions, customer review themes
-5. **Job postings** — hiring signals that indicate strategic direction (optional)
+### Fontes verificáveis com dado real (prioridade 1)
+
+1. **Company website** — homepage messaging, product pages, about page, pricing page (WebFetch direto, não search genérico)
+2. **SEO/SERP/AI-Overview** — via `scripts/competitor_intel.py` quando `DATAFORSEO_LOGIN`/`DATAFORSEO_PASSWORD` disponíveis:
+   - Keyword gap: `python3 scripts/competitor_intel.py --gap --target competitor.com.br --self cliente.com.br`
+   - SERP features + AI Overview: `python3 scripts/competitor_intel.py --keywords "keyword1,keyword2"`
+   - Se DataForSEO indisponível: marcar `N/A — DataForSEO não configurado` na tabela de proveniência.
+3. **Recent news** — press releases, funding, product launches (últimos 6 meses)
+4. **Review sites** — G2, Capterra, TrustRadius: WebFetch da página do concorrente, extrair temas de elogio/reclamação com citação
+5. **Job postings** — sinais estratégicos (novo produto, expansão de mercado)
+
+### Fontes sem API — coleta manual (prioridade 2, declarar limite)
+
+6. **Meta Ad Library** — `facebook.com/ads/library` (UI pública; API comercial inexistente). Pesquisar manualmente e registrar URL + data na tabela de proveniência. Se não coletado: marcar `não verificado — UI-only, requer coleta manual`.
+7. **Google Ads Transparency Center** — `adstransparency.google.com` (sem API; não mostra spend). Mesma lógica.
 
 ### Research Sources
 
@@ -61,7 +95,7 @@ Gather intelligence from these categories of sources:
 - **Analyst reports**: Gartner, Forrester, IDC — market positioning and category placement
 - **News coverage**: TechCrunch, industry publications — funding, partnerships, narrative
 - **Social listening**: mentions, sentiment, share of voice across social platforms
-- **SEO tools**: keyword rankings, organic traffic estimates, content gaps
+- **SEO tools**: keyword rankings, organic traffic estimates, content gaps — **use `scripts/competitor_intel.py` para DataForSEO real (SERP features, AI Overview, keyword gap domain-vs-domain) quando disponível; estimativas de terceiros sempre com faixa de erro declarada**
 - **Financial filings**: revenue, growth rate, investment areas (for public companies)
 - **Community forums**: community forums (e.g. Reddit, Discourse), industry chat groups (e.g. Slack communities) — user sentiment
 
@@ -104,7 +138,7 @@ For each competitor:
 - Content types produced (ebooks, webinars, case studies, tools)
 - Social media presence and engagement approach
 - Thought leadership themes
-- SEO strategy observations (what terms they appear to target)
+- SEO strategy observations — **não inferir, coletar**: use `scripts/competitor_intel.py --gap --target DOMINIO_CONCORRENTE --self DOMINIO_CLIENTE` para keywords reais com volume + rank. Se DataForSEO indisponível, declarar `N/A — requer DataForSEO` e não estimar.
 
 #### Strengths
 - What they do well
@@ -319,6 +353,10 @@ Questions competitors might encourage prospects to ask you, with prepared respon
 - Track which objection-handling responses are most effective
 
 ## Output
+
+O brief deve sempre começar com a **Tabela de Proveniência** (ver seção "Proveniência obrigatória") antes de qualquer análise. Dados sem fonte verificável nesta sessão ficam marcados como `não verificado` — nunca são apresentados como fatos.
+
+Salvar em `workspace/marketing/{cliente}/[C]competitive-brief-{concorrente}-{YYYY-MM-DD}.md`.
 
 Present the full competitive brief with clear formatting. Note the date of the research so the user knows the freshness of the data.
 
