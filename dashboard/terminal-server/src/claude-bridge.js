@@ -74,6 +74,30 @@ class ClaudeBridge {
     return cliCommand;
   }
 
+  /**
+   * True when the CLI has a persisted conversation file for this session id
+   * in this workingDir — i.e. a previous run got far enough to save state,
+   * so `--resume <id>` will succeed. Checks the config dirs used by both
+   * claude (~/.claude) and openclaude (~/.openclaude), plus
+   * CLAUDE_CONFIG_DIR when set.
+   */
+  _hasPersistedConversation(sessionId, workingDir) {
+    const home = process.env.HOME || '/';
+    const slug = String(workingDir).replace(/[^a-zA-Z0-9]/g, '-');
+    const configDirs = [
+      process.env.CLAUDE_CONFIG_DIR,
+      path.join(home, '.openclaude'),
+      path.join(home, '.claude'),
+    ].filter(Boolean);
+    return configDirs.some((dir) => {
+      try {
+        return fs.existsSync(path.join(dir, 'projects', slug, `${sessionId}.jsonl`));
+      } catch {
+        return false;
+      }
+    });
+  }
+
   async startSession(sessionId, options = {}) {
     if (this.sessions.has(sessionId)) {
       const existing = this.sessions.get(sessionId);
@@ -150,6 +174,7 @@ class ClaudeBridge {
       // --system-prompt REPLACES the default system prompt, ensuring the agent persona
       // takes priority over CLAUDE.md and other context that mentions "Claude".
       const active = providerConfig.active || 'anthropic';
+      let agentTier = null;
       if (active !== 'anthropic' && agent) {
         // Read the agent definition file to build a strong system prompt.
         // Agent definitions live at the workspace root — workingDir varies per
@@ -163,6 +188,13 @@ class ClaudeBridge {
           // Extract body (after YAML frontmatter ---)
           const match = content.match(/^---\n[\s\S]*?\n---\n([\s\S]*)$/);
           agentPrompt = match ? match[1].trim() : content;
+          // Extract the agent's model tier (opus|sonnet|haiku) from the
+          // frontmatter — used to pick a per-tier provider model below.
+          const fmMatch = content.match(/^---\n([\s\S]*?)\n---\n/);
+          if (fmMatch) {
+            const tierMatch = fmMatch[1].match(/^model:\s*["']?([a-z0-9.-]+)["']?\s*$/mi);
+            if (tierMatch) agentTier = tierMatch[1].toLowerCase();
+          }
         } catch {
           agentPrompt = `You are the ${agent} agent.`;
         }
@@ -175,7 +207,48 @@ class ClaudeBridge {
 
         args.push('--system-prompt', enforcePrompt);
       }
-      const providerEnv = providerConfig.env_vars || {};
+
+      // Pin the CLI conversation to the terminal-server session UUID so a
+      // crash, provider error, or terminal-server restart doesn't lose the
+      // conversation: the first start registers the id with --session-id,
+      // and any later start of the same session resumes it with --resume.
+      const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      if (UUID_RE.test(sessionId)) {
+        if (this._hasPersistedConversation(sessionId, workingDir)) {
+          console.log(`[bridge] Resuming persisted conversation for session ${sessionId}`);
+          args.push('--resume', sessionId);
+        } else {
+          args.push('--session-id', sessionId);
+        }
+      }
+
+      // Copy so per-session overrides don't leak into the shared config object.
+      const providerEnv = { ...(providerConfig.env_vars || {}) };
+
+      // Per-agent model tier: agents declare model: opus|sonnet|haiku in
+      // their frontmatter; providers.json maps each tier to a provider model
+      // via the provider's "model_tiers" field.
+      const tierModel = agentTier && providerConfig.model_tiers
+        ? providerConfig.model_tiers[agentTier]
+        : null;
+      if (active !== 'anthropic' && tierModel) {
+        providerEnv['OPENAI_MODEL'] = tierModel;
+        console.log(`[provider] Agent ${agent} tier "${agentTier}" → model ${tierModel}`);
+      }
+
+      // Automatic model fallback when the primary is overloaded. The CLI
+      // accepts a single fallback — pass the first configured entry that
+      // differs from the primary model.
+      const fallbackModels = Array.isArray(providerConfig.fallback_models)
+        ? providerConfig.fallback_models
+        : [];
+      if (active !== 'anthropic') {
+        const primary = providerEnv['OPENAI_MODEL'] || '';
+        const fallback = fallbackModels.find((m) => m && m !== primary);
+        if (fallback) {
+          args.push('--fallback-model', fallback);
+        }
+      }
 
       // Build a CLEAN environment for the spawned CLI process.
       // We DON'T spread process.env — it may contain stale/cached vars
