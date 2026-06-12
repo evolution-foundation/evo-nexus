@@ -318,6 +318,15 @@ def update_provider_config(provider_id):
         # Reject values with shell metacharacters
         if not isinstance(value, str) or re.search(r'[;&|`$\n\r]', value):
             continue
+        # Never wipe a stored secret with an empty field — the UI submits
+        # blank password inputs when the user edits other fields (e.g. model),
+        # which would silently erase the saved key.
+        if (
+            value == ""
+            and existing.get(key)
+            and any(tag in key for tag in ("KEY", "SECRET", "TOKEN"))
+        ):
+            continue
         existing[key] = value
 
     provider["env_vars"] = existing

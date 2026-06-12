@@ -1,19 +1,22 @@
 #!/usr/bin/env python3
-"""AI Image Generator — Generate PNG images via multiple OpenRouter models or Google AI Studio.
+"""AI Image Generator — Generate PNG images via multiple providers.
 
 Supports multiple image generation models via keyword shortcuts:
-    gemini     — Google Gemini 3.1 Flash (default, multimodal)
-    riverflow  — Sourceful Riverflow v2 Fast (image-only)
-    flux2      — Black Forest Labs FLUX.2 Klein 4B (image-only)
-    seedream   — ByteDance SeedDream 4.5 (image-only)
-    gpt5       — OpenAI GPT-5 Image Mini (multimodal)
+    gemini     — Google Gemini 3.1 Flash (multimodal, OpenRouter)
+    riverflow  — Sourceful Riverflow v2 Fast (image-only, OpenRouter)
+    flux2      — Black Forest Labs FLUX.2 Klein 4B (image-only, OpenRouter)
+    seedream   — ByteDance SeedDream 4.5 (image-only, OpenRouter)
+    gpt5       — OpenAI GPT-5 Image Mini (multimodal, OpenRouter)
+    nvidia-flux2-klein-4b — BFL FLUX.2 Klein 4B via NVIDIA NIM (default nvidia, best text rendering)
+    nvidia-flux-dev     — BFL FLUX.1-dev via NVIDIA NIM (high quality)
+    nvidia-flux-schnell — BFL FLUX.1-schnell via NVIDIA NIM (fastest)
 
-Routes through Cloudflare AI Gateway BYOK when configured, with automatic
-fallback to direct API calls. Uses only Python stdlib (no pip dependencies).
+Routes through Cloudflare AI Gateway BYOK when configured (OpenRouter/Google only),
+with automatic fallback to direct API calls. Uses only Python stdlib (no pip dependencies).
 
 Usage:
     uv run python generate-image.py --output path.png --prompt "description"
-    uv run python generate-image.py --output path.png --model riverflow --prompt "description"
+    uv run python generate-image.py --output path.png --model nvidia-flux2-klein-4b --prompt "description"
     uv run python generate-image.py --output path.png --prompt-file prompt.txt
     uv run python generate-image.py --list-models
 """
@@ -40,6 +43,23 @@ from typing import Any  # noqa: F401 — used in type hints below
 DEFAULT_MODELS = {
     "openrouter": "google/gemini-3.1-flash-image-preview",
     "google": "gemini-3.1-flash-image-preview",
+    "nvidia": "black-forest-labs/flux.2-klein-4b",
+}
+
+# Aspect ratio → (width, height) within the dimension set NVIDIA NIM accepts
+# (768, 832, 896, 960, 1024, 1088, 1152, 1216, 1280, 1344) AND the total
+# pixel budget (width × height <= 1,062,400 — validated by the API).
+NVIDIA_ASPECT_MAP = {
+    "1:1": (1024, 1024),
+    "16:9": (1344, 768),
+    "9:16": (768, 1344),
+    "3:2": (1152, 768),
+    "2:3": (768, 1152),
+    "4:3": (1024, 768),
+    "3:4": (768, 1024),
+    "5:4": (1024, 832),
+    "4:5": (832, 1024),
+    "21:9": (1344, 768),  # closest supported — true 21:9 unavailable
 }
 
 # Model registry — maps keyword shortcuts to model metadata.
@@ -71,6 +91,49 @@ MODEL_REGISTRY: dict[str, dict[str, Any]] = {
         "modalities": ["image", "text"],
         "description": "OpenAI GPT-5 Image — multimodal (text+image)",
     },
+    # NVIDIA NIM Flux models
+    "nvidia-flux-dev": {
+        "id": "black-forest-labs/flux.1-dev",
+        "provider": "nvidia",
+        "modalities": ["image"],
+        "description": "Black Forest Labs FLUX.1-dev — high quality, NVIDIA NIM",
+        "nvidia_params": {
+            "width": {"default": 1024, "enum": [768, 832, 896, 960, 1024, 1088, 1152, 1216, 1280, 1344]},
+            "height": {"default": 1024, "enum": [768, 832, 896, 960, 1024, 1088, 1152, 1216, 1280, 1344]},
+            "cfg_scale": {"type": "number", "default": 5, "minimum": 1, "maximum": 9, "description": "How strictly the diffusion process adheres to the prompt text"},
+            "steps": {"type": "integer", "default": 30, "minimum": 1, "maximum": 50, "description": "Number of diffusion steps"},
+            "seed": {"type": "integer", "default": 0, "minimum": 0, "exclusiveMaximum": 4294967296, "description": "Random seed (0 for random)"},
+            "samples": {"type": "integer", "default": 1, "minimum": 1, "maximum": 1},
+        },
+    },
+    "nvidia-flux-schnell": {
+        "id": "black-forest-labs/flux.1-schnell",
+        "provider": "nvidia",
+        "modalities": ["image"],
+        "description": "Black Forest Labs FLUX.1-schnell — fast, NVIDIA NIM",
+        "nvidia_params": {
+            "width": {"default": 1024, "enum": [768, 832, 896, 960, 1024, 1088, 1152, 1216, 1280, 1344]},
+            "height": {"default": 1024, "enum": [768, 832, 896, 960, 1024, 1088, 1152, 1216, 1280, 1344]},
+            "cfg_scale": {"type": "number", "default": 0, "minimum": 0, "maximum": 0},
+            "steps": {"type": "integer", "default": 4, "minimum": 1, "maximum": 30},
+            "seed": {"type": "integer", "default": 0, "minimum": 0, "exclusiveMaximum": 4294967296},
+            "samples": {"type": "integer", "default": 1, "minimum": 1, "maximum": 1},
+        },
+    },
+    "nvidia-flux2-klein-4b": {
+        "id": "black-forest-labs/flux.2-klein-4b",
+        "provider": "nvidia",
+        "modalities": ["image"],
+        "description": "Black Forest Labs FLUX.2 Klein 4B — fastest, NVIDIA NIM",
+        "nvidia_params": {
+            "width": {"default": 1024, "enum": [768, 832, 896, 960, 1024, 1088, 1152, 1216, 1280, 1344]},
+            "height": {"default": 1024, "enum": [768, 832, 896, 960, 1024, 1088, 1152, 1216, 1280, 1344]},
+            "cfg_scale": {"type": "number", "default": 1, "minimum": 1, "maximum": 9},
+            "steps": {"type": "integer", "default": 4, "minimum": 1, "maximum": 4},
+            "seed": {"type": "integer", "default": 0, "minimum": 0, "exclusiveMaximum": 4294967296},
+            "samples": {"type": "integer", "default": 1, "minimum": 1, "maximum": 1},
+        },
+    },
 }
 
 # Environment variable names (prefixed to avoid collisions)
@@ -79,6 +142,7 @@ ENV_CF_GATEWAY_ID = "AI_IMG_CREATOR_CF_GATEWAY_ID"
 ENV_CF_TOKEN = "AI_IMG_CREATOR_CF_TOKEN"
 ENV_OPENROUTER_KEY = "AI_IMG_CREATOR_OPENROUTER_KEY"
 ENV_GEMINI_KEY = "AI_IMG_CREATOR_GEMINI_KEY"
+ENV_NVIDIA_KEY = "NVIDIA_API_KEY"
 
 def _load_dotenv() -> None:
     """Load .env files into os.environ (stdlib only, no pip deps).
@@ -156,18 +220,18 @@ def resolve_model(model_arg: str | None, provider: str) -> tuple[str, list[str]]
     """Resolve a model keyword or full ID to (model_id, modalities).
 
     Supports three modes:
-    1. No --model flag: returns the default model for the provider (gemini).
+    1. No --model flag: returns the default model for the provider.
     2. Keyword match (e.g. 'riverflow'): looks up MODEL_REGISTRY.
     3. Full model ID (e.g. 'sourceful/riverflow-v2-pro'): reverse-lookups
        registry for modalities, or defaults to ["image", "text"] if unknown.
 
     Args:
         model_arg: The --model CLI value (keyword, full model ID, or None).
-        provider: Either 'openrouter' or 'google'.
+        provider: 'openrouter', 'google', or 'nvidia'.
 
     Returns:
         Tuple of (model_id, modalities_list) where model_id is the full
-        OpenRouter model identifier and modalities_list is the correct
+        model identifier and modalities_list is the correct
         modalities array for the API request.
     """
     if model_arg is None:
@@ -175,6 +239,8 @@ def resolve_model(model_arg: str | None, provider: str) -> tuple[str, list[str]]
         if provider == "openrouter":
             entry = MODEL_REGISTRY.get("gemini", {})
             return model_id, entry.get("modalities", ["image", "text"])
+        if provider == "nvidia":
+            return model_id, ["image"]
         return model_id, ["image", "text"]
 
     # Check keyword match (case-insensitive)
@@ -203,7 +269,7 @@ def parse_args() -> argparse.Namespace:
         image_size, model, list_models, debug, and verbose attributes.
     """
     parser = argparse.ArgumentParser(
-        description="Generate PNG images using AI (multiple models via OpenRouter/Google AI Studio)"
+        description="Generate PNG images using AI (OpenRouter, Google AI Studio, or NVIDIA NIM)"
     )
     parser.add_argument(
         "-o", "--output", required=False, default=None, help="Output PNG file path (required unless --list-models)"
@@ -218,9 +284,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--provider",
-        choices=["openrouter", "google"],
+        choices=["openrouter", "google", "nvidia"],
         default="openrouter",
-        help="API provider (default: openrouter)",
+        help="API provider (default: openrouter). Use 'nvidia' for NVIDIA NIM Flux models.",
     )
     parser.add_argument(
         "-a", "--aspect-ratio",
@@ -235,7 +301,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "-m", "--model",
         default=None,
-        help="Model keyword (gemini, riverflow, flux2, seedream, gpt5) or full model ID",
+        help="Model keyword (gemini, riverflow, flux2, seedream, gpt5, nvidia-flux2-klein-4b, nvidia-flux-dev, nvidia-flux-schnell) or full model ID",
     )
     parser.add_argument(
         "-r", "--ref",
@@ -263,6 +329,37 @@ def parse_args() -> argparse.Namespace:
         "--list-models",
         action="store_true",
         help="List available model keywords and exit",
+    )
+    # NVIDIA NIM specific parameters
+    parser.add_argument(
+        "--width",
+        type=int,
+        default=None,
+        help="Image width for NVIDIA Flux models (768-1344, default: 1024)",
+    )
+    parser.add_argument(
+        "--height",
+        type=int,
+        default=None,
+        help="Image height for NVIDIA Flux models (768-1344, default: 1024)",
+    )
+    parser.add_argument(
+        "--cfg-scale",
+        type=float,
+        default=None,
+        help="Classifier-free guidance scale (default: 5 for flux-dev, 0 for others)",
+    )
+    parser.add_argument(
+        "--steps",
+        type=int,
+        default=None,
+        help="Number of diffusion steps (default: 30 for flux-dev, 4 for schnell/flux2)",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Random seed (0 for random, default: 0)",
     )
     parser.add_argument(
         "--debug",
@@ -364,9 +461,20 @@ def detect_mode(provider: str) -> tuple[str, dict[str, str]]:
     if provider == "openrouter":
         direct_key = os.environ.get(ENV_OPENROUTER_KEY, "").strip()
         log.debug(f"Env check: {ENV_OPENROUTER_KEY}={'set (' + mask_key(direct_key) + ')' if direct_key else 'MISSING'}")
-    else:
+    elif provider == "google":
         direct_key = os.environ.get(ENV_GEMINI_KEY, "").strip()
         log.debug(f"Env check: {ENV_GEMINI_KEY}={'set (' + mask_key(direct_key) + ')' if direct_key else 'MISSING'}")
+    elif provider == "nvidia":
+        direct_key = os.environ.get(ENV_NVIDIA_KEY, "").strip()
+        log.debug(f"Env check: {ENV_NVIDIA_KEY}={'set (' + mask_key(direct_key) + ')' if direct_key else 'MISSING'}")
+    else:
+        log.debug(f"Unknown provider: {provider}")
+        direct_key = ""
+
+    # NVIDIA NIM always uses direct mode (no gateway)
+    if provider == "nvidia" and direct_key:
+        log.info("Mode: direct (NVIDIA NIM always uses direct API)")
+        return "direct", {"direct_key": direct_key}
 
     if has_gateway:
         log.info(f"Mode: gateway (account={cf_account}, gateway={cf_gateway})")
@@ -391,9 +499,12 @@ def detect_mode(provider: str) -> tuple[str, dict[str, str]]:
         if provider == "openrouter":
             print("For direct OpenRouter access, set:", file=sys.stderr)
             print(f"  export {ENV_OPENROUTER_KEY}=sk-or-...", file=sys.stderr)
-        else:
+        elif provider == "google":
             print("For direct Google AI Studio access, set:", file=sys.stderr)
             print(f"  export {ENV_GEMINI_KEY}=AI...", file=sys.stderr)
+        elif provider == "nvidia":
+            print("For NVIDIA NIM access, set:", file=sys.stderr)
+            print(f"  export {ENV_NVIDIA_KEY}=your-nvidia-api-key", file=sys.stderr)
         print("", file=sys.stderr)
         print(
             "See references/setup-guide.md for full setup instructions.",
@@ -434,8 +545,12 @@ def build_direct_url(provider: str, model: str) -> str:
     """
     if provider == "openrouter":
         url = "https://openrouter.ai/api/v1/chat/completions"
-    else:
+    elif provider == "google":
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+    elif provider == "nvidia":
+        url = build_nvidia_url(model)
+    else:
+        raise RuntimeError(f"Unknown provider for URL: {provider}")
     log.debug(f"Built direct URL: {url}")
     return url
 
@@ -456,7 +571,13 @@ def build_headers(provider: str, mode: str, config: dict[str, str]) -> dict[str,
         "User-Agent": "ai-image-creator/1.0",
     }
 
-    if mode == "gateway":
+    if provider == "nvidia":
+        headers = build_nvidia_headers(config["direct_key"])
+        # Skip all other header logic for NVIDIA
+        safe_headers = {k: (f"{v[:12]}...{mask_key(v)}" if k.lower() in ("authorization", "cf-aig-authorization", "x-goog-api-key") else v) for k, v in headers.items()}
+        log.debug(f"Request headers: {json.dumps(safe_headers, indent=2)}")
+        return headers
+    elif mode == "gateway":
         headers["cf-aig-authorization"] = f"Bearer {config['cf_token']}"
         if provider == "google":
             headers["cf-aig-byok-alias"] = "aistudio"
@@ -465,7 +586,7 @@ def build_headers(provider: str, mode: str, config: dict[str, str]) -> dict[str,
     else:
         if provider == "openrouter":
             headers["Authorization"] = f"Bearer {config['direct_key']}"
-        else:
+        elif provider == "google":
             headers["x-goog-api-key"] = config["direct_key"]
 
     # Log headers with masked sensitive values
@@ -733,6 +854,28 @@ def extract_image_google(response: dict) -> tuple[bytes, str]:
     return image_bytes, text_content
 
 
+def extract_image_nvidia(response: dict) -> tuple[bytes, str]:
+    """Extract base64 image data from NVIDIA NIM response.
+
+    Args:
+        response: Parsed JSON response from NVIDIA NIM API.
+
+    Returns:
+        Tuple of (image_bytes, text_content) where image_bytes is the decoded
+        PNG data and text_content is empty (NVIDIA returns only images).
+
+    Raises:
+        RuntimeError: If no artifacts found in response.
+    """
+    artifacts = response.get("artifacts", [])
+    if not artifacts:
+        raise RuntimeError(f"No artifacts in NVIDIA response: {json.dumps(response)[:500]}")
+    b64_data = artifacts[0]["base64"]
+    image_bytes = base64.b64decode(b64_data)
+    log.info(f"Decoded image: {len(image_bytes)} bytes ({len(b64_data)} base64 chars)")
+    return image_bytes, ""
+
+
 def extract_text_openrouter(response: dict) -> str:
     """Extract text-only content from OpenRouter response (analyze mode).
 
@@ -793,6 +936,79 @@ def extract_text_google(response: dict) -> str:
     text_content = "\n".join(text_parts)
     log.info(f"Extracted text: {len(text_content)} chars")
     return text_content
+
+
+def build_nvidia_url(model_id: str) -> str:
+    """Build the NVIDIA NIM image generation endpoint URL.
+
+    The NVIDIA AI Foundation endpoint format is:
+        https://ai.api.nvidia.com/v1/genai/{model_id}
+
+    Note: The model_id uses '.' not '-' in the version suffix
+          (e.g. 'black-forest-labs/flux.2-klein-4b').
+
+    Args:
+        model_id: Full model ID (e.g. 'black-forest-labs/flux.2-klein-4b').
+
+    Returns:
+        Full URL for the NVIDIA AI Foundation endpoint.
+    """
+    # Registry IDs already use the canonical dotted form (flux.1-dev,
+    # flux.2-klein-4b) — pass through verbatim. Rewriting suffixes here
+    # breaks valid IDs (flux.1-dev would become flux.1.dev → 404).
+    return f"https://ai.api.nvidia.com/v1/genai/{model_id}"
+
+
+def build_nvidia_headers(api_key: str) -> dict[str, str]:
+    """Build HTTP headers for NVIDIA NIM API.
+
+    Args:
+        api_key: NVIDIA API key.
+
+    Returns:
+        Dict of HTTP header name-value pairs.
+    """
+    return {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}",
+        "Accept": "application/json",
+    }
+
+
+def build_nvidia_request_body(
+    model_id: str,
+    prompt: str,
+    width: int,
+    height: int,
+    cfg_scale: float = 1,
+    steps: int = 4,
+    seed: int = 0,
+    samples: int = 1,
+) -> dict[str, Any]:
+    """Build JSON request body for NVIDIA NIM Flux models.
+
+    Args:
+        model_id: Full model ID.
+        prompt: The image generation prompt text.
+        width: Image width (768-1344).
+        height: Image height (768-1344).
+        cfg_scale: Classifier-free guidance scale (default: 1, min: 1).
+        steps: Number of diffusion steps.
+        seed: Random seed (0 for random).
+        samples: Number of images to generate (always 1).
+
+    Returns:
+        Dict suitable for JSON serialization as request body.
+    """
+    return {
+        "prompt": prompt,
+        "width": width,
+        "height": height,
+        "cfg_scale": cfg_scale,
+        "steps": steps,
+        "seed": seed,
+        "samples": samples,
+    }
 
 
 def find_imagemagick() -> str | None:
@@ -1110,11 +1326,17 @@ def main() -> None:
             file=sys.stderr,
         )
 
+    # Auto-detect provider from model keyword (e.g. nvidia-flux2-klein-4b -> nvidia)
+    provider = args.provider
+    if args.model and args.model.lower().startswith("nvidia-"):
+        provider = "nvidia"
+        log.debug(f"Auto-detected provider 'nvidia' from model keyword '{args.model}'")
+
     # Resolve model and modalities
-    model, modalities = resolve_model(args.model, args.provider)
+    model, modalities = resolve_model(args.model, provider)
 
     # Google direct API needs model ID without the OpenRouter "google/" prefix
-    if args.provider == "google" and model.startswith("google/"):
+    if provider == "google" and model.startswith("google/"):
         model = model[len("google/"):]
         log.debug(f"Stripped google/ prefix for direct API: {model}")
 
@@ -1177,7 +1399,7 @@ def main() -> None:
         modalities = ["text"]
         print("Mode: analyze (text-only output)", file=sys.stderr)
 
-    print(f"Provider: {args.provider}", file=sys.stderr)
+    print(f"Provider: {provider}", file=sys.stderr)
     print(f"Model: {model}", file=sys.stderr)
     print(f"Modalities: {', '.join(modalities)}", file=sys.stderr)
     print(f"Prompt: {prompt[:100]}{'...' if len(prompt) > 100 else ''}", file=sys.stderr)
@@ -1187,21 +1409,58 @@ def main() -> None:
         print(f"Image size: {args.image_size}", file=sys.stderr)
 
     # Detect mode
-    mode, config = detect_mode(args.provider)
+    mode, config = detect_mode(provider)
     print(f"Mode: {mode}", file=sys.stderr)
 
     # Build request
     if mode == "gateway":
-        url = build_gateway_url(args.provider, model, config)
+        url = build_gateway_url(provider, model, config)
     else:
-        url = build_direct_url(args.provider, model)
+        url = build_direct_url(provider, model)
 
-    headers = build_headers(args.provider, mode, config)
-    body = build_request_body(
-        args.provider, model, prompt, args.aspect_ratio, args.image_size,
-        modalities=modalities,
-        ref_images=ref_images if ref_images else None,
-    )
+    headers = build_headers(provider, mode, config)
+
+    # NVIDIA uses a different request body format (flat prompt, not contents/parts)
+    if provider == "nvidia":
+        # Per-model defaults from the registry — flux.1-dev needs ~30 steps /
+        # cfg 5, while schnell and flux.2-klein are distilled 4-step models.
+        registry_entry = next(
+            (e for e in MODEL_REGISTRY.values()
+             if e.get("id") == model and e.get("provider") == "nvidia"),
+            {},
+        )
+        nv_defaults = {
+            k: v.get("default")
+            for k, v in (registry_entry.get("nvidia_params") or {}).items()
+            if isinstance(v, dict) and "default" in v
+        }
+        width = args.width or nv_defaults.get("width") or 1024
+        height = args.height or nv_defaults.get("height") or 1024
+        # -a/--aspect-ratio maps to the closest dimensions NVIDIA accepts
+        if args.aspect_ratio and not (args.width or args.height):
+            dims = NVIDIA_ASPECT_MAP.get(args.aspect_ratio)
+            if dims:
+                width, height = dims
+            else:
+                print(
+                    f"WARNING: aspect ratio {args.aspect_ratio} not mapped for NVIDIA; "
+                    f"using {width}x{height}",
+                    file=sys.stderr,
+                )
+        body = build_nvidia_request_body(
+            model, prompt,
+            width=width,
+            height=height,
+            cfg_scale=args.cfg_scale if args.cfg_scale is not None else nv_defaults.get("cfg_scale", 1),
+            steps=args.steps if args.steps is not None else nv_defaults.get("steps", 4),
+            seed=args.seed if args.seed is not None else 0,
+        )
+    else:
+        body = build_request_body(
+            provider, model, prompt, args.aspect_ratio, args.image_size,
+            modalities=modalities,
+            ref_images=ref_images if ref_images else None,
+        )
 
     print(f"URL: {url}", file=sys.stderr)
     if args.analyze:
@@ -1221,8 +1480,8 @@ def main() -> None:
                 file=sys.stderr,
             )
             log.info("Initiating fallback to direct API")
-            url = build_direct_url(args.provider, model)
-            headers = build_headers(args.provider, "direct", config)
+            url = build_direct_url(provider, model)
+            headers = build_headers(provider, "direct", config)
             try:
                 response = make_request(url, headers, body)
             except RuntimeError as e2:
@@ -1238,8 +1497,10 @@ def main() -> None:
     if args.analyze:
         total_elapsed = time.time() - total_start
         try:
-            if args.provider == "openrouter":
+            if provider == "openrouter":
                 analysis_text = extract_text_openrouter(response)
+            elif provider == "nvidia":
+                raise RuntimeError("Analyze mode not supported for NVIDIA provider")
             else:
                 analysis_text = extract_text_google(response)
         except RuntimeError as e:
@@ -1254,7 +1515,7 @@ def main() -> None:
         try:
             log_cost_entry(
                 response=response,
-                provider=args.provider,
+                provider=provider,
                 model=model,
                 mode=mode,
                 aspect_ratio=None,
@@ -1271,7 +1532,7 @@ def main() -> None:
             "ok": True,
             "analyze": True,
             "analysis": analysis_text,
-            "provider": args.provider,
+            "provider": provider,
             "model": model,
             "mode": mode,
             "elapsed_seconds": round(total_elapsed, 1),
@@ -1285,14 +1546,59 @@ def main() -> None:
 
     # Extract image
     try:
-        if args.provider == "openrouter":
+        if provider == "openrouter":
             image_bytes, text_content = extract_image_openrouter(response)
+        elif provider == "nvidia":
+            image_bytes, text_content = extract_image_nvidia(response)
         else:
             image_bytes, text_content = extract_image_google(response)
     except RuntimeError as e:
         print(f"ERROR: {e}", file=sys.stderr)
         log.debug(f"Image extraction failed. Raw response keys: {list(response.keys()) if response else 'None'}")
         sys.exit(1)
+
+    # NVIDIA NIM returns JPEG bytes — convert when the user asked for .png
+    if (
+        provider == "nvidia"
+        and output_path is not None
+        and output_path.suffix.lower() == ".png"
+        and image_bytes[:2] == b"\xff\xd8"
+    ):
+        magick_cmd = find_imagemagick()
+        ffmpeg_cmd = shutil.which("ffmpeg")
+        if magick_cmd or ffmpeg_cmd:
+            # Temp files live next to the output — snap-confined ffmpeg
+            # cannot read the system /tmp directory.
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False, dir=output_path.parent) as tj:
+                jpg_tmp = Path(tj.name)
+            with tempfile.NamedTemporaryFile(suffix=".png", delete=False, dir=output_path.parent) as tp:
+                png_tmp = Path(tp.name)
+            try:
+                jpg_tmp.write_bytes(image_bytes)
+                if magick_cmd:
+                    cmd = [magick_cmd, str(jpg_tmp), str(png_tmp)]
+                else:
+                    cmd = ["ffmpeg", "-y", "-i", str(jpg_tmp), str(png_tmp)]
+                conv = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+                if conv.returncode == 0 and png_tmp.stat().st_size > 0:
+                    image_bytes = png_tmp.read_bytes()
+                    log.info("Converted NVIDIA JPEG output to PNG")
+                else:
+                    print(
+                        "WARNING: JPEG->PNG conversion failed - saving original JPEG "
+                        "bytes under the .png name",
+                        file=sys.stderr,
+                    )
+            finally:
+                jpg_tmp.unlink(missing_ok=True)
+                png_tmp.unlink(missing_ok=True)
+        else:
+            print(
+                "WARNING: NVIDIA returned JPEG and no converter (imagemagick/ffmpeg) "
+                "is installed - saving JPEG bytes under the .png name",
+                file=sys.stderr,
+            )
 
     # Write output (or process transparent mode)
     assert output_path is not None  # guaranteed by validation above
@@ -1319,7 +1625,7 @@ def main() -> None:
     try:
         prompt_meta = f"# Prompt\n\n"
         prompt_meta += f"- **Model:** {model}\n"
-        prompt_meta += f"- **Provider:** {args.provider} ({mode})\n"
+        prompt_meta += f"- **Provider:** {provider} ({mode})\n"
         if args.aspect_ratio:
             prompt_meta += f"- **Aspect ratio:** {args.aspect_ratio}\n"
         if args.image_size:
@@ -1350,7 +1656,7 @@ def main() -> None:
     try:
         log_cost_entry(
             response=response,
-            provider=args.provider,
+            provider=provider,
             model=model,
             mode=mode,
             aspect_ratio=args.aspect_ratio,
@@ -1367,7 +1673,7 @@ def main() -> None:
         "ok": True,
         "output": str(output_path),
         "size_bytes": len(image_bytes),
-        "provider": args.provider,
+        "provider": provider,
         "model": model,
         "mode": mode,
         "elapsed_seconds": round(total_elapsed, 1),
