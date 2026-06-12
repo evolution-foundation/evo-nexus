@@ -20,6 +20,22 @@
       },
       "default_base_url": "https://openrouter.ai/api/v1",
       "default_model": "anthropic/claude-sonnet-4",
+      "requires_logout": true,
+      "mode": "code"
+    },
+    "nvidia": {
+      "name": "NVIDIA NIM",
+      "description": "Modelos hospedados na NVIDIA (DeepSeek, Llama, Qwen, etc.) via API OpenAI-compatível",
+      "cli_command": "openclaude",
+      "mode": "code",
+      "env_vars": {
+        "CLAUDE_CODE_USE_OPENAI": "1",
+        "OPENAI_BASE_URL": "https://integrate.api.nvidia.com/v1",
+        "OPENAI_API_KEY": "",
+        "OPENAI_MODEL": ""
+      },
+      "default_base_url": "https://integrate.api.nvidia.com/v1",
+      "default_model": "deepseek-ai/deepseek-v3.1",
       "requires_logout": true
     },
     "omnirouter": {
@@ -34,7 +50,8 @@
       },
       "default_base_url": "",
       "default_model": "",
-      "requires_logout": true
+      "requires_logout": true,
+      "mode": "code"
     },
     "openai": {
       "name": "OpenAI (API Key)",

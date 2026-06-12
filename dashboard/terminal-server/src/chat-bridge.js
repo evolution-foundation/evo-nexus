@@ -9,6 +9,7 @@ const os = require('os');
 const {
   loadProviderConfig,
   resolveProviderModel,
+  getProviderMode,
 } = require('./provider-config');
 let sdkModule = null;
 
@@ -155,6 +156,90 @@ function resolveClaudeExecutable() {
   console.warn('[chat-bridge] Could not resolve Claude binary; letting SDK auto-discover');
   _claudeExecutablePath = null;
   return _claudeExecutablePath;
+}
+
+/**
+ * Resolve the CLI binary for external (non-Anthropic) providers.
+ * Mirrors ClaudeBridge.findClaudeCommand: shell `which` first, then hardcoded
+ * paths. Returns null when nothing is found — the SDK needs a real path, so
+ * the caller falls back to the plain chat-completion session.
+ * Hardcoded dispatch per command to satisfy semgrep.
+ */
+const _cliBinaryCache = new Map();
+function resolveCliBinary(cliCommand) {
+  if (_cliBinaryCache.has(cliCommand)) return _cliBinaryCache.get(cliCommand);
+
+  const { execSync } = require('child_process');
+  try {
+    let resolved;
+    if (cliCommand === 'openclaude') {
+      resolved = execSync('which openclaude', { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'] }).trim();
+    } else {
+      resolved = execSync('which claude', { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'] }).trim();
+    }
+    if (resolved) {
+      console.log(`[chat-bridge] Found ${cliCommand} at: ${resolved}`);
+      _cliBinaryCache.set(cliCommand, resolved);
+      return resolved;
+    }
+  } catch { /* which failed — try hardcoded paths */ }
+
+  const home = process.env.HOME || '/';
+  const candidates = cliCommand === 'openclaude'
+    ? [
+        path.join(home, '.local', 'bin', 'openclaude'),
+        '/usr/local/bin/openclaude',
+        '/usr/bin/openclaude',
+      ]
+    : [
+        path.join(home, '.claude', 'local', 'claude'),
+        path.join(home, '.local', 'bin', 'claude'),
+        '/usr/local/bin/claude',
+        '/usr/bin/claude',
+      ];
+  for (const p of candidates) {
+    try {
+      if (fs.existsSync(p)) {
+        console.log(`[chat-bridge] Found ${cliCommand} at hardcoded path: ${p}`);
+        _cliBinaryCache.set(cliCommand, p);
+        return p;
+      }
+    } catch { continue; }
+  }
+
+  console.error(`[chat-bridge] ${cliCommand} not found anywhere`);
+  _cliBinaryCache.set(cliCommand, null);
+  return null;
+}
+
+/**
+ * Build the environment for an external-provider CLI process.
+ * Same approach as ClaudeBridge: whitelist essential system vars (no full
+ * process.env spread — stale OPENAI_API_KEY would override Codex OAuth) and
+ * layer the provider's env_vars on top. The SDK passes this object as the
+ * child process env verbatim.
+ */
+const PROVIDER_SYSTEM_VARS = [
+  'HOME', 'USER', 'SHELL', 'PATH', 'LANG', 'LC_ALL', 'LC_CTYPE',
+  'LOGNAME', 'HOSTNAME', 'XDG_RUNTIME_DIR', 'XDG_DATA_HOME',
+  'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'TMPDIR',
+  'SSH_AUTH_SOCK', 'SSH_AGENT_PID',
+  'NVM_DIR', 'NVM_BIN', 'NVM_INC',
+  'CODEX_HOME', 'CLAUDE_CONFIG_DIR',
+];
+function buildProviderEnv(providerConfig) {
+  const env = {};
+  for (const key of PROVIDER_SYSTEM_VARS) {
+    if (process.env[key]) env[key] = process.env[key];
+  }
+  const providerEnv = { ...(providerConfig.env_vars || {}) };
+  // Same model defaults as ClaudeBridge — codexplan/codexspark route to the
+  // Codex backend; a raw gpt-5.x would silently bypass Codex OAuth.
+  if (!providerEnv.OPENAI_MODEL) {
+    if (providerConfig.active === 'codex_auth') providerEnv.OPENAI_MODEL = 'codexplan';
+    else if (providerConfig.active === 'openai') providerEnv.OPENAI_MODEL = 'gpt-4.1';
+  }
+  return { ...env, ...providerEnv };
 }
 
 /**
@@ -408,8 +493,20 @@ class ChatBridge {
     } = options;
 
     const providerConfig = loadProviderConfig();
-    if (providerConfig.active !== 'anthropic') {
-      return this._startOpenAICompatibleSession(sessionId, options, providerConfig);
+    const isExternalProvider = !!providerConfig.active && providerConfig.active !== 'anthropic';
+    let externalCliPath = null;
+    if (isExternalProvider) {
+      // Code-mode providers go through the Agent SDK with the openclaude
+      // binary — full tool calling, streaming, session resume. Only genuinely
+      // chat-completion-only models keep the plain REST path.
+      if (getProviderMode(providerConfig) !== 'code') {
+        return this._startOpenAICompatibleSession(sessionId, options, providerConfig);
+      }
+      externalCliPath = resolveCliBinary(providerConfig.cli_command || 'openclaude');
+      if (!externalCliPath) {
+        console.warn(`[chat-bridge] ${providerConfig.cli_command} binary not found — falling back to chat completion. Install with: npm install -g @gitlawb/openclaude`);
+        return this._startOpenAICompatibleSession(sessionId, options, providerConfig);
+      }
     }
 
     const { query: sdkQuery } = await loadSDK();
@@ -426,8 +523,14 @@ class ChatBridge {
       abortController,
     };
 
-    const claudeExe = resolveClaudeExecutable();
-    if (claudeExe) queryOptions.pathToClaudeCodeExecutable = claudeExe;
+    if (isExternalProvider) {
+      queryOptions.pathToClaudeCodeExecutable = externalCliPath;
+      queryOptions.env = buildProviderEnv(providerConfig);
+      console.log(`[chat-bridge] External provider "${providerConfig.active}" via ${externalCliPath} (model: ${resolveProviderModel(providerConfig) || 'default'})`);
+    } else {
+      const claudeExe = resolveClaudeExecutable();
+      if (claudeExe) queryOptions.pathToClaudeCodeExecutable = claudeExe;
+    }
 
     // Load agent definition from .claude/agents/{name}.md
     if (agentName) {
@@ -458,13 +561,26 @@ class ChatBridge {
         if (systemPromptExtras && !sdkSessionId) {
           promptAppend = promptAppend + '\n\n' + systemPromptExtras;
         }
-        queryOptions.systemPrompt = {
-          type: 'preset',
-          preset: 'claude_code',
-          append: promptAppend,
-        };
-        if (agentDef.model) queryOptions.model = agentDef.model;
-        console.log(`[chat-bridge] Loaded agent "${agentName}" via systemPrompt.append (${agentDef.prompt.length} chars, model: ${agentDef.model || 'inherit'})`);
+        if (isExternalProvider) {
+          // Mirror ClaudeBridge: --append-system-prompt is too weak for GPT
+          // models, so REPLACE the system prompt to force the agent persona.
+          // agentDef.model is a Claude model name — meaningless here; the
+          // model comes from the provider's OPENAI_MODEL env var.
+          queryOptions.systemPrompt = promptAppend + '\n\n' +
+            'CRITICAL: You MUST fully embody this agent persona. ' +
+            'You are NOT Claude, OpenClaude, or a generic assistant — you ARE ' + agentName + '. ' +
+            'When asked who you are, ALWAYS respond as ' + agentName + '. ' +
+            'Never break character. Follow ALL instructions above.';
+          console.log(`[chat-bridge] Loaded agent "${agentName}" via systemPrompt replace (${agentDef.prompt.length} chars, external provider)`);
+        } else {
+          queryOptions.systemPrompt = {
+            type: 'preset',
+            preset: 'claude_code',
+            append: promptAppend,
+          };
+          if (agentDef.model) queryOptions.model = agentDef.model;
+          console.log(`[chat-bridge] Loaded agent "${agentName}" via systemPrompt.append (${agentDef.prompt.length} chars, model: ${agentDef.model || 'inherit'})`);
+        }
       } else {
         console.warn(`[chat-bridge] Agent "${agentName}" not found, running without agent`);
       }

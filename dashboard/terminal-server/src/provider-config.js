@@ -5,6 +5,7 @@ const WORKSPACE_ROOT = path.resolve(__dirname, '..', '..', '..');
 const PROVIDERS_PATH = path.join(WORKSPACE_ROOT, 'config', 'providers.json');
 
 const ALLOWED_CLI = new Set(['claude', 'openclaude']);
+const ALLOWED_MODES = new Set(['code', 'chat']);
 const ALLOWED_ENV_VARS = new Set([
   'ANTHROPIC_API_KEY',
   'CLAUDE_CODE_USE_OPENAI',
@@ -57,6 +58,9 @@ function resolveProviderModel(providerConfig) {
 function getProviderMode(providerConfig) {
   const active = providerConfig?.active || 'anthropic';
   if (active === 'anthropic') return 'anthropic';
+  // Explicit per-provider mode in providers.json wins over the name heuristic —
+  // model names like "openrouter/owl-alpha" are agentic but don't match isCodeModel.
+  if (ALLOWED_MODES.has(providerConfig?.mode)) return providerConfig.mode;
   const model = resolveProviderModel(providerConfig);
   if (isCodeModel(model)) return 'code';
   return 'chat';
@@ -90,6 +94,7 @@ function loadProviderConfig() {
       env_vars: envVars,
       active,
       provider_name: provider.name || active,
+      mode: ALLOWED_MODES.has(provider.mode) ? provider.mode : null,
     };
   } catch {
     return { cli_command: 'claude', env_vars: {}, active: 'anthropic' };
