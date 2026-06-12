@@ -326,6 +326,11 @@ function detectCreatedTicketId(text) {
 class ChatBridge {
   constructor() {
     this.sessions = new Map(); // sessionId -> { query, abortController, active, sdkSessionId }
+    // Rate limiting state for OpenAI-compatible providers
+    this._lastRequestTime = 0;
+    this._minIntervalMs = parseInt(process.env.CHAT_MIN_INTERVAL_MS || '2000', 10);
+    this._maxRetries = parseInt(process.env.CHAT_MAX_RETRIES || '3', 10);
+    this._baseDelayMs = parseInt(process.env.CHAT_BASE_DELAY_MS || '5000', 10);
   }
 
   _buildChatCompletionSystemPrompt(agentName, cwd, sessionId) {
@@ -357,6 +362,53 @@ class ChatBridge {
     }
     if (typeof delta.reasoning === 'string') return delta.reasoning;
     return '';
+  }
+
+  /**
+   * Enforce minimum interval between requests, then fetch with retry/backoff.
+   * Retries on 429 (rate limited) and 503 (upstream unavailable).
+   */
+  async _rateLimitedFetch(url, options) {
+    // Enforce minimum interval between requests
+    const now = Date.now();
+    const elapsed = now - this._lastRequestTime;
+    if (elapsed < this._minIntervalMs) {
+      const wait = this._minIntervalMs - elapsed;
+      console.log(`[chat-bridge] Rate limit: aguardando ${wait}ms antes do próximo request...`);
+      await new Promise((r) => setTimeout(r, wait));
+    }
+
+    let lastError = null;
+    for (let attempt = 0; attempt <= this._maxRetries; attempt++) {
+      this._lastRequestTime = Date.now();
+
+      const resp = await fetch(url, options);
+
+      if (resp.ok) return resp;
+
+      const isRetryable = resp.status === 429 || resp.status === 503;
+      if (!isRetryable || attempt === this._maxRetries) {
+        return resp; // let caller handle non-retryable errors or final failure
+      }
+
+      // Exponential backoff: base * 2^attempt (5s, 10s, 20s)
+      const delay = this._baseDelayMs * Math.pow(2, attempt);
+      let retryAfter = delay;
+      const retryAfterHeader = resp.headers.get('Retry-After');
+      if (retryAfterHeader) {
+        const parsed = parseInt(retryAfterHeader, 10);
+        if (!isNaN(parsed)) retryAfter = parsed * 1000;
+      }
+
+      console.warn(
+        `[chat-bridge] ${resp.status} no request (tentativa ${attempt + 1}/${this._maxRetries + 1}). ` +
+        `Aguardando ${Math.round(retryAfter / 1000)}s antes de tentar novamente...`
+      );
+      await new Promise((r) => setTimeout(r, retryAfter));
+    }
+
+    // Should not reach here, but return last error response
+    throw new Error(`_rateLimitedFetch: todas as ${this._maxRetries + 1} tentativas falharam`);
   }
 
   async _startOpenAICompatibleSession(sessionId, options, providerConfig) {
@@ -401,7 +453,7 @@ class ChatBridge {
 
     (async () => {
       try {
-        const resp = await fetch(`${baseUrl}/chat/completions`, {
+        const resp = await this._rateLimitedFetch(`${baseUrl}/chat/completions`, {
           method: 'POST',
           headers: {
             Authorization: `Bearer ${apiKey}`,
