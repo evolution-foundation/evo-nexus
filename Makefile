@@ -151,6 +151,8 @@ bling-auth:         ## 🔐 Bling OAuth2 login (one-time: capture access + refre
 	@python3 .claude/skills/int-bling/scripts/bling_auth.py
 
 telegram:           ## 📨 Start Telegram bot in background (screen)
+	@command -v screen >/dev/null 2>&1 || { echo "❌ 'screen' is not installed — run: sudo apt install screen"; exit 1; }
+	@command -v bun >/dev/null 2>&1 || [ -x "$$HOME/.bun/bin/bun" ] || { echo "❌ 'bun' is not installed (required by the telegram plugin MCP) — run: curl -fsSL https://bun.sh/install | bash"; exit 1; }
 	@if screen -list | grep -q '\.telegram'; then \
 		echo "⚠ Telegram bot is already running. Use 'make telegram-stop' first or 'make telegram-attach' to connect."; \
 	else \

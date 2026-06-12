@@ -1,6 +1,9 @@
 const { spawn } = require('node-pty');
 const path = require('path');
 const fs = require('fs');
+
+// Workspace root is three levels up from this file (dashboard/terminal-server/src/).
+const WORKSPACE_ROOT = path.resolve(__dirname, '..', '..', '..');
 const {
   loadProviderConfig,
   resolveProviderModel,
@@ -148,8 +151,12 @@ class ClaudeBridge {
       // takes priority over CLAUDE.md and other context that mentions "Claude".
       const active = providerConfig.active || 'anthropic';
       if (active !== 'anthropic' && agent) {
-        // Read the agent definition file to build a strong system prompt
-        const agentFile = path.join(workingDir, '.claude', 'agents', `${agent}.md`);
+        // Read the agent definition file to build a strong system prompt.
+        // Agent definitions live at the workspace root — workingDir varies per
+        // session (tickets, project folders), so prefer the root path.
+        const rootAgentFile = path.join(WORKSPACE_ROOT, '.claude', 'agents', `${agent}.md`);
+        const cwdAgentFile = path.join(workingDir, '.claude', 'agents', `${agent}.md`);
+        const agentFile = fs.existsSync(rootAgentFile) ? rootAgentFile : cwdAgentFile;
         let agentPrompt = '';
         try {
           const content = fs.readFileSync(agentFile, 'utf8');
