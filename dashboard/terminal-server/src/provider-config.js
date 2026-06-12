@@ -70,7 +70,7 @@ function getProviderMode(providerConfig) {
 function loadProviderConfig() {
   try {
     if (!fs.existsSync(PROVIDERS_PATH)) {
-      return { cli_command: 'claude', env_vars: {}, active: 'anthropic' };
+      return { cli_command: 'claude', env_vars: {}, active: 'anthropic', fallback_models: [], model_tiers: {} };
     }
 
     const config = JSON.parse(fs.readFileSync(PROVIDERS_PATH, 'utf8'));
@@ -100,15 +100,36 @@ function loadProviderConfig() {
       envVars.NVIDIA_API_KEY = envVars.OPENAI_API_KEY;
     }
 
+    // Ordered fallback chain — the CLI consumes the first entry
+    // (--fallback-model); the rest stay available for future chain support.
+    const fallbackModels = Array.isArray(provider.fallback_models)
+      ? provider.fallback_models
+          .filter((m) => typeof m === 'string' && m.trim())
+          .map((m) => m.trim())
+      : [];
+
+    // Per-tier model map: agents declare model: opus|sonnet|haiku in their
+    // frontmatter; providers.json maps each tier to a provider model.
+    const modelTiers = {};
+    if (provider.model_tiers && typeof provider.model_tiers === 'object' && !Array.isArray(provider.model_tiers)) {
+      for (const [tier, model] of Object.entries(provider.model_tiers)) {
+        if (typeof model === 'string' && model.trim()) {
+          modelTiers[tier.toLowerCase()] = model.trim();
+        }
+      }
+    }
+
     return {
       cli_command: cliCommand,
       env_vars: envVars,
       active,
       provider_name: provider.name || active,
       mode: ALLOWED_MODES.has(provider.mode) ? provider.mode : null,
+      fallback_models: fallbackModels,
+      model_tiers: modelTiers,
     };
   } catch {
-    return { cli_command: 'claude', env_vars: {}, active: 'anthropic' };
+    return { cli_command: 'claude', env_vars: {}, active: 'anthropic', fallback_models: [], model_tiers: {} };
   }
 }
 
