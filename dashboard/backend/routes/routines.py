@@ -124,6 +124,8 @@ IMAGE_MODEL_PRICING = {
     "flux-2": {"per_image": 0.03, "input_per_1m": 0, "output_per_1m": 0},
     "flux.2": {"per_image": 0.03, "input_per_1m": 0, "output_per_1m": 0},
     "gpt-5-image": {"per_image": 0.04, "input_per_1m": 0.005, "output_per_1m": 0.015},
+    # OpenAI Images API — billed per token (text input / image output rates).
+    "gpt-image-2": {"per_image": 0.0, "input_per_1m": 5.0, "output_per_1m": 40.0},
     "seedream": {"per_image": 0.02, "input_per_1m": 0, "output_per_1m": 0},
     "riverflow": {"per_image": 0.02, "input_per_1m": 0, "output_per_1m": 0},
 }
@@ -147,7 +149,13 @@ def _estimate_image_cost(entry: dict) -> float:
         return 0.03
 
     cost = pricing["per_image"]
-    if total_tokens > 0 and pricing["input_per_1m"] > 0:
+    prompt_tokens = tokens.get("prompt_tokens", 0)
+    completion_tokens = tokens.get("completion_tokens", 0)
+    if prompt_tokens and completion_tokens and pricing.get("output_per_1m", 0) > 0:
+        # Split billing: text input vs image output rates (OpenAI Images API)
+        cost += (prompt_tokens / 1_000_000) * pricing["input_per_1m"]
+        cost += (completion_tokens / 1_000_000) * pricing["output_per_1m"]
+    elif total_tokens > 0 and pricing["input_per_1m"] > 0:
         cost += (total_tokens / 1_000_000) * pricing["input_per_1m"]
     return round(cost, 6)
 
