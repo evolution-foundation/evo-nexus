@@ -272,7 +272,7 @@ class ClaudeBridge {
       // to route to the Codex backend — a raw 'gpt-5.x' falls back to the
       // regular chat completions API, which bypasses Codex OAuth entirely.
       //
-      //   codexplan  → GPT-5.4 on Codex backend (high reasoning)
+      //   codexplan  → GPT-5.5 on Codex backend (high reasoning)
       //   codexspark → GPT-5.3 Codex Spark (faster)
       //
       // For the plain 'openai' provider (API key mode), default to gpt-4.1.
