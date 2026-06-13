@@ -44,6 +44,22 @@ DEFAULT_MODELS = {
     "openrouter": "google/gemini-3.1-flash-image-preview",
     "google": "gemini-3.1-flash-image-preview",
     "nvidia": "black-forest-labs/flux.2-klein-4b",
+    "openai": "gpt-image-2",
+}
+
+# Aspect ratio → size string accepted by the OpenAI Images API
+# (gpt-image models accept 1024x1024, 1536x1024, 1024x1536, auto).
+OPENAI_SIZE_MAP = {
+    "1:1": "1024x1024",
+    "16:9": "1536x1024",
+    "3:2": "1536x1024",
+    "4:3": "1536x1024",
+    "5:4": "1536x1024",
+    "21:9": "1536x1024",
+    "9:16": "1024x1536",
+    "2:3": "1024x1536",
+    "3:4": "1024x1536",
+    "4:5": "1024x1536",
 }
 
 # Aspect ratio → (width, height) within the dimension set NVIDIA NIM accepts
@@ -90,6 +106,15 @@ MODEL_REGISTRY: dict[str, dict[str, Any]] = {
         "id": "openai/gpt-5-image",
         "modalities": ["image", "text"],
         "description": "OpenAI GPT-5 Image — multimodal (text+image)",
+    },
+    # OpenAI Images API — requires a PLATFORM API key (api.openai.com billing).
+    # ChatGPT Plus / Codex OAuth tokens lack the api.model.images.request
+    # scope and cannot generate images (verified empirically — 401).
+    "image2": {
+        "id": "gpt-image-2",
+        "provider": "openai",
+        "modalities": ["image"],
+        "description": "OpenAI GPT Image 2 — Images API direta (requer API key de plataforma)",
     },
     # NVIDIA NIM Flux models
     "nvidia-flux-dev": {
@@ -143,6 +168,7 @@ ENV_CF_TOKEN = "AI_IMG_CREATOR_CF_TOKEN"
 ENV_OPENROUTER_KEY = "AI_IMG_CREATOR_OPENROUTER_KEY"
 ENV_GEMINI_KEY = "AI_IMG_CREATOR_GEMINI_KEY"
 ENV_NVIDIA_KEY = "NVIDIA_API_KEY"
+ENV_OPENAI_KEY = "AI_IMG_CREATOR_OPENAI_KEY"  # falls back to OPENAI_API_KEY
 
 def _load_dotenv() -> None:
     """Load .env files into os.environ (stdlib only, no pip deps).
@@ -239,7 +265,7 @@ def resolve_model(model_arg: str | None, provider: str) -> tuple[str, list[str]]
         if provider == "openrouter":
             entry = MODEL_REGISTRY.get("gemini", {})
             return model_id, entry.get("modalities", ["image", "text"])
-        if provider == "nvidia":
+        if provider in ("nvidia", "openai"):
             return model_id, ["image"]
         return model_id, ["image", "text"]
 
@@ -284,9 +310,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--provider",
-        choices=["openrouter", "google", "nvidia"],
+        choices=["openrouter", "google", "nvidia", "openai"],
         default="openrouter",
-        help="API provider (default: openrouter). Use 'nvidia' for NVIDIA NIM Flux models.",
+        help="API provider (default: openrouter). Use 'nvidia' for NVIDIA NIM Flux models, 'openai' for GPT Image via Images API.",
     )
     parser.add_argument(
         "-a", "--aspect-ratio",
@@ -467,14 +493,25 @@ def detect_mode(provider: str) -> tuple[str, dict[str, str]]:
     elif provider == "nvidia":
         direct_key = os.environ.get(ENV_NVIDIA_KEY, "").strip()
         log.debug(f"Env check: {ENV_NVIDIA_KEY}={'set (' + mask_key(direct_key) + ')' if direct_key else 'MISSING'}")
+    elif provider == "openai":
+        direct_key = (
+            os.environ.get(ENV_OPENAI_KEY, "").strip()
+            or os.environ.get("OPENAI_API_KEY", "").strip()
+        )
+        log.debug(f"Env check: {ENV_OPENAI_KEY}/OPENAI_API_KEY={'set (' + mask_key(direct_key) + ')' if direct_key else 'MISSING'}")
     else:
         log.debug(f"Unknown provider: {provider}")
         direct_key = ""
 
-    # NVIDIA NIM always uses direct mode (no gateway)
-    if provider == "nvidia" and direct_key:
-        log.info("Mode: direct (NVIDIA NIM always uses direct API)")
+    # NVIDIA NIM and OpenAI Images always use direct mode (no gateway)
+    if provider in ("nvidia", "openai") and direct_key:
+        log.info(f"Mode: direct ({provider} always uses direct API)")
         return "direct", {"direct_key": direct_key}
+
+    # The gateway path is OpenRouter/Google-shaped — never route openai
+    # (Images API) through it.
+    if provider == "openai":
+        has_gateway = False
 
     if has_gateway:
         log.info(f"Mode: gateway (account={cf_account}, gateway={cf_gateway})")
@@ -505,6 +542,10 @@ def detect_mode(provider: str) -> tuple[str, dict[str, str]]:
         elif provider == "nvidia":
             print("For NVIDIA NIM access, set:", file=sys.stderr)
             print(f"  export {ENV_NVIDIA_KEY}=your-nvidia-api-key", file=sys.stderr)
+        elif provider == "openai":
+            print("For OpenAI Images API access, set a PLATFORM key (billing on", file=sys.stderr)
+            print("platform.openai.com — ChatGPT Plus/Codex OAuth cannot generate images):", file=sys.stderr)
+            print(f"  export {ENV_OPENAI_KEY}=sk-...  (or OPENAI_API_KEY)", file=sys.stderr)
         print("", file=sys.stderr)
         print(
             "See references/setup-guide.md for full setup instructions.",
@@ -549,6 +590,8 @@ def build_direct_url(provider: str, model: str) -> str:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
     elif provider == "nvidia":
         url = build_nvidia_url(model)
+    elif provider == "openai":
+        url = "https://api.openai.com/v1/images/generations"
     else:
         raise RuntimeError(f"Unknown provider for URL: {provider}")
     log.debug(f"Built direct URL: {url}")
@@ -588,6 +631,8 @@ def build_headers(provider: str, mode: str, config: dict[str, str]) -> dict[str,
             headers["Authorization"] = f"Bearer {config['direct_key']}"
         elif provider == "google":
             headers["x-goog-api-key"] = config["direct_key"]
+        elif provider == "openai":
+            headers["Authorization"] = f"Bearer {config['direct_key']}"
 
     # Log headers with masked sensitive values
     safe_headers = {}
@@ -660,6 +705,15 @@ def build_request_body(
         if image_config:
             body["image_config"] = image_config
             log.debug(f"Image config: {json.dumps(image_config)}")
+    elif provider == "openai":
+        # OpenAI Images API — flat prompt, size from the aspect-ratio map.
+        body = {"model": model, "prompt": prompt}
+        if aspect_ratio:
+            size = OPENAI_SIZE_MAP.get(aspect_ratio)
+            if size:
+                body["size"] = size
+            else:
+                log.warning(f"Aspect ratio {aspect_ratio} not mapped for OpenAI; using model default")
     else:
         # Google AI Studio
         parts: list[dict[str, Any]] = [{"text": prompt}]
@@ -871,6 +925,34 @@ def extract_image_nvidia(response: dict) -> tuple[bytes, str]:
     if not artifacts:
         raise RuntimeError(f"No artifacts in NVIDIA response: {json.dumps(response)[:500]}")
     b64_data = artifacts[0]["base64"]
+    image_bytes = base64.b64decode(b64_data)
+    log.info(f"Decoded image: {len(image_bytes)} bytes ({len(b64_data)} base64 chars)")
+    return image_bytes, ""
+
+
+def extract_image_openai(response: dict) -> tuple[bytes, str]:
+    """Extract base64 image data from an OpenAI Images API response.
+
+    Args:
+        response: Parsed JSON response from api.openai.com/v1/images/generations.
+
+    Returns:
+        Tuple of (image_bytes, text_content) where text_content is empty
+        (the Images API returns only images).
+
+    Raises:
+        RuntimeError: If the response carries an error or no image data.
+    """
+    error = response.get("error")
+    if error:
+        msg = error.get("message", str(error)) if isinstance(error, dict) else str(error)
+        raise RuntimeError(f"OpenAI API error: {msg}")
+    data = response.get("data", [])
+    if not data:
+        raise RuntimeError(f"No data in OpenAI response: {json.dumps(response)[:500]}")
+    b64_data = data[0].get("b64_json", "")
+    if not b64_data:
+        raise RuntimeError(f"No b64_json in OpenAI response item: {json.dumps(data[0])[:300]}")
     image_bytes = base64.b64decode(b64_data)
     log.info(f"Decoded image: {len(image_bytes)} bytes ({len(b64_data)} base64 chars)")
     return image_bytes, ""
@@ -1164,6 +1246,15 @@ def log_cost_entry(
                 "completion_tokens": usage.get("completion_tokens", 0),
                 "total_tokens": usage.get("total_tokens", 0),
             }
+    elif provider == "openai":
+        # Images API usage format: input_tokens / output_tokens / total_tokens
+        usage = response.get("usage", {})
+        if usage:
+            token_usage = {
+                "prompt_tokens": usage.get("input_tokens", 0),
+                "completion_tokens": usage.get("output_tokens", 0),
+                "total_tokens": usage.get("total_tokens", 0),
+            }
     else:
         # Google AI Studio format
         usage = response.get("usageMetadata", {})
@@ -1326,11 +1417,18 @@ def main() -> None:
             file=sys.stderr,
         )
 
-    # Auto-detect provider from model keyword (e.g. nvidia-flux2-klein-4b -> nvidia)
+    # Auto-detect provider from the model keyword / id (registry entries with
+    # an explicit "provider" field, e.g. nvidia-flux2-klein-4b -> nvidia,
+    # image2 -> openai).
     provider = args.provider
-    if args.model and args.model.lower().startswith("nvidia-"):
-        provider = "nvidia"
-        log.debug(f"Auto-detected provider 'nvidia' from model keyword '{args.model}'")
+    if args.model:
+        _kw = args.model.lower().strip()
+        _entry = MODEL_REGISTRY.get(_kw) or next(
+            (e for e in MODEL_REGISTRY.values() if e.get("id") == args.model), None
+        )
+        if _entry and _entry.get("provider"):
+            provider = _entry["provider"]
+            log.debug(f"Auto-detected provider '{provider}' from model '{args.model}'")
 
     # Resolve model and modalities
     model, modalities = resolve_model(args.model, provider)
@@ -1499,8 +1597,8 @@ def main() -> None:
         try:
             if provider == "openrouter":
                 analysis_text = extract_text_openrouter(response)
-            elif provider == "nvidia":
-                raise RuntimeError("Analyze mode not supported for NVIDIA provider")
+            elif provider in ("nvidia", "openai"):
+                raise RuntimeError(f"Analyze mode not supported for {provider} provider")
             else:
                 analysis_text = extract_text_google(response)
         except RuntimeError as e:
@@ -1550,6 +1648,8 @@ def main() -> None:
             image_bytes, text_content = extract_image_openrouter(response)
         elif provider == "nvidia":
             image_bytes, text_content = extract_image_nvidia(response)
+        elif provider == "openai":
+            image_bytes, text_content = extract_image_openai(response)
         else:
             image_bytes, text_content = extract_image_google(response)
     except RuntimeError as e:

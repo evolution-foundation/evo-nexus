@@ -25,6 +25,13 @@ When the user mentions a model keyword in their image request, use the correspon
 | `nvidia-flux2-klein-4b` | BFL FLUX.2 Klein 4B via NVIDIA NIM (default for `--provider nvidia`) | "nvidia", "flux nvidia", "nvidia flux2" |
 | `nvidia-flux-dev` | BFL FLUX.1-dev via NVIDIA NIM (30 steps, high quality) | "nvidia flux dev" |
 | `nvidia-flux-schnell` | BFL FLUX.1-schnell via NVIDIA NIM (4 steps, fastest) | "nvidia schnell", "flux rápido" |
+| `image2` | OpenAI GPT Image 2 via Images API direta (default for `--provider openai`) | "image2", "gpt image 2", "imagem openai" |
+
+**OpenAI Images API notes (`image2`):**
+- Requires a **platform API key** (`AI_IMG_CREATOR_OPENAI_KEY` or `OPENAI_API_KEY`, billing on platform.openai.com).
+- **ChatGPT Plus / Codex OAuth tokens CANNOT generate images** — they lack the `api.model.images.request` scope (verified: API returns 401). Do not suggest the Codex login as an image path.
+- `-a` maps to the supported sizes (1024x1024, 1536x1024, 1024x1536). `--image-size`, `-r` (reference images) and `--analyze` are not supported on this provider.
+- Excellent text rendering (including Portuguese accents) — good choice for text-critical art.
 
 **NVIDIA NIM notes:**
 - Free tier with generous credits — good fallback when OpenRouter hits rate limits.
