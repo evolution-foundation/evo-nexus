@@ -116,15 +116,17 @@ def _read_providers_config() -> dict:
 # ── Default fallback chains ───────────────────────────────────────────────────
 
 # NVIDIA: models are independent — quota on one doesn't block others.
+# Order matches the validated fast, tool-calling-capable models (and mirrors
+# providers.json model_tiers / fallback_models). OpenRouter is intentionally
+# NOT in the chain — its stealth models 404 intermittently ("buga mto").
 NVIDIA_MODEL_CHAIN = [
-    "minimaxi/minimax-m3",            # Primary
-    "z-ai/glm-5.1",                   # 2nd
-    "deepseek-ai/deepseek-v4-flash",  # 3rd
-    "qwen/qwen3.5-397b-a17b",        # 4th
-    "stepfun-ai/step-3.7-flash",     # 5th (haiku tier)
+    "z-ai/glm-5.1",                   # Primary (sonnet tier)
+    "moonshotai/kimi-k2.6",          # 2nd (opus tier, deep reasoning)
+    "qwen/qwen3.5-397b-a17b",        # 3rd
+    "stepfun-ai/step-3.7-flash",     # 4th (haiku tier, fastest)
 ]
 
-# Provider chain: NVIDIA → OpenRouter (owl-alpha) → Codex → Claude nativo
+# Provider chain: NVIDIA → Codex (GPT-5.5 OAuth) → Claude nativo
 DEFAULT_PROVIDER_CHAIN = [
     {
         "provider_id": "nvidia",
@@ -135,16 +137,6 @@ DEFAULT_PROVIDER_CHAIN = [
             "OPENAI_BASE_URL": "https://integrate.api.nvidia.com/v1",
         },
         "model_chain": NVIDIA_MODEL_CHAIN,
-    },
-    {
-        "provider_id": "openrouter",
-        "cli_command": "openclaude",
-        "base_url": "https://openrouter.ai/api/v1",
-        "env_vars": {
-            "CLAUDE_CODE_USE_OPENAI": "1",
-            "OPENAI_BASE_URL": "https://openrouter.ai/api/v1",
-        },
-        "model_chain": ["openrouter/owl-alpha"],
     },
     {
         "provider_id": "codex_auth",
@@ -317,10 +309,23 @@ def _invoke_cli(
 
     duration_ms = int((time.time() - start_time) * 1000)
 
+    # The CLI emits a JSON result envelope (--output-format json) carrying token
+    # usage and cost — parse it so heartbeat runs land accurate numbers on the
+    # /costs page instead of nulls. Best-effort: never let parsing break a run.
+    tokens_in = tokens_out = cost_usd = None
+    try:
+        envelope = json.loads(output)
+        usage = envelope.get("usage") or {}
+        tokens_in = usage.get("input_tokens")
+        tokens_out = usage.get("output_tokens")
+        cost_usd = envelope.get("total_cost_usd")
+    except (json.JSONDecodeError, AttributeError, TypeError):
+        pass
+
     return {
         "status": status, "output": output, "error": error,
         "duration_ms": duration_ms,
-        "tokens_in": None, "tokens_out": None, "cost_usd": None,
+        "tokens_in": tokens_in, "tokens_out": tokens_out, "cost_usd": cost_usd,
     }
 
 
@@ -367,6 +372,11 @@ class FallbackEngine:
             api_key = _get_api_key(provider_id, config)
             if api_key:
                 base_env["OPENAI_API_KEY"] = api_key
+                # openclaude ≥0.18 detects the NVIDIA NIM base URL and requires
+                # the key in NVIDIA_API_KEY — derive it so auth doesn't fail and
+                # wrongly skip to the next provider. Mirrors provider-config.js.
+                if "nvidia.com" in (base_url or "") and "NVIDIA_API_KEY" not in base_env:
+                    base_env["NVIDIA_API_KEY"] = api_key
 
             for model in model_chain:
                 if force_model and model != force_model:
@@ -409,7 +419,7 @@ class FallbackEngine:
                 if attempt.is_429:
                     set_cooldown(cooldown_key)
                     print(f"[fallback] 429 on {provider_id}:{model} — "
-                          f"cooldown {DEFAULT_COOLDOWN}s, trying next", flush=True)
+                          f"cooldown {DEFAULT_COOLDOWN_SECONDS}s, trying next", flush=True)
                     continue
 
                 if attempt.is_fatal:
