@@ -156,8 +156,8 @@ telegram:           ## 📨 Start Telegram bot in background (screen)
 	@if screen -list | grep -q '\.telegram'; then \
 		echo "⚠ Telegram bot is already running. Use 'make telegram-stop' first or 'make telegram-attach' to connect."; \
 	else \
-		screen -dmS telegram claude --channels plugin:telegram@claude-plugins-official --dangerously-skip-permissions; \
-		echo "✅ Telegram bot running in background (screen: telegram)"; \
+		screen -dmS telegram env CLAUDE_CODE_USE_OPENAI=1 OPENAI_MODEL=codexplan claude --channels plugin:telegram@claude-plugins-official --dangerously-skip-permissions; \
+		echo "✅ Telegram bot running on Codex (GPT-5.5) in background (screen: telegram)"; \
 		echo "📺 Ver: screen -r telegram"; \
 		echo "🛑 Parar: make telegram-stop"; \
 	fi
