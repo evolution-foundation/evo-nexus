@@ -107,6 +107,7 @@ class TelegramProviderBotMemoryTests(unittest.TestCase):
         try:
             bot.PROVIDERS_PATH = cfg
             self.assertEqual([pid for pid, _ in bot.provider_chain()], ["codex_auth"])
+            self.assertEqual(bot.provider_models("codex_auth", {}), [None])
         finally:
             bot.PROVIDERS_PATH = original_path
 

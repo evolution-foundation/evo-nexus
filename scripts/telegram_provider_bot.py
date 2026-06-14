@@ -32,7 +32,7 @@ GROQ_TRANSCRIPTION_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 GROQ_TRANSCRIPTION_MODEL = os.environ.get("GROQ_TRANSCRIPTION_MODEL", "whisper-large-v3-turbo")
 MAX_MEMORY_MESSAGES = 8
 MAX_MEMORY_CHARS = 4500
-TELEGRAM_CODEX_MODELS = ("codexplan",)
+TELEGRAM_CODEX_MODELS = (None,)
 GROQ_AUDIO_SUFFIXES = {
     ".oga": ".ogg",
     ".opus": ".opus",
@@ -461,6 +461,7 @@ def build_prompt(chat_id: str, prompt_text: str, *, speaker: str | None = None) 
         "Nao diga que nao tem acesso a ferramentas de forma generica.",
         "Quando o usuario pedir uma acao, tente executar pelo workspace/integracoes disponiveis.",
         "Se houver bloqueio real, responda somente o bloqueio concreto: credencial, arquivo, permissao, endpoint ou erro.",
+        "Se a mensagem veio de audio transcrito, use a transcricao apenas como entrada interna; nao repita a transcricao ao usuario.",
         "Use a memoria recente abaixo apenas quando for relevante; ignore respostas antigas que negaram acesso genericamente.",
         "",
     ]
@@ -510,7 +511,7 @@ def models_for(provider: dict) -> list[str | None]:
 
 def provider_models(provider_id: str, provider: dict) -> list[str | None]:
     if provider_id == "codex_auth":
-        return [model for model in TELEGRAM_CODEX_MODELS if model]
+        return list(TELEGRAM_CODEX_MODELS)
     return models_for(provider)
 
 
@@ -551,6 +552,9 @@ def invoke_openai_compatible(provider_id: str, provider: dict, model: str, promp
 
 
 def invoke_cli(provider_id: str, provider: dict, prompt: str, model: str | None = None) -> str:
+    if provider_id == "codex_auth":
+        return invoke_codex_exec(prompt)
+
     cli = provider.get("cli_command") or ("claude" if provider_id == "anthropic" else "openclaude")
     if provider_id == "anthropic":
         cli = "claude"
@@ -569,6 +573,43 @@ def invoke_cli(provider_id: str, provider: dict, prompt: str, model: str | None 
     if proc.returncode != 0:
         raise RuntimeError((proc.stderr or proc.stdout or f"{cli} failed").strip()[:500])
     return proc.stdout.strip()
+
+
+def invoke_codex_exec(prompt: str) -> str:
+    output_path: Path | None = None
+    with tempfile.NamedTemporaryFile(prefix="telegram-codex-", suffix=".txt", delete=False) as tmp:
+        output_path = Path(tmp.name)
+    timeout = int(os.environ.get("TELEGRAM_CODEX_TIMEOUT") or 600)
+    try:
+        proc = subprocess.run(
+            [
+                "codex",
+                "exec",
+                "-C",
+                str(ROOT),
+                "--dangerously-bypass-approvals-and-sandbox",
+                "--ephemeral",
+                "-o",
+                str(output_path),
+                prompt,
+            ],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            timeout=timeout,
+        )
+        if proc.returncode != 0:
+            raise RuntimeError((proc.stderr or proc.stdout or "codex exec failed").strip()[:700])
+        text = output_path.read_text(encoding="utf-8", errors="replace").strip()
+        if not text:
+            raise RuntimeError("codex exec returned empty response")
+        return text
+    finally:
+        if output_path:
+            try:
+                output_path.unlink()
+            except OSError:
+                pass
 
 
 def invoke_provider(prompt: str) -> tuple[str, str]:
@@ -634,17 +675,14 @@ def main() -> int:
                 audio_file_id = message_audio_file_id(message)
                 if audio_file_id:
                     api(token, "sendChatAction", {"chat_id": chat_id, "action": "typing"}, timeout=10)
+                    transcription = ""
                     try:
                         transcription = handle_audio_message(token, chat_id, audio_file_id)
-                        api(
-                            token,
-                            "sendMessage",
-                            {"chat_id": chat_id, "text": f"Transcricao:\n\n{transcription[:3600]}"},
-                        )
                         prompt = build_prompt(chat_id, transcription, speaker=sender_name)
                         answer, used = invoke_provider(prompt)
                     except Exception as exc:
-                        answer = f"Falhei ao transcrever/processar audio: {exc}"
+                        error_label = "processar audio" if transcription else "transcrever audio"
+                        answer = f"Falhei ao {error_label}: {exc}"
                         used = "error"
                     log(f"audio chat={chat_id} via {used}")
                     api(token, "sendMessage", {"chat_id": chat_id, "text": answer[:3900]})
