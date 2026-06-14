@@ -150,20 +150,50 @@ uninstall:          ## 🗑️  Full cleanup — stop services, remove nginx, da
 bling-auth:         ## 🔐 Bling OAuth2 login (one-time: capture access + refresh tokens into .env)
 	@python3 .claude/skills/int-bling/scripts/bling_auth.py
 
-telegram:           ## 📨 Start Telegram bot in background (screen)
+telegram:           ## 📨 Start Telegram bot using active provider in background (screen)
 	@command -v screen >/dev/null 2>&1 || { echo "❌ 'screen' is not installed — run: sudo apt install screen"; exit 1; }
-	@command -v bun >/dev/null 2>&1 || [ -x "$$HOME/.bun/bin/bun" ] || { echo "❌ 'bun' is not installed (required by the telegram plugin MCP) — run: curl -fsSL https://bun.sh/install | bash"; exit 1; }
-	@if screen -list | grep -q '\.telegram'; then \
+	@if screen -list | grep -qE '\.telegram[[:space:]]'; then \
 		echo "⚠ Telegram bot is already running. Use 'make telegram-stop' first or 'make telegram-attach' to connect."; \
 	else \
-		screen -dmS telegram env CLAUDE_CODE_USE_OPENAI=1 OPENAI_MODEL=codexplan claude --channels plugin:telegram@claude-plugins-official --dangerously-skip-permissions; \
-		echo "✅ Telegram bot running on Codex (GPT-5.5) in background (screen: telegram)"; \
+		screen -dmS telegram python3 scripts/telegram_provider_bot.py; \
+		printf "⏳ Waiting for Telegram provider bot"; \
+		for i in $$(seq 1 10); do \
+			pgrep -af '[p]ython3 scripts/telegram_provider_bot.py' >/dev/null && break; \
+			printf "."; sleep 1; \
+		done; \
+		pgrep -af '[p]ython3 scripts/telegram_provider_bot.py' >/dev/null && echo " ✅ ready" || { echo " ❌ Telegram provider bot did not start — check: screen -r telegram"; exit 1; }; \
+		echo "✅ Telegram bot running with active EvoNexus provider (screen: telegram)"; \
 		echo "📺 Ver: screen -r telegram"; \
 		echo "🛑 Parar: make telegram-stop"; \
 	fi
 
-telegram-stop:      ## 🛑 Stop the Telegram bot
-	@screen -S telegram -X quit 2>/dev/null && echo "✅ Telegram bot stopped" || echo "⚠ Was not running"
+telegram-channel:   ## 🧪 Start legacy Claude Code Channels Telegram bot via LiteLLM proxy
+	@command -v screen >/dev/null 2>&1 || { echo "❌ 'screen' is not installed — run: sudo apt install screen"; exit 1; }
+	@command -v bun >/dev/null 2>&1 || [ -x "$$HOME/.bun/bin/bun" ] || { echo "❌ 'bun' is not installed (required by the telegram plugin MCP) — run: curl -fsSL https://bun.sh/install | bash"; exit 1; }
+	@command -v curl >/dev/null 2>&1 || { echo "❌ 'curl' is not installed"; exit 1; }
+	@[ -x .venv/bin/litellm ] || { echo "❌ litellm not installed in .venv — run: uv pip install 'litellm[proxy]'"; exit 1; }
+	@if screen -list | grep -q '\.telegram-proxy'; then \
+		echo "ℹ LiteLLM proxy already running (screen: telegram-proxy)"; \
+	else \
+		screen -dmS telegram-proxy bash scripts/telegram_litellm_proxy.sh; \
+		printf "⏳ Starting LiteLLM proxy (Anthropic→NVIDIA) on :4000"; \
+		for i in $$(seq 1 30); do \
+			curl -s -m2 http://127.0.0.1:4000/health/readiness >/dev/null 2>&1 && break; \
+			printf "."; sleep 1; \
+		done; \
+		curl -s -m2 http://127.0.0.1:4000/health/readiness >/dev/null 2>&1 && echo " ✅ ready" || { echo " ❌ proxy failed to start — check: screen -r telegram-proxy"; exit 1; }; \
+	fi
+	@if screen -list | grep -qE '\.telegram[[:space:]]'; then \
+		echo "⚠ Telegram bot is already running. Use 'make telegram-stop' first or 'make telegram-attach' to connect."; \
+	else \
+		screen -dmS telegram env ANTHROPIC_BASE_URL=http://127.0.0.1:4000 ANTHROPIC_AUTH_TOKEN=sk-evonexus-telegram-local ANTHROPIC_MODEL=telegram-nvidia claude --channels plugin:telegram@claude-plugins-official --dangerously-skip-permissions; \
+		echo "✅ Legacy Telegram channel running (screen: telegram)"; \
+	fi
+
+telegram-stop:      ## 🛑 Stop the Telegram bot (and its LiteLLM proxy)
+	@screen -S telegram -X quit 2>/dev/null && echo "✅ Telegram bot stopped" || echo "⚠ Bot was not running"
+	@screen -S telegram-debug -X quit 2>/dev/null && echo "✅ Telegram debug bot stopped" || true
+	@screen -S telegram-proxy -X quit 2>/dev/null && echo "✅ LiteLLM proxy stopped" || echo "⚠ Proxy was not running"
 
 telegram-attach:    ## 📺 Connect to Telegram terminal (Ctrl+A D to detach)
 	@screen -r telegram

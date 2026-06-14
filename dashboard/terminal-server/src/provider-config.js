@@ -70,7 +70,7 @@ function getProviderMode(providerConfig) {
 function loadProviderConfig() {
   try {
     if (!fs.existsSync(PROVIDERS_PATH)) {
-      return { cli_command: 'claude', env_vars: {}, active: 'anthropic', fallback_models: [], model_tiers: {} };
+      return { cli_command: 'claude', env_vars: {}, active: 'anthropic', fallback_models: [], fallback_providers: [], providers: {}, model_tiers: {} };
     }
 
     const config = JSON.parse(fs.readFileSync(PROVIDERS_PATH, 'utf8'));
@@ -80,11 +80,13 @@ function loadProviderConfig() {
     let cliCommand = provider.cli_command || 'claude';
     if (!ALLOWED_CLI.has(cliCommand)) cliCommand = 'claude';
 
-    const envVars = Object.fromEntries(
-      Object.entries(provider.env_vars || {}).filter(
+    const sanitizeEnv = (rawEnv = {}) => Object.fromEntries(
+      Object.entries(rawEnv).filter(
         ([k, v]) => v !== '' && ALLOWED_ENV_VARS.has(k)
       )
     );
+
+    const envVars = sanitizeEnv(provider.env_vars || {});
 
     if (active === 'codex_auth' && 'OPENAI_API_KEY' in envVars) {
       delete envVars.OPENAI_API_KEY;
@@ -101,23 +103,54 @@ function loadProviderConfig() {
     }
 
     // Ordered fallback chain — the CLI consumes the first entry
-    // (--fallback-model); the rest stay available for future chain support.
+    // (--fallback-model); the full list is used by Chat Completion fallback.
     const fallbackModels = Array.isArray(provider.fallback_models)
       ? provider.fallback_models
           .filter((m) => typeof m === 'string' && m.trim())
           .map((m) => m.trim())
       : [];
 
-    // Per-tier model map: agents declare model: opus|sonnet|haiku in their
-    // frontmatter; providers.json maps each tier to a provider model.
-    const modelTiers = {};
-    if (provider.model_tiers && typeof provider.model_tiers === 'object' && !Array.isArray(provider.model_tiers)) {
-      for (const [tier, model] of Object.entries(provider.model_tiers)) {
-        if (typeof model === 'string' && model.trim()) {
-          modelTiers[tier.toLowerCase()] = model.trim();
+    const fallbackProviders = Array.isArray(provider.fallback_providers)
+      ? provider.fallback_providers
+          .filter((p) => typeof p === 'string' && p.trim())
+          .map((p) => p.trim())
+      : [];
+
+    const providers = {};
+    for (const [id, p] of Object.entries(config.providers || {})) {
+      let pCliCommand = p.cli_command || 'claude';
+      if (!ALLOWED_CLI.has(pCliCommand)) pCliCommand = 'claude';
+      const pEnv = sanitizeEnv(p.env_vars || {});
+      if (id === 'codex_auth' && 'OPENAI_API_KEY' in pEnv) delete pEnv.OPENAI_API_KEY;
+      if (!pEnv.NVIDIA_API_KEY && pEnv.OPENAI_API_KEY && /\bnvidia\.com\b/i.test(pEnv.OPENAI_BASE_URL || '')) {
+        pEnv.NVIDIA_API_KEY = pEnv.OPENAI_API_KEY;
+      }
+      providers[id] = {
+        cli_command: pCliCommand,
+        env_vars: pEnv,
+        active: id,
+        provider_name: p.name || id,
+        mode: ALLOWED_MODES.has(p.mode) ? p.mode : null,
+        fallback_models: Array.isArray(p.fallback_models)
+          ? p.fallback_models.filter((m) => typeof m === 'string' && m.trim()).map((m) => m.trim())
+          : [],
+        fallback_providers: Array.isArray(p.fallback_providers)
+          ? p.fallback_providers.filter((fp) => typeof fp === 'string' && fp.trim()).map((fp) => fp.trim())
+          : [],
+        model_tiers: {},
+      };
+      if (p.model_tiers && typeof p.model_tiers === 'object' && !Array.isArray(p.model_tiers)) {
+        for (const [tier, model] of Object.entries(p.model_tiers)) {
+          if (typeof model === 'string' && model.trim()) {
+            providers[id].model_tiers[tier.toLowerCase()] = model.trim();
+          }
         }
       }
     }
+
+    // Per-tier model map: agents declare model: opus|sonnet|haiku in their
+    // frontmatter; providers.json maps each tier to a provider model.
+    const modelTiers = providers[active]?.model_tiers || {};
 
     return {
       cli_command: cliCommand,
@@ -126,10 +159,12 @@ function loadProviderConfig() {
       provider_name: provider.name || active,
       mode: ALLOWED_MODES.has(provider.mode) ? provider.mode : null,
       fallback_models: fallbackModels,
+      fallback_providers: fallbackProviders,
+      providers,
       model_tiers: modelTiers,
     };
   } catch {
-    return { cli_command: 'claude', env_vars: {}, active: 'anthropic', fallback_models: [], model_tiers: {} };
+    return { cli_command: 'claude', env_vars: {}, active: 'anthropic', fallback_models: [], fallback_providers: [], providers: {}, model_tiers: {} };
   }
 }
 

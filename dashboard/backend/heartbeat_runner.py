@@ -241,7 +241,11 @@ def step7_invoke_claude(
                 prompt=prompt,
                 max_turns=max_turns,
                 timeout_seconds=timeout_seconds,
-                agent=agent,
+                # The heartbeat prompt already embeds the full agent identity
+                # from .claude/agents/{agent}.md. Passing --agent here breaks
+                # OpenClaude-backed providers, which can misparse the expanded
+                # agent markdown as CLI options.
+                agent="",
             )
             # Preserve the step7 contract; provider_fallback already returns
             # status/output/error/duration_ms/tokens_*/cost_usd and adds

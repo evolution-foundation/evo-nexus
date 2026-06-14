@@ -428,18 +428,6 @@ class ChatBridge {
 
     const abortController = new AbortController();
     const cwd = workingDir || process.cwd();
-    const env = providerConfig.env_vars || {};
-    const model = resolveProviderModel(providerConfig);
-    const baseUrl = (env.OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/+$/, '');
-    const apiKey = env.OPENAI_API_KEY || env.CODEX_API_KEY || '';
-
-    if (!model) {
-      throw new Error(`Provider "${providerConfig.active}" sem modelo configurado. Defina o campo Model em Providers.`);
-    }
-    if (!apiKey) {
-      throw new Error(`Provider "${providerConfig.active}" sem API key configurada para Chat Completion.`);
-    }
-
     const runtimePrompt = this._buildChatCompletionSystemPrompt(agentName, cwd, sessionId);
 
     let finalPrompt = prompt || '';
@@ -448,31 +436,81 @@ class ChatBridge {
       finalPrompt += `\n\n[Attached files]\n${names}\n`;
     }
 
+    const makeAttempts = () => {
+      const providers = providerConfig.providers || {};
+      const activeProvider = providers[providerConfig.active] || providerConfig;
+      const providerOrder = [
+        providerConfig.active,
+        ...(Array.isArray(providerConfig.fallback_providers) ? providerConfig.fallback_providers : []),
+      ].filter(Boolean);
+      const attempts = [];
+
+      for (const providerId of providerOrder) {
+        const p = providers[providerId] || (providerId === providerConfig.active ? activeProvider : null);
+        if (!p) continue;
+        const env = p.env_vars || {};
+        const baseUrl = (env.OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/+$/, '');
+        const apiKey = env.OPENAI_API_KEY || env.NVIDIA_API_KEY || env.CODEX_API_KEY || '';
+        const primaryModel = resolveProviderModel(p);
+        const models = [];
+        if (primaryModel) models.push(primaryModel);
+        for (const m of (Array.isArray(p.fallback_models) ? p.fallback_models : [])) {
+          if (m && !models.includes(m)) models.push(m);
+        }
+        for (const model of models) {
+          attempts.push({ providerId, baseUrl, apiKey, model });
+        }
+      }
+      return attempts;
+    };
+
+    const attempts = makeAttempts();
+    if (attempts.length === 0) {
+      throw new Error(`Provider "${providerConfig.active}" sem modelo configurado. Defina o campo Model em Providers.`);
+    }
+
     const session = { active: true, abortController, sdkSessionId: null };
     this.sessions.set(sessionId, session);
 
     (async () => {
       try {
-        const resp = await this._rateLimitedFetch(`${baseUrl}/chat/completions`, {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${apiKey}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            model,
-            stream: true,
-            messages: [
-              { role: 'system', content: runtimePrompt },
-              { role: 'user', content: finalPrompt },
-            ],
-          }),
-          signal: abortController.signal,
-        });
+        let resp = null;
+        let selectedAttempt = null;
+        let lastBody = '';
+        for (const attempt of attempts) {
+          if (!attempt.apiKey) {
+            lastBody = `Provider "${attempt.providerId}" sem API key configurada para Chat Completion.`;
+            continue;
+          }
+          selectedAttempt = attempt;
+          console.log(`[chat-bridge] Chat fallback attempt ${attempt.providerId}:${attempt.model}`);
+          resp = await this._rateLimitedFetch(`${attempt.baseUrl}/chat/completions`, {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${attempt.apiKey}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              model: attempt.model,
+              stream: true,
+              messages: [
+                { role: 'system', content: runtimePrompt },
+                { role: 'user', content: finalPrompt },
+              ],
+            }),
+            signal: abortController.signal,
+          });
 
-        if (!resp.ok || !resp.body) {
-          const body = await resp.text().catch(() => '');
-          throw new Error(`Chat Completion falhou (${resp.status}): ${body.slice(0, 240)}`);
+          if (resp.ok && resp.body) break;
+
+          lastBody = await resp.text().catch(() => '');
+          if (![429, 503].includes(resp.status)) break;
+          console.warn(`[chat-bridge] ${resp.status} on ${attempt.providerId}:${attempt.model}; trying next fallback`);
+        }
+
+        if (!resp || !resp.ok || !resp.body) {
+          const label = selectedAttempt ? `${selectedAttempt.providerId}:${selectedAttempt.model}` : providerConfig.active;
+          throw new Error(`Chat Completion falhou em ${label} (${resp?.status || 'no-response'}): ${lastBody.slice(0, 240)}`);
         }
 
         if (onMessage) {

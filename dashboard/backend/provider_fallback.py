@@ -116,17 +116,14 @@ def _read_providers_config() -> dict:
 # ── Default fallback chains ───────────────────────────────────────────────────
 
 # NVIDIA: models are independent — quota on one doesn't block others.
-# Order matches the validated fast, tool-calling-capable models (and mirrors
-# providers.json model_tiers / fallback_models). OpenRouter is intentionally
-# NOT in the chain — its stealth models 404 intermittently ("buga mto").
+# Primary is GLM 5.1 on NVIDIA; if quota/rate-limit hits, rotate inside
+# NVIDIA first, then leave the provider only after these core models fail.
 NVIDIA_MODEL_CHAIN = [
-    "z-ai/glm-5.1",                   # Primary (sonnet tier)
-    "moonshotai/kimi-k2.6",          # 2nd (opus tier, deep reasoning)
-    "qwen/qwen3.5-397b-a17b",        # 3rd
-    "stepfun-ai/step-3.7-flash",     # 4th (haiku tier, fastest)
+    "z-ai/glm-5.1",            # Primary — Telegram + agents default
+    "minimaxai/minimax-m3",    # 2nd
 ]
 
-# Provider chain: NVIDIA → Codex (GPT-5.5 OAuth) → Claude nativo
+# Provider chain: NVIDIA → OpenRouter (owl-alpha) → Codex (GPT-5.x OAuth) → Claude nativo
 DEFAULT_PROVIDER_CHAIN = [
     {
         "provider_id": "nvidia",
@@ -137,6 +134,16 @@ DEFAULT_PROVIDER_CHAIN = [
             "OPENAI_BASE_URL": "https://integrate.api.nvidia.com/v1",
         },
         "model_chain": NVIDIA_MODEL_CHAIN,
+    },
+    {
+        "provider_id": "openrouter",
+        "cli_command": "openclaude",
+        "base_url": "https://openrouter.ai/api/v1",
+        "env_vars": {
+            "CLAUDE_CODE_USE_OPENAI": "1",
+            "OPENAI_BASE_URL": "https://openrouter.ai/api/v1",
+        },
+        "model_chain": ["openrouter/owl-alpha"],
     },
     {
         "provider_id": "codex_auth",
@@ -178,26 +185,42 @@ def _build_provider_entry(provider_id: str, providers: dict) -> dict:
     prov = providers.get(provider_id, {})
     env_vars = {k: v for k, v in prov.get("env_vars", {}).items()
                 if v and k not in ("OPENAI_API_KEY", "OPENAI_MODEL")}
-    model_chain = prov.get("fallback_models",
-        [prov.get("default_model") or prov.get("env_vars", {}).get("OPENAI_MODEL")])
+
+    primary_model = prov.get("default_model") or prov.get("env_vars", {}).get("OPENAI_MODEL")
+    model_chain = []
+    if primary_model:
+        model_chain.append(primary_model)
+    for fallback_model in prov.get("fallback_models", []):
+        if fallback_model and fallback_model not in model_chain:
+            model_chain.append(fallback_model)
+
+    if not model_chain and prov.get("cli_command") == "claude":
+        model_chain = [None]
 
     return {
         "provider_id": provider_id,
         "cli_command": prov.get("cli_command", "openclaude"),
         "base_url": prov.get("default_base_url") or prov.get("env_vars", {}).get("OPENAI_BASE_URL"),
         "env_vars": env_vars,
-        "model_chain": [m for m in model_chain if m],
+        "model_chain": model_chain,
     }
 
 
 def _get_api_key(provider_id: str, config: dict) -> str:
+    if provider_id in {"codex_auth", "anthropic"}:
+        return ""
+
     prov = config.get("providers", {}).get(provider_id, {})
     env_vars = prov.get("env_vars", {})
     for key_name in ("OPENAI_API_KEY", "NVIDIA_API_KEY", "GEMINI_API_KEY"):
         val = env_vars.get(key_name, "")
         if val and "****" not in val:
             return val
-    return os.environ.get("OPENAI_API_KEY", "")
+
+    if provider_id in {"nvidia", "openrouter", "openai", "gemini"}:
+        return os.environ.get("OPENAI_API_KEY", "")
+
+    return ""
 
 
 # ── Attempt record ─────────────────────────────────────────────────────────────
@@ -211,6 +234,7 @@ class FallbackAttempt:
     prompt: str
     max_turns: int
     timeout_seconds: int
+    agent: str = ""
     env_overrides: dict = field(default_factory=dict)
     _result: dict | None = field(default=None, repr=False)
 
@@ -220,6 +244,7 @@ class FallbackAttempt:
             prompt=self.prompt,
             max_turns=self.max_turns,
             timeout_seconds=self.timeout_seconds,
+            agent=self.agent,
             env_overrides=self.env_overrides,
         )
         return self._result
@@ -254,6 +279,7 @@ def _invoke_cli(
     prompt: str,
     max_turns: int,
     timeout_seconds: int,
+    agent: str = "",
     env_overrides: dict | None = None,
 ) -> dict:
     cli_bin = shutil.which(cli_command)
@@ -267,7 +293,10 @@ def _invoke_cli(
         }
 
     cmd = [cli_bin, "--print", "--max-turns", str(max_turns),
-           "--dangerously-skip-permissions", "--output-format", "json", "--", prompt]
+           "--dangerously-skip-permissions", "--output-format", "json"]
+    if agent:
+        cmd.extend(["--agent", agent])
+    cmd.extend(["--", prompt])
 
     run_env = dict(os.environ)
     if env_overrides:
@@ -404,6 +433,7 @@ class FallbackEngine:
                     prompt=prompt,
                     max_turns=max_turns,
                     timeout_seconds=timeout_seconds,
+                    agent=agent,
                     env_overrides=env_overrides,
                 )
                 self._attempts_log.append(attempt)

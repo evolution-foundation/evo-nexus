@@ -214,6 +214,74 @@ def run_claude(prompt: str, log_name: str = "unnamed", timeout: int = 600, agent
         agent_label = f"@{agent}"
     else:
         agent_label = ""
+
+    use_fallback = os.environ.get("ADW_PROVIDER_FALLBACK", "1").lower() not in (
+        "0", "false", "no",
+    )
+    if use_fallback:
+        try:
+            sys.path.insert(0, str(WORKSPACE / "dashboard" / "backend"))
+            from provider_fallback import invoke_with_fallback
+
+            provider_label = "[fallback]"
+            console.print(f"  [step]▶[/step] {log_name} [dim]{agent_label} {provider_label}[/dim]", end="")
+            start_time = datetime.now()
+            result = invoke_with_fallback(
+                prompt=prompt,
+                max_turns=10,
+                timeout_seconds=timeout,
+                agent=agent or "",
+            )
+            duration = (datetime.now() - start_time).total_seconds()
+            stdout = result.get("output", "") or ""
+            stderr = result.get("error", "") or ""
+            success = result.get("status") == "success"
+
+            usage = None
+            if result.get("tokens_in") is not None or result.get("tokens_out") is not None or result.get("cost_usd") is not None:
+                usage = {
+                    "input_tokens": result.get("tokens_in") or 0,
+                    "output_tokens": result.get("tokens_out") or 0,
+                    "cost_usd": result.get("cost_usd") or 0,
+                }
+
+            result_text = stdout
+            try:
+                json_result = json.loads(stdout)
+                usage = usage or _parse_usage(json_result)
+                result_text = json_result.get("result", stdout)
+            except (json.JSONDecodeError, TypeError, AttributeError):
+                pass
+
+            full_prompt = f"[agent:{agent}] {prompt}" if agent else prompt
+            returncode = 0 if success else 1
+            _log_to_file(log_name, full_prompt, result_text, stderr, returncode, duration, usage)
+            _save_metrics(log_name, duration, returncode, agent, result_text, usage)
+
+            model_info = f" | {result.get('provider_id')}:{result.get('model')}" if result.get("provider_id") else ""
+            if success:
+                cost_str = ""
+                if usage:
+                    tokens_total = usage["input_tokens"] + usage["output_tokens"]
+                    cost_str = f" | {tokens_total:,}tok | ${usage['cost_usd']:.2f}"
+                console.print(f"\r  [success]✓[/success] {log_name} [dim]({duration:.0f}s{cost_str}{model_info})[/dim]")
+            else:
+                console.print(f"\r  [error]✗[/error] {log_name} [dim](fallback exhausted, {duration:.0f}s{model_info})[/dim]")
+                if stderr:
+                    for err_line in stderr.strip().splitlines()[:3]:
+                        console.print(f"    [error]{err_line}[/error]")
+
+            return {
+                "success": success,
+                "stdout": result_text,
+                "stderr": stderr,
+                "returncode": returncode,
+                "duration": duration,
+                "usage": usage,
+            }
+        except Exception as e:
+            console.print(f"\r  [warning]⚠[/warning] {log_name} [dim](fallback unavailable: {e}; using active provider)[/dim]")
+
     provider_label = f"[{cli_command}]" if cli_command != "claude" else ""
     console.print(f"  [step]▶[/step] {log_name} [dim]{agent_label} {provider_label}[/dim]", end="")
 

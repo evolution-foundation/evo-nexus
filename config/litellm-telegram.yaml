@@ -1,0 +1,36 @@
+# LiteLLM proxy — Anthropic /v1/messages → NVIDIA NIM (OpenAI-compatible)
+#
+# Why: the Telegram bot runs via `claude --channels` (real Claude binary), which
+# only speaks the Anthropic Messages API. NVIDIA NIM is OpenAI-compatible. This
+# proxy translates between them so the bot can run on an NVIDIA model instead of
+# Anthropic. Point the bot at it with ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN.
+#
+# Start:  make telegram   (launches this proxy + the channel)
+# Model: z-ai/glm-5.1 on NVIDIA NIM.
+# MiniMax M3 works for direct calls, but can leave Claude Code channels stuck
+# in "Clauding..." through the Anthropic translation path.
+
+model_list:
+  # Named entry used by ANTHROPIC_MODEL.
+  # Use the native nvidia_nim provider (NOT openai/): the Anthropic /v1/messages
+  # endpoint routes openai/ models through the OpenAI Responses API, which NVIDIA
+  # NIM does not implement (→ 404). nvidia_nim/ forces /chat/completions.
+  - model_name: telegram-nvidia
+    litellm_params:
+      model: nvidia_nim/z-ai/glm-5.1
+      api_key: os.environ/NVIDIA_API_KEY
+
+  # Wildcard so Claude Code's background/small-model calls (title generation,
+  # quota probes) also route to NVIDIA instead of failing with an unknown model.
+  - model_name: "*"
+    litellm_params:
+      model: nvidia_nim/z-ai/glm-5.1
+      api_key: os.environ/NVIDIA_API_KEY
+
+litellm_settings:
+  # NVIDIA NIM rejects some OpenAI params Claude Code sends — drop them instead
+  # of returning 400 and breaking the conversation.
+  drop_params: true
+
+general_settings:
+  master_key: sk-evonexus-telegram-local

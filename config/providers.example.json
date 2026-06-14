@@ -1,5 +1,6 @@
 {
   "active_provider": "anthropic",
+  "telegram_provider": "",
   "providers": {
     "anthropic": {
       "name": "Anthropic (Claude nativo)",
@@ -35,7 +36,20 @@
         "OPENAI_MODEL": ""
       },
       "default_base_url": "https://integrate.api.nvidia.com/v1",
-      "default_model": "deepseek-ai/deepseek-v3.1",
+      "default_model": "z-ai/glm-5.1",
+      "fallback_models": [
+        "minimaxai/minimax-m3"
+      ],
+      "model_tiers": {
+        "opus": "z-ai/glm-5.1",
+        "sonnet": "z-ai/glm-5.1",
+        "haiku": "z-ai/glm-5.1"
+      },
+      "fallback_providers": [
+        "openrouter",
+        "codex_auth",
+        "anthropic"
+      ],
       "requires_logout": true
     },
     "omnirouter": {
