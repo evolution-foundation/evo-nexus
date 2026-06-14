@@ -220,7 +220,63 @@ def step7_invoke_claude(
     max_turns: int,
     timeout_seconds: int,
 ) -> dict:
-    """Invoke Claude via subprocess with hard timeout. Returns result dict."""
+    """Invoke the agent CLI with automatic provider fallback.
+
+    Routes through provider_fallback.invoke_with_fallback so a 429/quota error
+    on the active provider rotates to the next model/provider in the chain
+    (ending at native `claude`) instead of failing the whole heartbeat run.
+
+    Disable with HEARTBEAT_PROVIDER_FALLBACK=0 (or if provider_fallback is
+    unavailable) → falls back to a direct native `claude` call. The returned
+    dict keeps the same contract step8_persist expects.
+    """
+    use_fallback = os.environ.get("HEARTBEAT_PROVIDER_FALLBACK", "1").lower() not in (
+        "0", "false", "no",
+    )
+    if use_fallback:
+        try:
+            from provider_fallback import invoke_with_fallback
+
+            result = invoke_with_fallback(
+                prompt=prompt,
+                max_turns=max_turns,
+                timeout_seconds=timeout_seconds,
+                agent=agent,
+            )
+            # Preserve the step7 contract; provider_fallback already returns
+            # status/output/error/duration_ms/tokens_*/cost_usd and adds
+            # provider_id/model/attempt metadata for observability.
+            result.setdefault("tokens_in", None)
+            result.setdefault("tokens_out", None)
+            result.setdefault("cost_usd", None)
+            if result.get("attempt_number", 0) and result.get("attempt_number", 0) > 1:
+                print(
+                    f"[heartbeat_runner] step7 fallback succeeded via "
+                    f"{result.get('provider_id')}:{result.get('model')} "
+                    f"(attempt #{result.get('attempt_number')})",
+                    flush=True,
+                )
+            return result
+        except Exception as exc:
+            print(
+                f"[heartbeat_runner] provider_fallback unavailable ({exc}); "
+                f"using native claude",
+                flush=True,
+            )
+
+    return _step7_invoke_claude_native(agent, prompt, max_turns, timeout_seconds)
+
+
+def _step7_invoke_claude_native(
+    agent: str,
+    prompt: str,
+    max_turns: int,
+    timeout_seconds: int,
+) -> dict:
+    """Invoke native `claude` via subprocess with hard timeout. Returns result dict.
+
+    Legacy direct path — used when provider fallback is disabled or unavailable.
+    """
     import shutil
 
     claude_bin = shutil.which("claude")
