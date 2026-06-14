@@ -152,6 +152,8 @@ bling-auth:         ## 🔐 Bling OAuth2 login (one-time: capture access + refre
 
 telegram:           ## 📨 Start Telegram bot using active provider in background (screen)
 	@command -v screen >/dev/null 2>&1 || { echo "❌ 'screen' is not installed — run: sudo apt install screen"; exit 1; }
+	@pkill -f '[e]xternal_plugins/telegram.*start' 2>/dev/null || true
+	@pkill -f '[c]laude --channels plugin:telegram' 2>/dev/null || true
 	@if screen -list | grep -qE '\.telegram[[:space:]]'; then \
 		echo "⚠ Telegram bot is already running. Use 'make telegram-stop' first or 'make telegram-attach' to connect."; \
 	else \
@@ -194,6 +196,8 @@ telegram-stop:      ## 🛑 Stop the Telegram bot (and its LiteLLM proxy)
 	@screen -S telegram -X quit 2>/dev/null && echo "✅ Telegram bot stopped" || echo "⚠ Bot was not running"
 	@screen -S telegram-debug -X quit 2>/dev/null && echo "✅ Telegram debug bot stopped" || true
 	@screen -S telegram-proxy -X quit 2>/dev/null && echo "✅ LiteLLM proxy stopped" || echo "⚠ Proxy was not running"
+	@pkill -f '[e]xternal_plugins/telegram.*start' 2>/dev/null && echo "✅ Legacy Telegram plugin stopped" || true
+	@pkill -f '[c]laude --channels plugin:telegram' 2>/dev/null && echo "✅ Legacy Telegram channel stopped" || true
 
 telegram-attach:    ## 📺 Connect to Telegram terminal (Ctrl+A D to detach)
 	@screen -r telegram
