@@ -132,6 +132,7 @@ with app.app_context():
                 goal_id TEXT,
                 required_secrets TEXT DEFAULT '[]',
                 decision_prompt TEXT NOT NULL,
+                handler TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
@@ -516,6 +517,10 @@ with app.app_context():
     # source_plugin: tag heartbeats that were contributed by a plugin so the
     # plugin detail page can filter them via GET /api/heartbeats?source_plugin=.
     _hb_cols = {row[1] for row in _cur.execute("PRAGMA table_info(heartbeats)").fetchall()}
+    if "handler" not in _hb_cols:
+        _cur.execute("ALTER TABLE heartbeats ADD COLUMN handler TEXT")
+        _conn.commit()
+        _hb_cols.add("handler")
     if "source_plugin" not in _hb_cols:
         _cur.execute("ALTER TABLE heartbeats ADD COLUMN source_plugin TEXT")
         _conn.commit()

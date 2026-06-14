@@ -22,6 +22,23 @@ When the user mentions a model keyword in their image request, use the correspon
 | `flux2` | [FLUX.2 Max](https://openrouter.ai/black-forest-labs/flux.2-max) | "flux2", "flux", "use flux" |
 | `seedream` | [ByteDance SeedDream 4.5](https://openrouter.ai/bytedance-seed/seedream-4.5) | "seedream", "use seedream" |
 | `gpt5` | [OpenAI GPT-5 Image](https://openrouter.ai/openai/gpt-5-image) | "gpt5", "gpt5 image", "use gpt5" |
+| `nvidia-flux2-klein-4b` | BFL FLUX.2 Klein 4B via NVIDIA NIM (default for `--provider nvidia`) | "nvidia", "flux nvidia", "nvidia flux2" |
+| `nvidia-flux-dev` | BFL FLUX.1-dev via NVIDIA NIM (30 steps, high quality) | "nvidia flux dev" |
+| `nvidia-flux-schnell` | BFL FLUX.1-schnell via NVIDIA NIM (4 steps, fastest) | "nvidia schnell", "flux rápido" |
+| `image2` | OpenAI GPT Image 2 via Images API direta (default for `--provider openai`) | "image2", "gpt image 2", "imagem openai" |
+
+**OpenAI Images API notes (`image2`):**
+- Requires a **platform API key** (`AI_IMG_CREATOR_OPENAI_KEY` or `OPENAI_API_KEY`, billing on platform.openai.com).
+- **ChatGPT Plus / Codex OAuth tokens CANNOT generate images** — they lack the `api.model.images.request` scope (verified: API returns 401). Do not suggest the Codex login as an image path.
+- `-a` maps to the supported sizes (1024x1024, 1536x1024, 1024x1536). `--image-size`, `-r` (reference images) and `--analyze` are not supported on this provider.
+- Excellent text rendering (including Portuguese accents) — good choice for text-critical art.
+
+**NVIDIA NIM notes:**
+- Free tier with generous credits — good fallback when OpenRouter hits rate limits.
+- Generation is fast (~2-5s). Output is JPEG, auto-converted to PNG via ImageMagick/ffmpeg.
+- Dimensions are restricted (768-1344 per side, ≤1.06MP total) — `-a` maps to the closest supported size. `--image-size` is not supported.
+- Text rendering (especially Portuguese accents like Ç/Ã) is hit-or-miss on all FLUX variants — for text-critical art, generate 2-3 candidates and pick, or use `gemini`/`gpt5` which render text reliably.
+- Reference images (`-r`) and `--analyze` are not supported on the NVIDIA provider.
 
 ## Instructions
 
@@ -99,6 +116,7 @@ The script auto-loads env vars from the workspace `.env`. Choose provider based 
 - If `AI_IMG_CREATOR_CF_ACCOUNT_ID` + `AI_IMG_CREATOR_CF_GATEWAY_ID` + `AI_IMG_CREATOR_CF_TOKEN` are set → use default (gateway mode, no flag needed)
 - If only `AI_IMG_CREATOR_OPENROUTER_KEY` is set → use default (`--provider openrouter`, implicit)
 - If only `AI_IMG_CREATOR_GEMINI_KEY` is set → use `--provider google`
+- If `NVIDIA_API_KEY` is set → `--provider nvidia` is available (FLUX models, free tier). Auto-selected when the model keyword starts with `nvidia-`
 - **Do NOT use `source .env`** — the Python script loads it internally. Just run the command directly.
 
 ### Step 2: Run Generation Script
@@ -193,6 +211,7 @@ If the user needs resizing, format conversion, or other manipulation, first dete
 | `AI_IMG_CREATOR_CF_TOKEN` | Gateway mode | Gateway auth token |
 | `AI_IMG_CREATOR_OPENROUTER_KEY` | Direct OpenRouter | OpenRouter API key (`sk-or-...`) |
 | `AI_IMG_CREATOR_GEMINI_KEY` | Direct Google | Google AI Studio API key |
+| `NVIDIA_API_KEY` | NVIDIA NIM | NVIDIA API key (`nvapi-...`) — same key used by the dashboard NVIDIA provider |
 
 Gateway mode activates when all 3 `CF_*` vars are set. Falls back to direct mode if gateway fails.
 

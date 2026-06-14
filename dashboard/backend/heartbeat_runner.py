@@ -80,13 +80,13 @@ def _upsert_heartbeat_from_yaml(heartbeat_id: str) -> dict | None:
             """INSERT OR REPLACE INTO heartbeats
                (id, agent, interval_seconds, max_turns, timeout_seconds,
                 lock_timeout_seconds, wake_triggers, enabled, goal_id,
-                required_secrets, decision_prompt, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                required_secrets, decision_prompt, handler, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 hb.id, hb.agent, hb.interval_seconds, hb.max_turns,
                 hb.timeout_seconds, hb.lock_timeout_seconds,
                 json.dumps(hb.wake_triggers), int(hb.enabled), hb.goal_id,
-                json.dumps(hb.required_secrets), hb.decision_prompt,
+                json.dumps(hb.required_secrets), hb.decision_prompt, hb.handler,
                 now, now,
             ),
         )
@@ -220,7 +220,63 @@ def step7_invoke_claude(
     max_turns: int,
     timeout_seconds: int,
 ) -> dict:
-    """Invoke Claude via subprocess with hard timeout. Returns result dict."""
+    """Invoke the agent CLI with automatic provider fallback.
+
+    Routes through provider_fallback.invoke_with_fallback so a 429/quota error
+    on the active provider rotates to the next model/provider in the chain
+    (ending at native `claude`) instead of failing the whole heartbeat run.
+
+    Disable with HEARTBEAT_PROVIDER_FALLBACK=0 (or if provider_fallback is
+    unavailable) → falls back to a direct native `claude` call. The returned
+    dict keeps the same contract step8_persist expects.
+    """
+    use_fallback = os.environ.get("HEARTBEAT_PROVIDER_FALLBACK", "1").lower() not in (
+        "0", "false", "no",
+    )
+    if use_fallback:
+        try:
+            from provider_fallback import invoke_with_fallback
+
+            result = invoke_with_fallback(
+                prompt=prompt,
+                max_turns=max_turns,
+                timeout_seconds=timeout_seconds,
+                agent=agent,
+            )
+            # Preserve the step7 contract; provider_fallback already returns
+            # status/output/error/duration_ms/tokens_*/cost_usd and adds
+            # provider_id/model/attempt metadata for observability.
+            result.setdefault("tokens_in", None)
+            result.setdefault("tokens_out", None)
+            result.setdefault("cost_usd", None)
+            if result.get("attempt_number", 0) and result.get("attempt_number", 0) > 1:
+                print(
+                    f"[heartbeat_runner] step7 fallback succeeded via "
+                    f"{result.get('provider_id')}:{result.get('model')} "
+                    f"(attempt #{result.get('attempt_number')})",
+                    flush=True,
+                )
+            return result
+        except Exception as exc:
+            print(
+                f"[heartbeat_runner] provider_fallback unavailable ({exc}); "
+                f"using native claude",
+                flush=True,
+            )
+
+    return _step7_invoke_claude_native(agent, prompt, max_turns, timeout_seconds)
+
+
+def _step7_invoke_claude_native(
+    agent: str,
+    prompt: str,
+    max_turns: int,
+    timeout_seconds: int,
+) -> dict:
+    """Invoke native `claude` via subprocess with hard timeout. Returns result dict.
+
+    Legacy direct path — used when provider fallback is disabled or unavailable.
+    """
     import shutil
 
     claude_bin = shutil.which("claude")
@@ -240,6 +296,7 @@ def step7_invoke_claude(
         "--max-turns", str(max_turns),
         "--dangerously-skip-permissions",
         "--output-format", "json",
+        "--",
         prompt,  # positional argument — Claude CLI does not have a -p flag
     ]
 
@@ -465,13 +522,48 @@ def run_heartbeat(heartbeat_id: str, triggered_by: str = "manual", trigger_id: s
         task_id = None
 
         try:
-            # Special case: agent='system' heartbeats run a Python script directly
-            # instead of invoking Claude. The script path is resolved by heartbeat id.
-            if hb["agent"] == "system":
+            # Special case: legacy agent='system' heartbeats without explicit handler
+            # run a Python script directly, resolved by heartbeat id.
+            # System heartbeats with `handler` use the in-process handler path below.
+            if hb["agent"] == "system" and not hb.get("handler"):
                 full_prompt = f"[system heartbeat] {heartbeat_id}"
                 result = _run_system_heartbeat(heartbeat_id, hb["timeout_seconds"])
                 result["agent"] = "system"
                 result["started_at"] = started_at
+            elif hb.get("handler"):
+                # In-process handlers do not have/need a Claude agent identity.
+                _handler_ref = hb.get("handler") or ""
+                full_prompt = f"[handler heartbeat] {heartbeat_id}"
+                print(f"[heartbeat_runner] step7 in-process handler={_handler_ref}", flush=True)
+                import importlib
+                import time as _time
+                _t0 = _time.time()
+                try:
+                    _mod_name, _fn_name = _handler_ref.rsplit(".", 1)
+                    _mod = importlib.import_module(_mod_name)
+                    _fn = getattr(_mod, _fn_name)
+                    _handler_result = _fn()
+                    _duration_ms = round((_time.time() - _t0) * 1000)
+                    result = {
+                        "status": "success",
+                        "error": None,
+                        "agent": hb.get("agent", "system"),
+                        "duration_ms": _duration_ms,
+                        "started_at": started_at,
+                        "handler_result": _handler_result,
+                    }
+                    print(f"[heartbeat_runner] step7 in-process handler done duration_ms={_duration_ms}", flush=True)
+                except Exception as _h_exc:
+                    import traceback
+                    _duration_ms = round((_time.time() - _t0) * 1000)
+                    result = {
+                        "status": "fail",
+                        "error": traceback.format_exc(),
+                        "agent": hb.get("agent", "system"),
+                        "duration_ms": _duration_ms,
+                        "started_at": started_at,
+                    }
+                    print(f"[heartbeat_runner] step7 in-process handler failed: {_h_exc}", flush=True)
             else:
                 # Step 1
                 identity = step1_load_identity(hb["agent"])
@@ -502,57 +594,18 @@ def run_heartbeat(heartbeat_id: str, triggered_by: str = "manual", trigger_id: s
                 full_prompt = step6_assemble_context(identity, decision_ctx, hb.get("goal_id"))
                 print(f"[heartbeat_runner] step6 prompt assembled ({len(full_prompt)} chars)", flush=True)
 
-                # Step 7 — in-process handler OR Claude CLI subprocess
-                _handler_ref = hb.get("handler") or ""
-                if _handler_ref:
-                    # Wave 2.2r: in-process Python handler (e.g. plugin_integration_health.tick)
-                    # Format: "module_name.function_name"
-                    print(f"[heartbeat_runner] step7 in-process handler={_handler_ref}", flush=True)
-                    import importlib
-                    import time as _time
-                    _t0 = _time.time()
-                    try:
-                        _mod_name, _fn_name = _handler_ref.rsplit(".", 1)
-                        _mod = importlib.import_module(_mod_name)
-                        _fn = getattr(_mod, _fn_name)
-                        _handler_result = _fn()
-                        _duration_ms = round((_time.time() - _t0) * 1000)
-                        invoke_result = {
-                            "status": "success",
-                            "error": None,
-                            "agent": hb.get("agent", "system"),
-                            "duration_ms": _duration_ms,
-                            "started_at": started_at,
-                            "handler_result": _handler_result,
-                        }
-                        print(f"[heartbeat_runner] step7 in-process handler done duration_ms={_duration_ms}", flush=True)
-                    except Exception as _h_exc:
-                        import traceback
-                        _duration_ms = round((_time.time() - _t0) * 1000)
-                        invoke_result = {
-                            "status": "fail",
-                            "error": traceback.format_exc(),
-                            "agent": hb.get("agent", "system"),
-                            "duration_ms": _duration_ms,
-                            "started_at": started_at,
-                        }
-                        print(f"[heartbeat_runner] step7 in-process handler failed: {_h_exc}", flush=True)
-                    invoke_result["agent"] = hb.get("agent", "system")
-                    invoke_result["started_at"] = started_at
-                    result = invoke_result
-                else:
-                    # Standard Claude CLI subprocess
-                    print(f"[heartbeat_runner] step7 invoking claude agent={hb['agent']} max_turns={hb['max_turns']} timeout={hb['timeout_seconds']}s", flush=True)
-                    invoke_result = step7_invoke_claude(
-                        agent=hb["agent"],
-                        prompt=full_prompt,
-                        max_turns=hb["max_turns"],
-                        timeout_seconds=hb["timeout_seconds"],
-                    )
-                    invoke_result["agent"] = hb["agent"]
-                    invoke_result["started_at"] = started_at
-                    result = invoke_result
-                    print(f"[heartbeat_runner] step7 done status={result['status']} duration_ms={result.get('duration_ms')}", flush=True)
+                # Step 7 — Claude CLI subprocess
+                print(f"[heartbeat_runner] step7 invoking claude agent={hb['agent']} max_turns={hb['max_turns']} timeout={hb['timeout_seconds']}s", flush=True)
+                invoke_result = step7_invoke_claude(
+                    agent=hb["agent"],
+                    prompt=full_prompt,
+                    max_turns=hb["max_turns"],
+                    timeout_seconds=hb["timeout_seconds"],
+                )
+                invoke_result["agent"] = hb["agent"]
+                invoke_result["started_at"] = started_at
+                result = invoke_result
+                print(f"[heartbeat_runner] step7 done status={result['status']} duration_ms={result.get('duration_ms')}", flush=True)
 
         except Exception as exc:
             import traceback

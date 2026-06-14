@@ -132,6 +132,38 @@ interface ImageCosts {
   totals: { count: number; total_tokens: number; total_seconds: number; total_bytes: number; total_cost_usd?: number }
 }
 
+// Entries logged by older skill versions miss token_usage.total_tokens and
+// other fields — unguarded access crashed the whole page render.
+function normalizeImageCosts(raw: any): ImageCosts | null {
+  if (!raw || !Array.isArray(raw.entries)) return null
+  const entries: ImageCostEntry[] = raw.entries.map((e: any) => ({
+    timestamp: typeof e?.timestamp === 'string' ? e.timestamp : '',
+    model: typeof e?.model === 'string' ? e.model : 'unknown',
+    provider: typeof e?.provider === 'string' ? e.provider : '',
+    mode: typeof e?.mode === 'string' ? e.mode : '',
+    output_file: typeof e?.output_file === 'string' ? e.output_file : '',
+    size_bytes: Number(e?.size_bytes || 0),
+    elapsed_seconds: Number(e?.elapsed_seconds || 0),
+    token_usage: {
+      prompt_tokens: Number(e?.token_usage?.prompt_tokens || 0),
+      completion_tokens: Number(e?.token_usage?.completion_tokens || 0),
+      total_tokens: Number(e?.token_usage?.total_tokens || 0),
+    },
+    estimated_cost_usd: typeof e?.estimated_cost_usd === 'number' ? e.estimated_cost_usd : undefined,
+  }))
+  const t = raw.totals || {}
+  return {
+    entries,
+    totals: {
+      count: Number(t.count ?? entries.length),
+      total_tokens: Number(t.total_tokens || 0),
+      total_seconds: Number(t.total_seconds || 0),
+      total_bytes: Number(t.total_bytes || 0),
+      total_cost_usd: typeof t.total_cost_usd === 'number' ? t.total_cost_usd : undefined,
+    },
+  }
+}
+
 function relativeTime(ts: string): string {
   try {
     const diff = Date.now() - new Date(ts).getTime()
@@ -162,7 +194,7 @@ export default function Costs() {
       api.get('/routines/image-costs').catch(() => null),
     ]).then(([costRaw, imgRaw]) => {
       if (costRaw) setData(normalizeCostData(costRaw))
-      if (imgRaw) setImageCosts(imgRaw)
+      if (imgRaw) setImageCosts(normalizeImageCosts(imgRaw))
     }).finally(() => setLoading(false))
   }, [])
 

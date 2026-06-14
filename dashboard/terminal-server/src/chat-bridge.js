@@ -9,6 +9,7 @@ const os = require('os');
 const {
   loadProviderConfig,
   resolveProviderModel,
+  getProviderMode,
 } = require('./provider-config');
 let sdkModule = null;
 
@@ -158,6 +159,90 @@ function resolveClaudeExecutable() {
 }
 
 /**
+ * Resolve the CLI binary for external (non-Anthropic) providers.
+ * Mirrors ClaudeBridge.findClaudeCommand: shell `which` first, then hardcoded
+ * paths. Returns null when nothing is found — the SDK needs a real path, so
+ * the caller falls back to the plain chat-completion session.
+ * Hardcoded dispatch per command to satisfy semgrep.
+ */
+const _cliBinaryCache = new Map();
+function resolveCliBinary(cliCommand) {
+  if (_cliBinaryCache.has(cliCommand)) return _cliBinaryCache.get(cliCommand);
+
+  const { execSync } = require('child_process');
+  try {
+    let resolved;
+    if (cliCommand === 'openclaude') {
+      resolved = execSync('which openclaude', { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'] }).trim();
+    } else {
+      resolved = execSync('which claude', { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'] }).trim();
+    }
+    if (resolved) {
+      console.log(`[chat-bridge] Found ${cliCommand} at: ${resolved}`);
+      _cliBinaryCache.set(cliCommand, resolved);
+      return resolved;
+    }
+  } catch { /* which failed — try hardcoded paths */ }
+
+  const home = process.env.HOME || '/';
+  const candidates = cliCommand === 'openclaude'
+    ? [
+        path.join(home, '.local', 'bin', 'openclaude'),
+        '/usr/local/bin/openclaude',
+        '/usr/bin/openclaude',
+      ]
+    : [
+        path.join(home, '.claude', 'local', 'claude'),
+        path.join(home, '.local', 'bin', 'claude'),
+        '/usr/local/bin/claude',
+        '/usr/bin/claude',
+      ];
+  for (const p of candidates) {
+    try {
+      if (fs.existsSync(p)) {
+        console.log(`[chat-bridge] Found ${cliCommand} at hardcoded path: ${p}`);
+        _cliBinaryCache.set(cliCommand, p);
+        return p;
+      }
+    } catch { continue; }
+  }
+
+  console.error(`[chat-bridge] ${cliCommand} not found anywhere`);
+  _cliBinaryCache.set(cliCommand, null);
+  return null;
+}
+
+/**
+ * Build the environment for an external-provider CLI process.
+ * Same approach as ClaudeBridge: whitelist essential system vars (no full
+ * process.env spread — stale OPENAI_API_KEY would override Codex OAuth) and
+ * layer the provider's env_vars on top. The SDK passes this object as the
+ * child process env verbatim.
+ */
+const PROVIDER_SYSTEM_VARS = [
+  'HOME', 'USER', 'SHELL', 'PATH', 'LANG', 'LC_ALL', 'LC_CTYPE',
+  'LOGNAME', 'HOSTNAME', 'XDG_RUNTIME_DIR', 'XDG_DATA_HOME',
+  'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'TMPDIR',
+  'SSH_AUTH_SOCK', 'SSH_AGENT_PID',
+  'NVM_DIR', 'NVM_BIN', 'NVM_INC',
+  'CODEX_HOME', 'CLAUDE_CONFIG_DIR',
+];
+function buildProviderEnv(providerConfig) {
+  const env = {};
+  for (const key of PROVIDER_SYSTEM_VARS) {
+    if (process.env[key]) env[key] = process.env[key];
+  }
+  const providerEnv = { ...(providerConfig.env_vars || {}) };
+  // Same model defaults as ClaudeBridge — codexplan/codexspark route to the
+  // Codex backend; a raw gpt-5.x would silently bypass Codex OAuth.
+  if (!providerEnv.OPENAI_MODEL) {
+    if (providerConfig.active === 'codex_auth') providerEnv.OPENAI_MODEL = 'codexplan';
+    else if (providerConfig.active === 'openai') providerEnv.OPENAI_MODEL = 'gpt-4.1';
+  }
+  return { ...env, ...providerEnv };
+}
+
+/**
  * Scan a tool_result text for a ticket-creation response.
  * Returns the ticket id if a POST /api/tickets response is detected, else null.
  * Heuristic: a JSON object with a UUID `id`, `status` in ticket statuses, and a `priority` field.
@@ -241,6 +326,11 @@ function detectCreatedTicketId(text) {
 class ChatBridge {
   constructor() {
     this.sessions = new Map(); // sessionId -> { query, abortController, active, sdkSessionId }
+    // Rate limiting state for OpenAI-compatible providers
+    this._lastRequestTime = 0;
+    this._minIntervalMs = parseInt(process.env.CHAT_MIN_INTERVAL_MS || '2000', 10);
+    this._maxRetries = parseInt(process.env.CHAT_MAX_RETRIES || '3', 10);
+    this._baseDelayMs = parseInt(process.env.CHAT_BASE_DELAY_MS || '5000', 10);
   }
 
   _buildChatCompletionSystemPrompt(agentName, cwd, sessionId) {
@@ -272,6 +362,53 @@ class ChatBridge {
     }
     if (typeof delta.reasoning === 'string') return delta.reasoning;
     return '';
+  }
+
+  /**
+   * Enforce minimum interval between requests, then fetch with retry/backoff.
+   * Retries on 429 (rate limited) and 503 (upstream unavailable).
+   */
+  async _rateLimitedFetch(url, options) {
+    // Enforce minimum interval between requests
+    const now = Date.now();
+    const elapsed = now - this._lastRequestTime;
+    if (elapsed < this._minIntervalMs) {
+      const wait = this._minIntervalMs - elapsed;
+      console.log(`[chat-bridge] Rate limit: aguardando ${wait}ms antes do próximo request...`);
+      await new Promise((r) => setTimeout(r, wait));
+    }
+
+    let lastError = null;
+    for (let attempt = 0; attempt <= this._maxRetries; attempt++) {
+      this._lastRequestTime = Date.now();
+
+      const resp = await fetch(url, options);
+
+      if (resp.ok) return resp;
+
+      const isRetryable = resp.status === 429 || resp.status === 503;
+      if (!isRetryable || attempt === this._maxRetries) {
+        return resp; // let caller handle non-retryable errors or final failure
+      }
+
+      // Exponential backoff: base * 2^attempt (5s, 10s, 20s)
+      const delay = this._baseDelayMs * Math.pow(2, attempt);
+      let retryAfter = delay;
+      const retryAfterHeader = resp.headers.get('Retry-After');
+      if (retryAfterHeader) {
+        const parsed = parseInt(retryAfterHeader, 10);
+        if (!isNaN(parsed)) retryAfter = parsed * 1000;
+      }
+
+      console.warn(
+        `[chat-bridge] ${resp.status} no request (tentativa ${attempt + 1}/${this._maxRetries + 1}). ` +
+        `Aguardando ${Math.round(retryAfter / 1000)}s antes de tentar novamente...`
+      );
+      await new Promise((r) => setTimeout(r, retryAfter));
+    }
+
+    // Should not reach here, but return last error response
+    throw new Error(`_rateLimitedFetch: todas as ${this._maxRetries + 1} tentativas falharam`);
   }
 
   async _startOpenAICompatibleSession(sessionId, options, providerConfig) {
@@ -316,7 +453,7 @@ class ChatBridge {
 
     (async () => {
       try {
-        const resp = await fetch(`${baseUrl}/chat/completions`, {
+        const resp = await this._rateLimitedFetch(`${baseUrl}/chat/completions`, {
           method: 'POST',
           headers: {
             Authorization: `Bearer ${apiKey}`,
@@ -408,8 +545,20 @@ class ChatBridge {
     } = options;
 
     const providerConfig = loadProviderConfig();
-    if (providerConfig.active !== 'anthropic') {
-      return this._startOpenAICompatibleSession(sessionId, options, providerConfig);
+    const isExternalProvider = !!providerConfig.active && providerConfig.active !== 'anthropic';
+    let externalCliPath = null;
+    if (isExternalProvider) {
+      // Code-mode providers go through the Agent SDK with the openclaude
+      // binary — full tool calling, streaming, session resume. Only genuinely
+      // chat-completion-only models keep the plain REST path.
+      if (getProviderMode(providerConfig) !== 'code') {
+        return this._startOpenAICompatibleSession(sessionId, options, providerConfig);
+      }
+      externalCliPath = resolveCliBinary(providerConfig.cli_command || 'openclaude');
+      if (!externalCliPath) {
+        console.warn(`[chat-bridge] ${providerConfig.cli_command} binary not found — falling back to chat completion. Install with: npm install -g @gitlawb/openclaude`);
+        return this._startOpenAICompatibleSession(sessionId, options, providerConfig);
+      }
     }
 
     const { query: sdkQuery } = await loadSDK();
@@ -426,8 +575,14 @@ class ChatBridge {
       abortController,
     };
 
-    const claudeExe = resolveClaudeExecutable();
-    if (claudeExe) queryOptions.pathToClaudeCodeExecutable = claudeExe;
+    if (isExternalProvider) {
+      queryOptions.pathToClaudeCodeExecutable = externalCliPath;
+      queryOptions.env = buildProviderEnv(providerConfig);
+      console.log(`[chat-bridge] External provider "${providerConfig.active}" via ${externalCliPath} (model: ${resolveProviderModel(providerConfig) || 'default'})`);
+    } else {
+      const claudeExe = resolveClaudeExecutable();
+      if (claudeExe) queryOptions.pathToClaudeCodeExecutable = claudeExe;
+    }
 
     // Load agent definition from .claude/agents/{name}.md
     if (agentName) {
@@ -458,13 +613,26 @@ class ChatBridge {
         if (systemPromptExtras && !sdkSessionId) {
           promptAppend = promptAppend + '\n\n' + systemPromptExtras;
         }
-        queryOptions.systemPrompt = {
-          type: 'preset',
-          preset: 'claude_code',
-          append: promptAppend,
-        };
-        if (agentDef.model) queryOptions.model = agentDef.model;
-        console.log(`[chat-bridge] Loaded agent "${agentName}" via systemPrompt.append (${agentDef.prompt.length} chars, model: ${agentDef.model || 'inherit'})`);
+        if (isExternalProvider) {
+          // Mirror ClaudeBridge: --append-system-prompt is too weak for GPT
+          // models, so REPLACE the system prompt to force the agent persona.
+          // agentDef.model is a Claude model name — meaningless here; the
+          // model comes from the provider's OPENAI_MODEL env var.
+          queryOptions.systemPrompt = promptAppend + '\n\n' +
+            'CRITICAL: You MUST fully embody this agent persona. ' +
+            'You are NOT Claude, OpenClaude, or a generic assistant — you ARE ' + agentName + '. ' +
+            'When asked who you are, ALWAYS respond as ' + agentName + '. ' +
+            'Never break character. Follow ALL instructions above.';
+          console.log(`[chat-bridge] Loaded agent "${agentName}" via systemPrompt replace (${agentDef.prompt.length} chars, external provider)`);
+        } else {
+          queryOptions.systemPrompt = {
+            type: 'preset',
+            preset: 'claude_code',
+            append: promptAppend,
+          };
+          if (agentDef.model) queryOptions.model = agentDef.model;
+          console.log(`[chat-bridge] Loaded agent "${agentName}" via systemPrompt.append (${agentDef.prompt.length} chars, model: ${agentDef.model || 'inherit'})`);
+        }
       } else {
         console.warn(`[chat-bridge] Agent "${agentName}" not found, running without agent`);
       }

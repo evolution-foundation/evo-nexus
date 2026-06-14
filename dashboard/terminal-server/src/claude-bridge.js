@@ -1,6 +1,9 @@
 const { spawn } = require('node-pty');
 const path = require('path');
 const fs = require('fs');
+
+// Workspace root is three levels up from this file (dashboard/terminal-server/src/).
+const WORKSPACE_ROOT = path.resolve(__dirname, '..', '..', '..');
 const {
   loadProviderConfig,
   resolveProviderModel,
@@ -69,6 +72,30 @@ class ClaudeBridge {
 
     console.error(`[provider] ${cliCommand} not found anywhere, using bare command name`);
     return cliCommand;
+  }
+
+  /**
+   * True when the CLI has a persisted conversation file for this session id
+   * in this workingDir — i.e. a previous run got far enough to save state,
+   * so `--resume <id>` will succeed. Checks the config dirs used by both
+   * claude (~/.claude) and openclaude (~/.openclaude), plus
+   * CLAUDE_CONFIG_DIR when set.
+   */
+  _hasPersistedConversation(sessionId, workingDir) {
+    const home = process.env.HOME || '/';
+    const slug = String(workingDir).replace(/[^a-zA-Z0-9]/g, '-');
+    const configDirs = [
+      process.env.CLAUDE_CONFIG_DIR,
+      path.join(home, '.openclaude'),
+      path.join(home, '.claude'),
+    ].filter(Boolean);
+    return configDirs.some((dir) => {
+      try {
+        return fs.existsSync(path.join(dir, 'projects', slug, `${sessionId}.jsonl`));
+      } catch {
+        return false;
+      }
+    });
   }
 
   async startSession(sessionId, options = {}) {
@@ -147,15 +174,27 @@ class ClaudeBridge {
       // --system-prompt REPLACES the default system prompt, ensuring the agent persona
       // takes priority over CLAUDE.md and other context that mentions "Claude".
       const active = providerConfig.active || 'anthropic';
+      let agentTier = null;
       if (active !== 'anthropic' && agent) {
-        // Read the agent definition file to build a strong system prompt
-        const agentFile = path.join(workingDir, '.claude', 'agents', `${agent}.md`);
+        // Read the agent definition file to build a strong system prompt.
+        // Agent definitions live at the workspace root — workingDir varies per
+        // session (tickets, project folders), so prefer the root path.
+        const rootAgentFile = path.join(WORKSPACE_ROOT, '.claude', 'agents', `${agent}.md`);
+        const cwdAgentFile = path.join(workingDir, '.claude', 'agents', `${agent}.md`);
+        const agentFile = fs.existsSync(rootAgentFile) ? rootAgentFile : cwdAgentFile;
         let agentPrompt = '';
         try {
           const content = fs.readFileSync(agentFile, 'utf8');
           // Extract body (after YAML frontmatter ---)
           const match = content.match(/^---\n[\s\S]*?\n---\n([\s\S]*)$/);
           agentPrompt = match ? match[1].trim() : content;
+          // Extract the agent's model tier (opus|sonnet|haiku) from the
+          // frontmatter — used to pick a per-tier provider model below.
+          const fmMatch = content.match(/^---\n([\s\S]*?)\n---\n/);
+          if (fmMatch) {
+            const tierMatch = fmMatch[1].match(/^model:\s*["']?([a-z0-9.-]+)["']?\s*$/mi);
+            if (tierMatch) agentTier = tierMatch[1].toLowerCase();
+          }
         } catch {
           agentPrompt = `You are the ${agent} agent.`;
         }
@@ -168,7 +207,48 @@ class ClaudeBridge {
 
         args.push('--system-prompt', enforcePrompt);
       }
-      const providerEnv = providerConfig.env_vars || {};
+
+      // Pin the CLI conversation to the terminal-server session UUID so a
+      // crash, provider error, or terminal-server restart doesn't lose the
+      // conversation: the first start registers the id with --session-id,
+      // and any later start of the same session resumes it with --resume.
+      const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      if (UUID_RE.test(sessionId)) {
+        if (this._hasPersistedConversation(sessionId, workingDir)) {
+          console.log(`[bridge] Resuming persisted conversation for session ${sessionId}`);
+          args.push('--resume', sessionId);
+        } else {
+          args.push('--session-id', sessionId);
+        }
+      }
+
+      // Copy so per-session overrides don't leak into the shared config object.
+      const providerEnv = { ...(providerConfig.env_vars || {}) };
+
+      // Per-agent model tier: agents declare model: opus|sonnet|haiku in
+      // their frontmatter; providers.json maps each tier to a provider model
+      // via the provider's "model_tiers" field.
+      const tierModel = agentTier && providerConfig.model_tiers
+        ? providerConfig.model_tiers[agentTier]
+        : null;
+      if (active !== 'anthropic' && tierModel) {
+        providerEnv['OPENAI_MODEL'] = tierModel;
+        console.log(`[provider] Agent ${agent} tier "${agentTier}" → model ${tierModel}`);
+      }
+
+      // Automatic model fallback when the primary is overloaded. The CLI
+      // accepts a single fallback — pass the first configured entry that
+      // differs from the primary model.
+      const fallbackModels = Array.isArray(providerConfig.fallback_models)
+        ? providerConfig.fallback_models
+        : [];
+      if (active !== 'anthropic') {
+        const primary = providerEnv['OPENAI_MODEL'] || '';
+        const fallback = fallbackModels.find((m) => m && m !== primary);
+        if (fallback) {
+          args.push('--fallback-model', fallback);
+        }
+      }
 
       // Build a CLEAN environment for the spawned CLI process.
       // We DON'T spread process.env — it may contain stale/cached vars
@@ -192,7 +272,7 @@ class ClaudeBridge {
       // to route to the Codex backend — a raw 'gpt-5.x' falls back to the
       // regular chat completions API, which bypasses Codex OAuth entirely.
       //
-      //   codexplan  → GPT-5.4 on Codex backend (high reasoning)
+      //   codexplan  → GPT-5.5 on Codex backend (high reasoning)
       //   codexspark → GPT-5.3 Codex Spark (faster)
       //
       // For the plain 'openai' provider (API key mode), default to gpt-4.1.

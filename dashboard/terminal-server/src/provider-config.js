@@ -5,6 +5,7 @@ const WORKSPACE_ROOT = path.resolve(__dirname, '..', '..', '..');
 const PROVIDERS_PATH = path.join(WORKSPACE_ROOT, 'config', 'providers.json');
 
 const ALLOWED_CLI = new Set(['claude', 'openclaude']);
+const ALLOWED_MODES = new Set(['code', 'chat']);
 const ALLOWED_ENV_VARS = new Set([
   'ANTHROPIC_API_KEY',
   'CLAUDE_CODE_USE_OPENAI',
@@ -18,6 +19,7 @@ const ALLOWED_ENV_VARS = new Set([
   'CODEX_API_KEY',
   'GEMINI_API_KEY',
   'GEMINI_MODEL',
+  'NVIDIA_API_KEY',
   'AWS_REGION',
   'AWS_BEARER_TOKEN_BEDROCK',
   'ANTHROPIC_VERTEX_PROJECT_ID',
@@ -57,6 +59,9 @@ function resolveProviderModel(providerConfig) {
 function getProviderMode(providerConfig) {
   const active = providerConfig?.active || 'anthropic';
   if (active === 'anthropic') return 'anthropic';
+  // Explicit per-provider mode in providers.json wins over the name heuristic —
+  // model names like "openrouter/owl-alpha" are agentic but don't match isCodeModel.
+  if (ALLOWED_MODES.has(providerConfig?.mode)) return providerConfig.mode;
   const model = resolveProviderModel(providerConfig);
   if (isCodeModel(model)) return 'code';
   return 'chat';
@@ -65,7 +70,7 @@ function getProviderMode(providerConfig) {
 function loadProviderConfig() {
   try {
     if (!fs.existsSync(PROVIDERS_PATH)) {
-      return { cli_command: 'claude', env_vars: {}, active: 'anthropic' };
+      return { cli_command: 'claude', env_vars: {}, active: 'anthropic', fallback_models: [], model_tiers: {} };
     }
 
     const config = JSON.parse(fs.readFileSync(PROVIDERS_PATH, 'utf8'));
@@ -85,14 +90,46 @@ function loadProviderConfig() {
       delete envVars.OPENAI_API_KEY;
     }
 
+    // OpenClaude ≥0.18 detects the NVIDIA NIM base URL and requires the key
+    // in NVIDIA_API_KEY — derive it so the UI only asks for one key field.
+    if (
+      !envVars.NVIDIA_API_KEY &&
+      envVars.OPENAI_API_KEY &&
+      /\bnvidia\.com\b/i.test(envVars.OPENAI_BASE_URL || '')
+    ) {
+      envVars.NVIDIA_API_KEY = envVars.OPENAI_API_KEY;
+    }
+
+    // Ordered fallback chain — the CLI consumes the first entry
+    // (--fallback-model); the rest stay available for future chain support.
+    const fallbackModels = Array.isArray(provider.fallback_models)
+      ? provider.fallback_models
+          .filter((m) => typeof m === 'string' && m.trim())
+          .map((m) => m.trim())
+      : [];
+
+    // Per-tier model map: agents declare model: opus|sonnet|haiku in their
+    // frontmatter; providers.json maps each tier to a provider model.
+    const modelTiers = {};
+    if (provider.model_tiers && typeof provider.model_tiers === 'object' && !Array.isArray(provider.model_tiers)) {
+      for (const [tier, model] of Object.entries(provider.model_tiers)) {
+        if (typeof model === 'string' && model.trim()) {
+          modelTiers[tier.toLowerCase()] = model.trim();
+        }
+      }
+    }
+
     return {
       cli_command: cliCommand,
       env_vars: envVars,
       active,
       provider_name: provider.name || active,
+      mode: ALLOWED_MODES.has(provider.mode) ? provider.mode : null,
+      fallback_models: fallbackModels,
+      model_tiers: modelTiers,
     };
   } catch {
-    return { cli_command: 'claude', env_vars: {}, active: 'anthropic' };
+    return { cli_command: 'claude', env_vars: {}, active: 'anthropic', fallback_models: [], model_tiers: {} };
   }
 }
 

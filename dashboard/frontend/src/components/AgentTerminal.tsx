@@ -184,6 +184,24 @@ export default function AgentTerminal({ agent, sessionId: externalSessionId, wor
     const term = termRef.current
     if (!term) return
 
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+    let reconnectAttempts = 0
+    let alreadyActive = false
+
+    // The server keeps the pty alive when the socket drops, so a dead WS
+    // only needs a rejoin — reconnect with capped exponential backoff
+    // instead of leaving the terminal dead until the component remounts.
+    function scheduleReconnect(sessionId: string) {
+      if (cancelled || reconnectTimer) return
+      const delay = Math.min(1000 * 2 ** reconnectAttempts, 15000)
+      reconnectAttempts++
+      setStatus('connecting')
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null
+        connect(sessionId, true)
+      }, delay)
+    }
+
     async function run() {
       setStatus('connecting')
       setErrorMsg(null)
@@ -191,7 +209,6 @@ export default function AgentTerminal({ agent, sessionId: externalSessionId, wor
 
       // 1) Use provided sessionId or find-or-create for this agent
       let sessionId: string
-      let alreadyActive = false
       try {
         if (externalSessionId) {
           // Use the specific session provided by the parent (multi-tab mode)
@@ -223,11 +240,18 @@ export default function AgentTerminal({ agent, sessionId: externalSessionId, wor
       if (cancelled) return
       sessionIdRef.current = sessionId
 
+      connect(sessionId, false)
+    }
+
+    function connect(sessionId: string, isReconnect: boolean) {
+      if (cancelled) return
+
       // 2) Open WS
       const ws = new WebSocket(`${CC_WEB_WS}/ws`)
       wsRef.current = ws
 
       ws.onopen = () => {
+        setErrorMsg(null)
         ws.send(JSON.stringify({ type: 'join_session', sessionId }))
       }
 
@@ -238,12 +262,18 @@ export default function AgentTerminal({ agent, sessionId: externalSessionId, wor
 
         switch (msg.type) {
           case 'session_joined': {
+            reconnectAttempts = 0
+            // On reconnect the server replays the whole buffer — clear
+            // first so it doesn't duplicate what's already on screen.
+            if (isReconnect) term!.clear()
             // Replay any buffered output
             if (Array.isArray(msg.outputBuffer)) {
               msg.outputBuffer.forEach((chunk: string) => term!.write(chunk))
             }
-            // If an agent is already running in this session, just attach
-            if (msg.active || alreadyActive) {
+            // If an agent is already running in this session, just attach.
+            // alreadyActive is only trustworthy on the first join — after a
+            // reconnect the process may have died while we were away.
+            if (msg.active || (!isReconnect && alreadyActive)) {
               setStatus('running')
               // Nudge a resize so the pty matches the current terminal size
               const fit = fitRef.current
@@ -251,6 +281,11 @@ export default function AgentTerminal({ agent, sessionId: externalSessionId, wor
                 try { fit.fit() } catch {}
                 ws.send(JSON.stringify({ type: 'resize', cols: term!.cols, rows: term!.rows }))
               }
+            } else if (isReconnect) {
+              // Process ended while we were disconnected — surface it
+              // instead of silently restarting the agent.
+              setStatus('exited')
+              term!.write('\r\n\x1b[33m[Reconnected — process is no longer running]\x1b[0m\r\n')
             } else {
               // Start Claude with --agent <agent>
               // Pass cols/rows up-front so the pty is born at the right
@@ -304,9 +339,7 @@ export default function AgentTerminal({ agent, sessionId: externalSessionId, wor
       }
 
       ws.onerror = () => {
-        if (cancelled) return
-        setStatus('error')
-        setErrorMsg('WebSocket error')
+        // onclose always follows onerror — reconnect is handled there.
       }
 
       ws.onclose = () => {
@@ -314,6 +347,8 @@ export default function AgentTerminal({ agent, sessionId: externalSessionId, wor
           clearInterval(pingRef.current)
           pingRef.current = null
         }
+        if (cancelled) return
+        scheduleReconnect(sessionId)
       }
 
       // Keepalive
@@ -324,10 +359,33 @@ export default function AgentTerminal({ agent, sessionId: externalSessionId, wor
       }, 25000)
     }
 
+    // Returning to the tab reconnects immediately instead of waiting out
+    // the backoff (browsers also throttle timers in hidden tabs, so the
+    // pending reconnect may not have fired while the tab was away).
+    const onVisible = () => {
+      if (document.hidden || cancelled) return
+      const sessionId = sessionIdRef.current
+      if (!sessionId) return
+      const ws = wsRef.current
+      if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer)
+        reconnectTimer = null
+      }
+      reconnectAttempts = 0
+      connect(sessionId, true)
+    }
+    document.addEventListener('visibilitychange', onVisible)
+
     run()
 
     return () => {
       cancelled = true
+      document.removeEventListener('visibilitychange', onVisible)
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer)
+        reconnectTimer = null
+      }
       if (pingRef.current) {
         clearInterval(pingRef.current)
         pingRef.current = null

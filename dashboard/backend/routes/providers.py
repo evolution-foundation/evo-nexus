@@ -49,6 +49,7 @@ ALLOWED_ENV_VARS = frozenset({
     "CODEX_API_KEY",
     "GEMINI_API_KEY",
     "GEMINI_MODEL",
+    "NVIDIA_API_KEY",
     "AWS_REGION",
     "AWS_BEARER_TOKEN_BEDROCK",
     "ANTHROPIC_VERTEX_PROJECT_ID",
@@ -316,6 +317,15 @@ def update_provider_config(provider_id):
             continue
         # Reject values with shell metacharacters
         if not isinstance(value, str) or re.search(r'[;&|`$\n\r]', value):
+            continue
+        # Never wipe a stored secret with an empty field — the UI submits
+        # blank password inputs when the user edits other fields (e.g. model),
+        # which would silently erase the saved key.
+        if (
+            value == ""
+            and existing.get(key)
+            and any(tag in key for tag in ("KEY", "SECRET", "TOKEN"))
+        ):
             continue
         existing[key] = value
 
