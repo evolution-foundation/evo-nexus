@@ -31,7 +31,8 @@ INBOX_DIR = TELEGRAM_STATE / "inbox"
 GROQ_TRANSCRIPTION_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 GROQ_TRANSCRIPTION_MODEL = os.environ.get("GROQ_TRANSCRIPTION_MODEL", "whisper-large-v3-turbo")
 MAX_MEMORY_MESSAGES = 8
-MAX_MEMORY_CHARS = 4500
+MAX_MEMORY_CHARS = 1800
+MAX_STORED_MESSAGE_CHARS = 1600
 TELEGRAM_CODEX_MODELS = (None,)
 GROQ_AUDIO_SUFFIXES = {
     ".oga": ".ogg",
@@ -417,7 +418,7 @@ def append_chat_memory(chat_id: str, role: str, text: str, *, speaker: str | Non
     path = chat_memory_path(chat_id)
     entry = {
         "role": role,
-        "text": redact_secrets(text),
+        "text": redact_secrets(text)[:MAX_STORED_MESSAGE_CHARS],
         "ts": int(time.time()),
     }
     if speaker:
@@ -449,7 +450,10 @@ def format_chat_memory(messages: list[dict], *, current_speaker: str | None = No
         lines.append(f"{label}: {text}")
     if current_speaker:
         lines.append(f"Usuário ({current_speaker}):")
-    return "\n".join(lines).strip()
+    memory = "\n".join(lines).strip()
+    if len(memory) <= MAX_MEMORY_CHARS:
+        return memory
+    return memory[-MAX_MEMORY_CHARS:]
 
 
 def build_prompt(chat_id: str, prompt_text: str, *, speaker: str | None = None) -> str:
@@ -475,10 +479,7 @@ def build_prompt(chat_id: str, prompt_text: str, *, speaker: str | None = None) 
         "Mensagem atual:",
         clean_prompt,
     ])
-    prompt = "\n".join(parts).strip()
-    if len(prompt) > MAX_MEMORY_CHARS:
-        return prompt[-MAX_MEMORY_CHARS:]
-    return prompt
+    return "\n".join(parts).strip()
 
 
 def is_provider_question(text: str) -> bool:
@@ -596,10 +597,11 @@ def invoke_codex_exec(prompt: str) -> str:
             cwd=ROOT,
             text=True,
             capture_output=True,
+            input="",
             timeout=timeout,
         )
         if proc.returncode != 0:
-            raise RuntimeError((proc.stderr or proc.stdout or "codex exec failed").strip()[:700])
+            raise RuntimeError(compact_codex_error(proc.stdout, proc.stderr))
         text = output_path.read_text(encoding="utf-8", errors="replace").strip()
         if not text:
             raise RuntimeError("codex exec returned empty response")
@@ -610,6 +612,26 @@ def invoke_codex_exec(prompt: str) -> str:
                 output_path.unlink()
             except OSError:
                 pass
+
+
+def compact_codex_error(stdout: str, stderr: str) -> str:
+    raw = (stderr or stdout or "codex exec failed").strip()
+    if not raw:
+        return "codex exec failed"
+    interesting: list[str] = []
+    for line in raw.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith(("ERROR:", "error:", "Error:", "status:", "message:")):
+            interesting.append(stripped)
+        elif "usage limit" in stripped.lower() or "rate limit" in stripped.lower() or "quota" in stripped.lower():
+            interesting.append(stripped)
+        elif "timed out" in stripped.lower() or "timeout" in stripped.lower():
+            interesting.append(stripped)
+    if interesting:
+        return " | ".join(interesting[-3:])[:700]
+    return "codex exec falhou sem mensagem final; veja screen -r telegram"
 
 
 def invoke_provider(prompt: str) -> tuple[str, str]:
