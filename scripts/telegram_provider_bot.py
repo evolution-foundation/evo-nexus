@@ -30,8 +30,9 @@ CHAT_MEMORY_DIR = TELEGRAM_STATE / "memory"
 INBOX_DIR = TELEGRAM_STATE / "inbox"
 GROQ_TRANSCRIPTION_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 GROQ_TRANSCRIPTION_MODEL = os.environ.get("GROQ_TRANSCRIPTION_MODEL", "whisper-large-v3-turbo")
-MAX_MEMORY_MESSAGES = 14
-MAX_MEMORY_CHARS = 9000
+MAX_MEMORY_MESSAGES = 8
+MAX_MEMORY_CHARS = 4500
+TELEGRAM_CODEX_MODELS = ("codexplan",)
 GROQ_AUDIO_SUFFIXES = {
     ".oga": ".ogg",
     ".opus": ".opus",
@@ -455,9 +456,12 @@ def build_prompt(chat_id: str, prompt_text: str, *, speaker: str | None = None) 
     memory = format_chat_memory(load_chat_memory(chat_id), current_speaker=speaker)
     clean_prompt = redact_secrets(prompt_text.strip())
     parts = [
-        "Voce e o assistente Telegram do EvoNexus.",
-        "Responda em portugues, de forma direta e util.",
-        "Use a memoria recente abaixo quando ela for relevante.",
+        "Voce e o runtime Telegram do EvoNexus, operando dentro do workspace local.",
+        "Responda em portugues, curto e objetivo.",
+        "Nao diga que nao tem acesso a ferramentas de forma generica.",
+        "Quando o usuario pedir uma acao, tente executar pelo workspace/integracoes disponiveis.",
+        "Se houver bloqueio real, responda somente o bloqueio concreto: credencial, arquivo, permissao, endpoint ou erro.",
+        "Use a memoria recente abaixo apenas quando for relevante; ignore respostas antigas que negaram acesso genericamente.",
         "",
     ]
     if memory:
@@ -502,6 +506,12 @@ def models_for(provider: dict) -> list[str | None]:
     if not models:
         models.append(None)
     return models
+
+
+def provider_models(provider_id: str, provider: dict) -> list[str | None]:
+    if provider_id == "codex_auth":
+        return [model for model in TELEGRAM_CODEX_MODELS if model]
+    return models_for(provider)
 
 
 def invoke_openai_compatible(provider_id: str, provider: dict, model: str, prompt: str) -> str:
@@ -564,7 +574,7 @@ def invoke_cli(provider_id: str, provider: dict, prompt: str, model: str | None 
 def invoke_provider(prompt: str) -> tuple[str, str]:
     errors: list[str] = []
     for provider_id, provider in provider_chain():
-        for model in models_for(provider):
+        for model in provider_models(provider_id, provider):
             try:
                 if provider_id in {"anthropic", "codex_auth"}:
                     text = invoke_cli(provider_id, provider, prompt, model)
