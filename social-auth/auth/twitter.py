@@ -87,13 +87,17 @@ def callback():
     if not code:
         return f"Error: {request.args.get('error', 'no code')}", 400
 
-    data = urllib.parse.urlencode({
+    token_payload = {
         "code": code,
         "grant_type": "authorization_code",
         "client_id": env.get("TWITTER_CLIENT_ID", ""),
         "redirect_uri": _redirect_uri(),
         "code_verifier": session.get("twitter_code_verifier", ""),
-    }).encode()
+    }
+    client_secret = env.get("TWITTER_CLIENT_SECRET", "")
+    if client_secret:
+        token_payload["client_secret"] = client_secret
+    data = urllib.parse.urlencode(token_payload).encode()
 
     req = urllib.request.Request("https://api.x.com/2/oauth2/token", data=data, method="POST",
                                  headers={"Content-Type": "application/x-www-form-urlencoded"})

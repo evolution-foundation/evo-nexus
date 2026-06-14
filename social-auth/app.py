@@ -47,8 +47,10 @@ def disconnect(platform, index):
 
 if __name__ == "__main__":
     port = int(os.environ.get("SOCIAL_AUTH_PORT", 8765))
+    host = os.environ.get("SOCIAL_AUTH_HOST", "0.0.0.0")
+    display_host = "localhost" if host in {"0.0.0.0", "::"} else host
     print(f"\n  🔑 Evolution Social Auth")
-    print(f"  📍 http://localhost:{port}")
+    print(f"  📍 http://{display_host}:{port}")
     print(f"  ⛔ Ctrl+C para parar\n")
-    webbrowser.open(f"http://localhost:{port}")
-    app.run(host="127.0.0.1", port=port, debug=False)
+    webbrowser.open(f"http://{display_host}:{port}")
+    app.run(host=host, port=port, debug=False)
