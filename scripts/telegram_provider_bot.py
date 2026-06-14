@@ -27,6 +27,7 @@ TELEGRAM_ENV = TELEGRAM_STATE / ".env"
 ACCESS_FILE = TELEGRAM_STATE / "access.json"
 DIRECT_STATE = TELEGRAM_STATE / "direct_state.json"
 CHAT_MEMORY_DIR = TELEGRAM_STATE / "memory"
+INBOX_DIR = TELEGRAM_STATE / "inbox"
 GROQ_TRANSCRIPTION_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 GROQ_TRANSCRIPTION_MODEL = os.environ.get("GROQ_TRANSCRIPTION_MODEL", "whisper-large-v3-turbo")
 MAX_MEMORY_MESSAGES = 14
@@ -195,6 +196,21 @@ def download_telegram_file(token: str, file_id: str) -> tuple[Path, str]:
         tmp.close()
 
 
+def save_telegram_file(token: str, file_id: str, *, suffix: str | None = None) -> Path:
+    data = api(token, "getFile", {"file_id": file_id}, timeout=20)
+    file_path = data.get("result", {}).get("file_path")
+    if not file_path:
+        raise RuntimeError("Telegram nao retornou file_path")
+    file_suffix = suffix or Path(file_path).suffix or ".bin"
+    url = f"https://api.telegram.org/file/bot{token}/{file_path}"
+    with urllib.request.urlopen(url, timeout=60) as resp:
+        content = resp.read()
+    INBOX_DIR.mkdir(parents=True, exist_ok=True)
+    target = INBOX_DIR / f"{int(time.time() * 1000)}-{Path(file_path).stem}{file_suffix}"
+    target.write_bytes(content)
+    return target
+
+
 def multipart_form_data(fields: dict[str, str], files: dict[str, tuple[str, bytes, str]]) -> tuple[bytes, str]:
     boundary = f"----evonexus-{int(time.time() * 1000)}"
     chunks: list[bytes] = []
@@ -284,6 +300,20 @@ def message_audio_file_id(message: dict) -> str | None:
     return None
 
 
+def message_image_file_id(message: dict) -> tuple[str, str] | None:
+    photos = message.get("photo") or []
+    if photos:
+        largest = max(photos, key=lambda item: int(item.get("file_size") or item.get("width") or 0))
+        if largest.get("file_id"):
+            return str(largest["file_id"]), ".jpg"
+    document = message.get("document") or {}
+    mime_type = str(document.get("mime_type") or "")
+    if mime_type.startswith("image/") and document.get("file_id"):
+        suffix = Path(str(document.get("file_name") or "")).suffix or f".{mime_type.split('/', 1)[1]}"
+        return str(document["file_id"]), suffix
+    return None
+
+
 def handle_audio_message(token: str, chat_id: str, file_id: str) -> str:
     audio_path: Path | None = None
     try:
@@ -309,15 +339,16 @@ def allowed_chat(chat_id: str, from_id: str) -> bool:
 def provider_chain() -> list[tuple[str, dict]]:
     config = read_json(PROVIDERS_PATH, {"active_provider": "anthropic", "providers": {}})
     providers = config.get("providers", {})
+    override_id = os.environ.get("TELEGRAM_PROVIDER") or config.get("telegram_provider")
     active_id = (
-        os.environ.get("TELEGRAM_PROVIDER")
-        or config.get("telegram_provider")
+        override_id
         or config.get("active_provider")
         or "anthropic"
     )
     active = providers.get(active_id, {})
     ids = [active_id]
-    ids.extend(pid for pid in active.get("fallback_providers", []) if pid not in ids)
+    if not override_id:
+        ids.extend(pid for pid in active.get("fallback_providers", []) if pid not in ids)
     return [(pid, providers.get(pid, {})) for pid in ids if providers.get(pid) is not None]
 
 
@@ -509,7 +540,7 @@ def invoke_openai_compatible(provider_id: str, provider: dict, model: str, promp
     return content.strip()
 
 
-def invoke_cli(provider_id: str, provider: dict, prompt: str) -> str:
+def invoke_cli(provider_id: str, provider: dict, prompt: str, model: str | None = None) -> str:
     cli = provider.get("cli_command") or ("claude" if provider_id == "anthropic" else "openclaude")
     if provider_id == "anthropic":
         cli = "claude"
@@ -519,8 +550,12 @@ def invoke_cli(provider_id: str, provider: dict, prompt: str) -> str:
     for key, value in provider.get("env_vars", {}).items():
         if value:
             env[key] = str(value)
-    cmd = [cli, "--print", "--max-turns", "1", "--dangerously-skip-permissions", "--", prompt]
-    proc = subprocess.run(cmd, cwd=ROOT, env=env, text=True, capture_output=True, timeout=120)
+    if model:
+        env["OPENAI_MODEL"] = model
+    max_turns = int(os.environ.get("TELEGRAM_CLI_MAX_TURNS") or provider.get("telegram_max_turns") or (5 if provider_id == "codex_auth" else 2))
+    timeout = int(os.environ.get("TELEGRAM_CLI_TIMEOUT") or provider.get("telegram_timeout_seconds") or (240 if provider_id == "codex_auth" else 120))
+    cmd = [cli, "--print", "--max-turns", str(max_turns), "--dangerously-skip-permissions", "--", prompt]
+    proc = subprocess.run(cmd, cwd=ROOT, env=env, text=True, capture_output=True, timeout=timeout)
     if proc.returncode != 0:
         raise RuntimeError((proc.stderr or proc.stdout or f"{cli} failed").strip()[:500])
     return proc.stdout.strip()
@@ -532,8 +567,8 @@ def invoke_provider(prompt: str) -> tuple[str, str]:
         for model in models_for(provider):
             try:
                 if provider_id in {"anthropic", "codex_auth"}:
-                    text = invoke_cli(provider_id, provider, prompt)
-                    return text, provider_id
+                    text = invoke_cli(provider_id, provider, prompt, model)
+                    return text, f"{provider_id}:{model or 'default'}"
                 if model:
                     text = invoke_openai_compatible(provider_id, provider, model, prompt)
                     return text, f"{provider_id}:{model}"
@@ -605,6 +640,30 @@ def main() -> int:
                     api(token, "sendMessage", {"chat_id": chat_id, "text": answer[:3900]})
                     if used != "error":
                         append_chat_memory(chat_id, "user", f"[audio transcrito] {transcription}", speaker=sender_name)
+                        append_chat_memory(chat_id, "assistant", answer, speaker="Magneto")
+                    continue
+                image_info = message_image_file_id(message)
+                if image_info:
+                    api(token, "sendChatAction", {"chat_id": chat_id, "action": "typing"}, timeout=10)
+                    try:
+                        image_file_id, suffix = image_info
+                        image_path = save_telegram_file(token, image_file_id, suffix=suffix)
+                        caption = (message.get("caption") or "").strip()
+                        prompt_text = (
+                            "Analise a imagem recebida no Telegram.\n"
+                            f"Caminho local da imagem: {image_path}\n"
+                            f"Legenda/mensagem do usuario: {caption or '(sem legenda)'}\n"
+                            "Se conseguir acessar o arquivo, descreva o que ve e responda ao pedido do usuario."
+                        )
+                        prompt = build_prompt(chat_id, prompt_text, speaker=sender_name)
+                        answer, used = invoke_provider(prompt)
+                    except Exception as exc:
+                        answer = f"Falhei ao processar imagem: {exc}"
+                        used = "error"
+                    log(f"image chat={chat_id} via {used}")
+                    api(token, "sendMessage", {"chat_id": chat_id, "text": answer[:3900]})
+                    if used != "error":
+                        append_chat_memory(chat_id, "user", f"[imagem] {caption or image_path}", speaker=sender_name)
                         append_chat_memory(chat_id, "assistant", answer, speaker="Magneto")
                     continue
                 if not text:

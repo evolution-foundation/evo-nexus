@@ -55,6 +55,17 @@ class TelegramProviderBotMemoryTests(unittest.TestCase):
         )
         self.assertIsNone(bot.message_audio_file_id({"document": {"file_id": "doc-id", "mime_type": "image/png"}}))
 
+    def test_message_image_file_id_detects_photo_and_image_documents(self) -> None:
+        self.assertEqual(
+            bot.message_image_file_id({"photo": [{"file_id": "small", "file_size": 10}, {"file_id": "big", "file_size": 20}]}),
+            ("big", ".jpg"),
+        )
+        self.assertEqual(
+            bot.message_image_file_id({"document": {"file_id": "doc-id", "mime_type": "image/png", "file_name": "x.png"}}),
+            ("doc-id", ".png"),
+        )
+        self.assertIsNone(bot.message_image_file_id({"document": {"file_id": "doc-id", "mime_type": "audio/ogg"}}))
+
     def test_read_groq_api_key_prefers_environment(self) -> None:
         original = bot.os.environ.get("GROQ_API_KEY")
         try:
@@ -76,6 +87,28 @@ class TelegramProviderBotMemoryTests(unittest.TestCase):
             self.assertEqual(bot.handle_groq_command("status"), f"Groq configurado. Modelo de transcricao: {bot.GROQ_TRANSCRIPTION_MODEL}")
         finally:
             bot.TELEGRAM_ENV = original_env
+
+    def test_provider_chain_uses_strict_telegram_override(self) -> None:
+        original_path = bot.PROVIDERS_PATH
+        cfg = bot.CHAT_MEMORY_DIR / "providers.json"
+        cfg.write_text(
+            """
+{
+  "active_provider": "nvidia",
+  "telegram_provider": "codex_auth",
+  "providers": {
+    "codex_auth": {"fallback_providers": ["nvidia"]},
+    "nvidia": {}
+  }
+}
+""".strip(),
+            encoding="utf-8",
+        )
+        try:
+            bot.PROVIDERS_PATH = cfg
+            self.assertEqual([pid for pid, _ in bot.provider_chain()], ["codex_auth"])
+        finally:
+            bot.PROVIDERS_PATH = original_path
 
 
 if __name__ == "__main__":
