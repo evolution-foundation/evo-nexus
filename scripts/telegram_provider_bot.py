@@ -13,6 +13,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -26,8 +27,23 @@ TELEGRAM_ENV = TELEGRAM_STATE / ".env"
 ACCESS_FILE = TELEGRAM_STATE / "access.json"
 DIRECT_STATE = TELEGRAM_STATE / "direct_state.json"
 CHAT_MEMORY_DIR = TELEGRAM_STATE / "memory"
+GROQ_TRANSCRIPTION_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
+GROQ_TRANSCRIPTION_MODEL = os.environ.get("GROQ_TRANSCRIPTION_MODEL", "whisper-large-v3-turbo")
 MAX_MEMORY_MESSAGES = 14
 MAX_MEMORY_CHARS = 9000
+GROQ_AUDIO_SUFFIXES = {
+    ".oga": ".ogg",
+    ".opus": ".opus",
+    ".ogg": ".ogg",
+    ".mp3": ".mp3",
+    ".m4a": ".m4a",
+    ".mp4": ".mp4",
+    ".mpeg": ".mpeg",
+    ".mpga": ".mpga",
+    ".wav": ".wav",
+    ".webm": ".webm",
+    ".flac": ".flac",
+}
 
 SECRET_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (
@@ -37,6 +53,7 @@ SECRET_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
         r"\1=[REDACTED]",
     ),
     (re.compile(r"\bsk-[A-Za-z0-9]{16,}\b"), "[REDACTED]"),
+    (re.compile(r"\bgsk_[A-Za-z0-9]{16,}\b"), "[REDACTED]"),
     (re.compile(r"\bgh[pousr]_[A-Za-z0-9]{16,}\b"), "[REDACTED]"),
     (re.compile(r"\boxb-[A-Za-z0-9-]{16,}\b"), "[REDACTED]"),
 )
@@ -72,6 +89,83 @@ def read_telegram_token() -> str:
     raise RuntimeError(f"TELEGRAM_BOT_TOKEN missing in {TELEGRAM_ENV}")
 
 
+def read_env_value(path: Path, key: str) -> str | None:
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            name, value = line.split("=", 1)
+            if name.strip() == key:
+                return value.strip().strip('"').strip("'")
+    except OSError:
+        return None
+    return None
+
+
+def read_groq_api_key() -> str:
+    if os.environ.get("GROQ_API_KEY"):
+        return os.environ["GROQ_API_KEY"]
+    for path in (ROOT / ".env", TELEGRAM_ENV):
+        value = read_env_value(path, "GROQ_API_KEY")
+        if value:
+            return value
+    config = read_json(PROVIDERS_PATH, {})
+    for provider in config.get("providers", {}).values():
+        env = provider.get("env_vars", {})
+        value = env.get("GROQ_API_KEY")
+        if value:
+            return str(value)
+    raise RuntimeError("GROQ_API_KEY nao configurada")
+
+
+def write_env_value(path: Path, key: str, value: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines: list[str] = []
+    replaced = False
+    try:
+        existing = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        existing = []
+    for line in existing:
+        if line.strip().startswith(f"{key}="):
+            lines.append(f"{key}={value}")
+            replaced = True
+        else:
+            lines.append(line)
+    if not replaced:
+        lines.append(f"{key}={value}")
+    path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+
+
+def parse_groq_command(text: str) -> str | None:
+    if not text.startswith("/groq"):
+        return None
+    parts = text.split(maxsplit=2)
+    if len(parts) == 1:
+        return "status"
+    action = parts[1].strip().lower()
+    if action in {"status", "set"}:
+        return action if action == "status" else f"set {parts[2].strip() if len(parts) > 2 else ''}"
+    return "help"
+
+
+def handle_groq_command(command: str) -> str:
+    if command == "status":
+        try:
+            read_groq_api_key()
+            return f"Groq configurado. Modelo de transcricao: {GROQ_TRANSCRIPTION_MODEL}"
+        except Exception as exc:
+            return f"Groq nao configurado: {exc}\nUse: /groq set <GROQ_API_KEY>"
+    if command.startswith("set "):
+        value = command.split(" ", 1)[1].strip()
+        if not value.startswith("gsk_"):
+            return "Chave Groq invalida. Ela deve comecar com gsk_."
+        write_env_value(TELEGRAM_ENV, "GROQ_API_KEY", value)
+        return "Groq configurado para transcricao de audio."
+    return "Comandos: /groq status | /groq set <GROQ_API_KEY>"
+
+
 def api(token: str, method: str, payload: dict | None = None, timeout: int = 35) -> dict:
     url = f"https://api.telegram.org/bot{token}/{method}"
     data = None
@@ -82,6 +176,125 @@ def api(token: str, method: str, payload: dict | None = None, timeout: int = 35)
     req = urllib.request.Request(url, data=data, headers=headers)
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return json.loads(resp.read().decode("utf-8"))
+
+
+def download_telegram_file(token: str, file_id: str) -> tuple[Path, str]:
+    data = api(token, "getFile", {"file_id": file_id}, timeout=20)
+    file_path = data.get("result", {}).get("file_path")
+    if not file_path:
+        raise RuntimeError("Telegram nao retornou file_path")
+    suffix = GROQ_AUDIO_SUFFIXES.get(Path(file_path).suffix.lower(), ".ogg")
+    url = f"https://api.telegram.org/file/bot{token}/{file_path}"
+    with urllib.request.urlopen(url, timeout=60) as resp:
+        audio_bytes = resp.read()
+    tmp = tempfile.NamedTemporaryFile(prefix="telegram-audio-", suffix=suffix, delete=False)
+    try:
+        tmp.write(audio_bytes)
+        return Path(tmp.name), suffix
+    finally:
+        tmp.close()
+
+
+def multipart_form_data(fields: dict[str, str], files: dict[str, tuple[str, bytes, str]]) -> tuple[bytes, str]:
+    boundary = f"----evonexus-{int(time.time() * 1000)}"
+    chunks: list[bytes] = []
+    for name, value in fields.items():
+        chunks.extend([
+            f"--{boundary}\r\n".encode("utf-8"),
+            f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode("utf-8"),
+            str(value).encode("utf-8"),
+            b"\r\n",
+        ])
+    for name, (filename, content, content_type) in files.items():
+        chunks.extend([
+            f"--{boundary}\r\n".encode("utf-8"),
+            (
+                f'Content-Disposition: form-data; name="{name}"; filename="{filename}"\r\n'
+                f"Content-Type: {content_type}\r\n\r\n"
+            ).encode("utf-8"),
+            content,
+            b"\r\n",
+        ])
+    chunks.append(f"--{boundary}--\r\n".encode("utf-8"))
+    return b"".join(chunks), boundary
+
+
+def transcribe_audio(audio_path: Path) -> str:
+    api_key = read_groq_api_key()
+    upload_suffix = GROQ_AUDIO_SUFFIXES.get(audio_path.suffix.lower(), ".ogg")
+    upload_path = audio_path
+    temp_upload: Path | None = None
+    if audio_path.suffix.lower() != upload_suffix:
+        temp = tempfile.NamedTemporaryFile(prefix="groq-upload-", suffix=upload_suffix, delete=False)
+        try:
+            temp.write(audio_path.read_bytes())
+            temp_upload = Path(temp.name)
+            upload_path = temp_upload
+        finally:
+            temp.close()
+    try:
+        proc = subprocess.run(
+            [
+                "curl",
+                "-sS",
+                "-H",
+                f"Authorization: Bearer {api_key}",
+                "-F",
+                f"file=@{upload_path}",
+                "-F",
+                f"model={GROQ_TRANSCRIPTION_MODEL}",
+                "-F",
+                "response_format=json",
+                "-F",
+                "language=pt",
+                GROQ_TRANSCRIPTION_URL,
+            ],
+            text=True,
+            capture_output=True,
+            timeout=120,
+        )
+    finally:
+        if temp_upload:
+            try:
+                temp_upload.unlink()
+            except OSError:
+                pass
+    if proc.returncode != 0:
+        raise RuntimeError((proc.stderr or proc.stdout or "curl failed").strip()[:240])
+    data = json.loads(proc.stdout)
+    if data.get("error"):
+        raise RuntimeError(str(data["error"].get("message") or data["error"])[:240])
+    text = str(data.get("text") or "").strip()
+    if not text:
+        raise RuntimeError("Groq nao retornou transcricao")
+    return text
+
+
+def message_audio_file_id(message: dict) -> str | None:
+    voice = message.get("voice") or {}
+    audio = message.get("audio") or {}
+    document = message.get("document") or {}
+    mime_type = str(document.get("mime_type") or "")
+    if voice.get("file_id"):
+        return str(voice["file_id"])
+    if audio.get("file_id"):
+        return str(audio["file_id"])
+    if mime_type.startswith("audio/") and document.get("file_id"):
+        return str(document["file_id"])
+    return None
+
+
+def handle_audio_message(token: str, chat_id: str, file_id: str) -> str:
+    audio_path: Path | None = None
+    try:
+        audio_path, _suffix = download_telegram_file(token, file_id)
+        return transcribe_audio(audio_path)
+    finally:
+        if audio_path:
+            try:
+                audio_path.unlink()
+            except OSError:
+                pass
 
 
 def allowed_chat(chat_id: str, from_id: str) -> bool:
@@ -368,10 +581,33 @@ def main() -> int:
                     or " ".join(part for part in [sender.get("first_name"), sender.get("last_name")] if part)
                     or None
                 )
-                if not text or not chat_id:
+                if not chat_id:
                     continue
                 if not allowed_chat(chat_id, from_id):
                     log(f"dropped non-allowlisted chat={chat_id}")
+                    continue
+                audio_file_id = message_audio_file_id(message)
+                if audio_file_id:
+                    api(token, "sendChatAction", {"chat_id": chat_id, "action": "typing"}, timeout=10)
+                    try:
+                        transcription = handle_audio_message(token, chat_id, audio_file_id)
+                        api(
+                            token,
+                            "sendMessage",
+                            {"chat_id": chat_id, "text": f"Transcricao:\n\n{transcription[:3600]}"},
+                        )
+                        prompt = build_prompt(chat_id, transcription, speaker=sender_name)
+                        answer, used = invoke_provider(prompt)
+                    except Exception as exc:
+                        answer = f"Falhei ao transcrever/processar audio: {exc}"
+                        used = "error"
+                    log(f"audio chat={chat_id} via {used}")
+                    api(token, "sendMessage", {"chat_id": chat_id, "text": answer[:3900]})
+                    if used != "error":
+                        append_chat_memory(chat_id, "user", f"[audio transcrito] {transcription}", speaker=sender_name)
+                        append_chat_memory(chat_id, "assistant", answer, speaker="Magneto")
+                    continue
+                if not text:
                     continue
                 if text.startswith("/start"):
                     api(token, "sendMessage", {"chat_id": chat_id, "text": "EvoNexus online. Pode mandar."})
@@ -379,6 +615,12 @@ def main() -> int:
                 if text.startswith("/new"):
                     clear_chat_memory(chat_id)
                     api(token, "sendMessage", {"chat_id": chat_id, "text": "Sessao nova iniciada. Memoria local limpa."})
+                    continue
+                groq_command = parse_groq_command(text)
+                if groq_command is not None:
+                    answer = handle_groq_command(groq_command)
+                    api(token, "sendMessage", {"chat_id": chat_id, "text": answer})
+                    log(f"groq-command chat={chat_id} {groq_command.split(' ', 1)[0]}")
                     continue
                 provider_command = parse_provider_command(text)
                 if provider_command is not None:
