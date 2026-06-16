@@ -461,6 +461,31 @@ def clear_chat_memory(chat_id: str) -> None:
         pass
 
 
+def env_presence(keys: tuple[str, ...]) -> str:
+    values: list[str] = []
+    for key in keys:
+        value = os.environ.get(key, "")
+        values.append(f"{key}={'present' if value else 'missing'}")
+    return ", ".join(values)
+
+
+def skill_context(name: str) -> str:
+    skill_md = ROOT / ".claude" / "skills" / name / "SKILL.md"
+    if not skill_md.is_file():
+        return f"Skill {name}: nao encontrada."
+    text = skill_md.read_text(encoding="utf-8")
+    excerpt = "\n".join(line for line in text.splitlines() if line.startswith(("name:", "description:", "envKeys:", "# Ghost Blog Integration", "## Configuração", "## Auth", "- **Admin API**", "- **Content API**", "### Admin API"))).strip()
+    return f"Skill {name} disponível no workspace:\n{excerpt}"
+
+
+def workspace_context() -> str:
+    return "\n".join([
+        skill_context("custom-int-ghost"),
+        f"Env Ghost: {env_presence(('GHOST_URL', 'GHOST_CONTENT_API_KEY', 'GHOST_ADMIN_API_KEY'))}.",
+        "Ghost Admin API usa JWT HS256 gerado de GHOST_ADMIN_API_KEY no formato id:secret; header Authorization: Ghost <JWT>.",
+    ])
+
+
 def format_chat_memory(messages: list[dict], *, current_speaker: str | None = None) -> str:
     lines: list[str] = []
     for entry in messages[-MAX_MEMORY_MESSAGES:]:
@@ -493,6 +518,8 @@ def build_prompt(chat_id: str, prompt_text: str, *, speaker: str | None = None) 
         "Se houver bloqueio real, responda somente o bloqueio concreto: credencial, arquivo, permissao, endpoint ou erro.",
         "Se a mensagem veio de audio transcrito, use a transcricao apenas como entrada interna; nao repita a transcricao ao usuario.",
         "Use a memoria recente abaixo apenas quando for relevante; ignore respostas antigas que negaram acesso genericamente.",
+        "Contexto de integracoes locais:",
+        workspace_context(),
         "",
     ]
     if memory:
