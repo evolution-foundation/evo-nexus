@@ -959,6 +959,11 @@ app.register_blueprint(mcp_servers_bp)
 app.register_blueprint(plugin_public_pages_bp)
 
 # --------------- Social Auth blueprints ---------------
+# The social-auth package lives as a sibling directory; add it once so the
+# dashboard backend can mount the same OAuth blueprints on port 8080.
+SOCIAL_AUTH_DIR = WORKSPACE / "social-auth"
+if SOCIAL_AUTH_DIR.is_dir() and str(SOCIAL_AUTH_DIR) not in sys.path:
+    sys.path.insert(0, str(SOCIAL_AUTH_DIR))
 from auth.youtube import bp as youtube_auth_bp
 from auth.instagram import bp as instagram_auth_bp
 from auth.linkedin import bp as linkedin_auth_bp
