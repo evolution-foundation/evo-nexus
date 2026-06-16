@@ -510,6 +510,37 @@ def step_alert_on_failure(heartbeat_id: str, result: dict) -> bool:
 
 # ── Success report ───────────────────────────────────────────────────────────
 
+def _extract_progress_preview(result: dict, limit: int = 3) -> str:
+    """Extract a short user-facing progress preview from provider output."""
+    raw = result.get("result") or result.get("output") or result.get("handler_result") or ""
+    if isinstance(raw, dict):
+        raw = json.dumps(raw, ensure_ascii=False)
+    raw = str(raw).strip()
+    if not raw:
+        return ""
+    if raw.startswith("{"):
+        try:
+            data = json.loads(raw)
+            if isinstance(data, dict):
+                for key in ("summary", "result", "message", "answer", "progress", "report"):
+                    value = data.get(key)
+                    if isinstance(value, str) and value.strip():
+                        raw = value.strip()
+                        break
+        except (json.JSONDecodeError, TypeError):
+            pass
+    lines = [line.strip(" -•*") for line in raw.splitlines()]
+    lines = [line for line in lines if line and not line.lower().startswith(("[fallback]", "stop_reason", "session_id"))]
+    preview_lines = []
+    for line in lines:
+        line = " ".join(line.split())
+        if line and line not in preview_lines:
+            preview_lines.append(line)
+        if len(preview_lines) >= limit:
+            break
+    return "\n".join(f"• {line}" for line in preview_lines[:limit])
+
+
 def _step_report_success(heartbeat_id: str, result: dict) -> bool:
     """Send a compact Telegram notification when a heartbeat run completes.
 
@@ -548,6 +579,19 @@ def _step_report_success(heartbeat_id: str, result: dict) -> bool:
         f"🔧 <b>{heartbeat_id}</b>  |  🤖 {agent}",
         f"⏱ {duration_s}{cost_str}{provider_str}",
     ]
+
+    progress = _extract_progress_preview(result)
+    if progress:
+        lines.extend([
+            "",
+            "📌 Progresso:",
+            progress[:650],
+        ])
+    else:
+        lines.extend([
+            "",
+            "📌 Progresso: execução concluída sem saída detalhada.",
+        ])
 
     if result.get("tokens_in") is not None or result.get("tokens_out") is not None:
         tok_in = result.get("tokens_in") or 0
