@@ -261,9 +261,16 @@ def step7_invoke_claude(
             result.setdefault("tokens_in", None)
             result.setdefault("tokens_out", None)
             result.setdefault("cost_usd", None)
-            if result.get("attempt_number", 0) and result.get("attempt_number", 0) > 1:
+            if result.get("status") == "success" and result.get("attempt_number", 0) > 1:
                 print(
                     f"[heartbeat_runner] step7 fallback succeeded via "
+                    f"{result.get('provider_id')}:{result.get('model')} "
+                    f"(attempt #{result.get('attempt_number')})",
+                    flush=True,
+                )
+            elif result.get("status") != "success" and result.get("attempt_number", 0) > 1:
+                print(
+                    f"[heartbeat_runner] step7 fallback exhausted; last "
                     f"{result.get('provider_id')}:{result.get('model')} "
                     f"(attempt #{result.get('attempt_number')})",
                     flush=True,

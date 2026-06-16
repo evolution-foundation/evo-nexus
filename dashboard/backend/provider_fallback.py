@@ -506,6 +506,9 @@ def _invoke_cli_run(cmd: list, run_env: dict, timeout_seconds: int, workspace: P
         tokens_in = usage.get("input_tokens")
         tokens_out = usage.get("output_tokens")
         cost_usd = envelope.get("total_cost_usd")
+        if status != "success" and envelope.get("type") == "result" and envelope.get("result") and envelope.get("is_error") is False:
+            status = "success"
+            error = None
     except (json.JSONDecodeError, AttributeError, TypeError):
         pass
 
