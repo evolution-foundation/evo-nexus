@@ -103,7 +103,15 @@ def step1_load_identity(agent: str) -> str:
     agent_file = AGENTS_DIR / f"{agent}.md"
     if not agent_file.exists():
         raise FileNotFoundError(f"Agent file not found: {agent_file}")
-    return agent_file.read_text(encoding="utf-8")
+    content = agent_file.read_text(encoding="utf-8")
+    if content.startswith("---"):
+        parts = content.split("---", 2)
+        if len(parts) == 3:
+            content = parts[2]
+    for marker in ("\n# Persistent Agent Memory", "\n## MEMORY.md"):
+        if marker in content:
+            content = content.split(marker, 1)[0]
+    return content.strip()
 
 
 # ── Step 2: Check approvals (stub) ───────────────────────────────────────────
@@ -430,6 +438,126 @@ def step9_release_checkout(task_id: str | None, run_id: str, conn):
         pass  # Table may not exist in F1.1
 
 
+# ── Failure alert (runs between persist and release) ──────────────────────────
+
+def _classify_failure(result: dict) -> str:
+    """Return a short failure category: timeout | provider_exhausted | auth | unknown."""
+    error = (result.get("error") or "").lower()
+    status = result.get("status", "")
+    if status == "timeout":
+        return "timeout"
+    if result.get("fallback_exhausted"):
+        return "provider_exhausted"
+    if any(kw in error for kw in ("401", "403", "unauthorized", "invalid_api_key", "authentication")):
+        return "auth"
+    return "unknown"
+
+
+def step_alert_on_failure(heartbeat_id: str, result: dict) -> bool:
+    """Send a compact alert when a heartbeat run fails. Returns True if sent.
+
+    Alert is sent only for non-success statuses (fail, timeout).
+    Categories: timeout, provider_exhausted, auth, unknown.
+    """
+    status = result.get("status", "success")
+    if status == "success":
+        return False
+
+    category = _classify_failure(result)
+    agent = result.get("agent", heartbeat_id)
+    duration_s = ""
+    if result.get("duration_ms"):
+        duration_s = f"{result['duration_ms'] / 1000:.1f}s"
+
+    error_preview = ""
+    if result.get("error"):
+        error_preview = result["error"][:200].replace("\n", " ")
+
+    # Build compact Telegram message
+    lines = [
+        f"⚠️ <b>Heartbeat Fail</b>",
+        f"",
+        f"🔧 <b>{heartbeat_id}</b>  |  🤖 {agent}",
+        f"📌 Status: <code>{status}</code>  |  🏷 {category}",
+    ]
+    if duration_s:
+        lines.append(f"⏱ {duration_s}")
+    if result.get("provider_id"):
+        lines.append(f"🔗 Provider: {result['provider_id']}:{result.get('model', '?')}")
+    if result.get("attempt_number"):
+        lines.append(f"🔄 Attempt #{result['attempt_number']}")
+    if error_preview:
+        lines.append(f"")
+        lines.append(f"📝 <pre>{error_preview}</pre>")
+
+    text = "\n".join(lines)
+
+    from notifications import send_telegram_alert
+    sent = send_telegram_alert(text)
+    if sent:
+        print(f"[heartbeat_runner] alert sent for {heartbeat_id} fail ({category})", flush=True)
+    else:
+        print(f"[heartbeat_runner] alert NOT sent (Telegram not configured) for {heartbeat_id}", flush=True)
+    return sent
+
+
+# ── Success report ───────────────────────────────────────────────────────────
+
+def _step_report_success(heartbeat_id: str, result: dict) -> bool:
+    """Send a compact Telegram notification when a heartbeat run completes.
+
+    Sent only for status = 'success'.
+    Returns True if sent, False if not (Telegram not configured, status not success).
+    """
+    status = result.get("status", "fail")
+    if status != "success":
+        return False
+
+    # Debounce by heartbeat_id — skip if same heartbeat reported <30s ago
+    _last_reported = getattr(_step_report_success, "_last_sent", {})
+    now = datetime.now(timezone.utc)
+    last = _last_reported.get(heartbeat_id)
+    if last and (now - last).total_seconds() < 30:
+        return False
+    _last_reported[heartbeat_id] = now
+    _step_report_success._last_sent = _last_reported  # type: ignore[attr-defined]
+
+    agent = result.get("agent", heartbeat_id)
+    duration_s = ""
+    if result.get("duration_ms"):
+        duration_s = f"{result['duration_ms'] / 1000:.1f}s"
+
+    cost_str = ""
+    if result.get("cost_usd") is not None and result["cost_usd"] > 0:
+        cost_str = f"  |  💰 US${result['cost_usd']:.4f}"
+
+    provider_str = ""
+    if result.get("provider_id"):
+        provider_str = f"  |  🔗 {result['provider_id']}:{result.get('model', '?')}"
+
+    lines = [
+        f"✅ <b>Heartbeat OK</b>",
+        f"",
+        f"🔧 <b>{heartbeat_id}</b>  |  🤖 {agent}",
+        f"⏱ {duration_s}{cost_str}{provider_str}",
+    ]
+
+    if result.get("tokens_in") is not None or result.get("tokens_out") is not None:
+        tok_in = result.get("tokens_in") or 0
+        tok_out = result.get("tokens_out") or 0
+        lines.append(f"📊 Tokens: {tok_in:,} in / {tok_out:,} out")
+
+    text = "\n".join(lines)
+
+    from notifications import send_telegram_alert
+    sent = send_telegram_alert(text)
+    if sent:
+        print(f"[heartbeat_runner] success report sent for {heartbeat_id}", flush=True)
+    else:
+        print(f"[heartbeat_runner] success report NOT sent (Telegram not configured) for {heartbeat_id}", flush=True)
+    return sent
+
+
 # ── System heartbeat dispatcher ───────────────────────────────────────────────
 
 # Map heartbeat_id → Python module (relative to heartbeat_runner.py's directory)
@@ -625,6 +753,18 @@ def run_heartbeat(heartbeat_id: str, triggered_by: str = "manual", trigger_id: s
         # Step 8
         step8_persist(run_id, heartbeat_id, result, trigger_id, triggered_by, full_prompt, conn)
         print(f"[heartbeat_runner] step8 persisted run_id={run_id} status={result['status']}", flush=True)
+
+        # Failure alert (between persist and release)
+        try:
+            step_alert_on_failure(heartbeat_id, result)
+        except Exception as alert_exc:
+            print(f"[heartbeat_runner] alert error (non-fatal): {alert_exc}", flush=True)
+
+        # Success report — Telegram notification for completed runs
+        try:
+            _step_report_success(heartbeat_id, result)
+        except Exception as report_exc:
+            print(f"[heartbeat_runner] success report error (non-fatal): {report_exc}", flush=True)
 
         # Step 9
         step9_release_checkout(task_id, run_id, conn)

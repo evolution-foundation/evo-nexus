@@ -180,7 +180,7 @@ def _read_providers_config() -> dict:
 #      without leaving NVIDIA. Hence deepseek + kimi + mistral + stepfun all
 #      having slots equal to their flagship counterparts.
 #
-# Felipe-specified order (validated 2026-06-16, all 12 return 200 on /chat/completions):
+# Felipe-specified order (validated 2026-06-16, returning 200 on /chat/completions).
 NVIDIA_MODEL_CHAIN = [
     "minimaxai/minimax-m3",                  # 1  — MiniMax M3
     "stepfun-ai/step-3.7-flash",             # 2  — StepFun 3.7 Flash
@@ -196,7 +196,9 @@ NVIDIA_MODEL_CHAIN = [
     "stepfun-ai/step-3.5-flash",             # 12 — StepFun 3.5 Flash
 ]
 
-# Provider chain: NVIDIA → OpenRouter (owl-alpha) → Codex (GPT-5.x OAuth) → Claude nativo
+# Provider chain: NVIDIA (12 models) → OpenRouter (owl-alpha + nex-n2-pro free) → Codex → Claude
+# NVIDIA is always first — OpenRouter only as last resort when all 12 NVIDIA models are on cooldown.
+# OpenRouter models must be FREE (no paid tier) to avoid burning credits unintentionally.
 DEFAULT_PROVIDER_CHAIN = [
     {
         "provider_id": "nvidia",
@@ -216,7 +218,10 @@ DEFAULT_PROVIDER_CHAIN = [
             "CLAUDE_CODE_USE_OPENAI": "1",
             "OPENAI_BASE_URL": "https://openrouter.ai/api/v1",
         },
-        "model_chain": ["openrouter/owl-alpha"],
+        "model_chain": [
+            "openrouter/owl-alpha",
+            "nex-agi/nex-n2-pro:free",
+        ],
     },
     {
         "provider_id": "codex_auth",
@@ -232,7 +237,7 @@ DEFAULT_PROVIDER_CHAIN = [
         "cli_command": "claude",
         "base_url": None,
         "env_vars": {},
-        "model_chain": [None],  # claude binary uses its own model
+        "model_chain": [None],
     },
 ]
 
