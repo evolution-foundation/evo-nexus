@@ -364,13 +364,20 @@ class FallbackAttempt:
 
     @property
     def is_fatal(self) -> bool:
+        """Fatal means auth/config errors that are unlikely to be fixed by another model."""
         if not self._result:
             return False
         if self._result.get("status") == "success":
             return False
         if self.is_429:
             return False
-        return True
+        error = (self._result.get("error") or self._result.get("output") or "").lower()
+        fatal_terms = (
+            "invalid_api_key", "invalid api key", "401", "403",
+            "unauthorized", "forbidden", "authentication", "api key",
+            "no usable api key", "has no usable api key",
+        )
+        return any(term in error for term in fatal_terms)
 
 
 # ── Core invocation ─────────────────────────────────────────────────────────────
@@ -649,6 +656,10 @@ def invoke_with_fallback(
                 print(f"[fallback] SUCCESS on attempt #{attempt.attempt_number} "
                       f"({attempt.provider_id}:{attempt.model})", flush=True)
             return result
+
+        if result.get("skip_advance_model"):
+            print(f"[fallback] skip {attempt.provider_id}:{attempt.model} ({result.get('error')})", flush=True)
+            continue
 
         last_result = result
         print(f"[fallback] attempt #{attempt.attempt_number} failed "

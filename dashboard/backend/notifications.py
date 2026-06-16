@@ -39,7 +39,7 @@ if _env_file.exists():
 _debounce_state: dict[str, float] = {}
 DEFAULT_DEBOUNCE = {
     "heartbeat_success": 30,
-    "heartbeat_failure": 0,      # failures always notify
+    "heartbeat_failure": 900,  # 15min por heartbeat — evita spam em falhas recorrentes
     "task_success": 60,
     "task_failure": 0,
     "routine_success": 120,
@@ -126,7 +126,7 @@ def notify_heartbeat_success(heartbeat_id: str, agent: str, duration_ms: int,
 def notify_heartbeat_failure(heartbeat_id: str, agent: str, error: str,
                              duration_ms: int = 0, attempt: int = 0) -> bool:
     """Report heartbeat failure to Telegram."""
-    if not _should_send("heartbeat_failure", f"{heartbeat_id}:{int(time.time())}"):
+    if not _should_send("heartbeat_failure", heartbeat_id):
         return False
 
     dur = f"{duration_ms / 1000:.1f}s" if duration_ms else "?"
