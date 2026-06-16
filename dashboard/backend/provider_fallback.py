@@ -36,6 +36,32 @@ from typing import Iterator
 WORKSPACE = Path(__file__).resolve().parent.parent.parent
 PROVIDERS_CONFIG = WORKSPACE / "config" / "providers.json"
 
+
+def _usable_secret(value: str | None) -> bool:
+    if not value:
+        return False
+    value = value.strip()
+    return value not in {"[REDACTED]", "REDACTED", "your_bot_token_here", "your_chat_id_here"}
+
+
+def _load_workspace_env() -> None:
+    """Load root .env without depending on python-dotenv."""
+    env_file = WORKSPACE / ".env"
+    if not env_file.exists():
+        return
+    for line in env_file.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, value = stripped.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip("'\"")
+        if key and _usable_secret(value):
+            os.environ.setdefault(key, value)
+
+
+_load_workspace_env()
+
 # ── Per-model inflight lock ──────────────────────────────────────────────────
 # Prevents two heartbeat threads from picking the same model at the same
 # instant and getting back-to-back 429s. Each call acquires the model key for
@@ -182,21 +208,21 @@ def _read_providers_config() -> dict:
 #
 # Felipe-specified order (validated 2026-06-16, returning 200 on /chat/completions).
 NVIDIA_MODEL_CHAIN = [
-    "minimaxai/minimax-m3",                  # 1  — MiniMax M3
-    "stepfun-ai/step-3.7-flash",             # 2  — StepFun 3.7 Flash
-    "moonshotai/kimi-k2.6",                  # 3  — Moonshot Kimi K2.6
-    "deepseek-ai/deepseek-v4-flash",         # 4  — DeepSeek V4 Flash
-    "z-ai/glm-5.1",                          # 5  — Z.AI GLM 5.1 (flagship)
-    "nvidia/nemotron-3-ultra-550b-a55b",     # 6  — NVIDIA Nemotron 3 Ultra 550B
-    "nvidia/nemotron-3-super-120b-a12b",     # 7  — NVIDIA Nemotron 3 Super 120B
-    "qwen/qwen3.5-122b-a10b",                # 8  — Qwen 3.5 122B A10B
-    "qwen/qwen3.5-397b-a17b",                # 9  — Qwen 3.5 397B A17B (big MoE)
-    "openai/gpt-oss-120b",                   # 10 — OpenAI GPT-OSS 120B
-    "microsoft/phi-4-multimodal-instruct",   # 11 — Microsoft Phi-4 Multimodal
-    "stepfun-ai/step-3.5-flash",             # 12 — StepFun 3.5 Flash
+    "stepfun-ai/step-3.7-flash",            # 1  — StepFun 3.7 Flash
+    "deepseek-ai/deepseek-v4-flash",        # 2  — DeepSeek V4 Flash
+    "z-ai/glm-5.1",                         # 3  — Z.AI GLM 5.1 (flagship)
+    "moonshotai/kimi-k2.6",                 # 4  — Moonshot Kimi K2.6
+    "nvidia/nemotron-3-ultra-550b-a55b",    # 5  — NVIDIA Nemotron 3 Ultra 550B
+    "nvidia/nemotron-3-super-120b-a12b",    # 6  — NVIDIA Nemotron 3 Super 120B
+    "qwen/qwen3.5-122b-a10b",               # 7  — Qwen 3.5 122B A10B
+    "qwen/qwen3.5-397b-a17b",               # 8  — Qwen 3.5 397B A17B (big MoE)
+    "openai/gpt-oss-120b",                  # 9  — OpenAI GPT-OSS 120B
+    "microsoft/phi-4-multimodal-instruct",  # 10 — Microsoft Phi-4 Multimodal
+    "stepfun-ai/step-3.5-flash",            # 11 — StepFun 3.5 Flash
+    "minimaxai/minimax-m3",                 # 12 — MiniMax M3
 ]
 
-# Provider chain: NVIDIA (12 models) → OpenRouter (owl-alpha + nex-n2-pro free) → Codex → Claude
+# Provider chain: NVIDIA (12 models) → OpenRouter (owl-alpha + nex-n2-pro free) → Claude
 # NVIDIA is always first — OpenRouter only as last resort when all 12 NVIDIA models are on cooldown.
 # OpenRouter models must be FREE (no paid tier) to avoid burning credits unintentionally.
 DEFAULT_PROVIDER_CHAIN = [
@@ -222,15 +248,6 @@ DEFAULT_PROVIDER_CHAIN = [
             "openrouter/owl-alpha",
             "nex-agi/nex-n2-pro:free",
         ],
-    },
-    {
-        "provider_id": "codex_auth",
-        "cli_command": "openclaude",
-        "base_url": None,
-        "env_vars": {
-            "CLAUDE_CODE_USE_OPENAI": "1",
-        },
-        "model_chain": ["codexplan", "codexspark"],
     },
     {
         "provider_id": "anthropic",
@@ -288,15 +305,19 @@ def _get_api_key(provider_id: str, config: dict) -> str:
     if provider_id in {"codex_auth", "anthropic"}:
         return ""
 
+    # Prefer real process env vars first. config/providers.json may contain
+    # [REDACTED] placeholders; never send those to the API.
+    for key_name in ("NVIDIA_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY"):
+        value = os.environ.get(key_name, "")
+        if _usable_secret(value):
+            return value
+
     prov = config.get("providers", {}).get(provider_id, {})
     env_vars = prov.get("env_vars", {})
-    for key_name in ("OPENAI_API_KEY", "NVIDIA_API_KEY", "GEMINI_API_KEY"):
+    for key_name in ("NVIDIA_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY"):
         val = env_vars.get(key_name, "")
-        if val and "****" not in val:
+        if _usable_secret(val):
             return val
-
-    if provider_id in {"nvidia", "openrouter", "openai", "gemini"}:
-        return os.environ.get("OPENAI_API_KEY", "")
 
     return ""
 
@@ -324,6 +345,8 @@ class FallbackAttempt:
             timeout_seconds=self.timeout_seconds,
             agent=self.agent,
             env_overrides=self.env_overrides,
+            provider_id=self.provider_id,
+            model=self.model,
         )
         return self._result
 
@@ -359,6 +382,8 @@ def _invoke_cli(
     timeout_seconds: int,
     agent: str = "",
     env_overrides: dict | None = None,
+    provider_id: str | None = None,
+    model: str | None = None,
 ) -> dict:
     cli_bin = shutil.which(cli_command)
     if not cli_bin:

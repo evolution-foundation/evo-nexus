@@ -34,6 +34,32 @@ MAX_MEMORY_MESSAGES = 8
 MAX_MEMORY_CHARS = 1800
 MAX_STORED_MESSAGE_CHARS = 1600
 TELEGRAM_CODEX_MODELS = (None,)
+
+
+def _load_workspace_env() -> None:
+    """Load root .env without depending on python-dotenv."""
+    env_file = ROOT / ".env"
+    if not env_file.exists():
+        return
+    for line in env_file.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, value = stripped.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip("'\"")
+        if key and _usable_secret(value):
+            os.environ.setdefault(key, value)
+
+
+def _usable_secret(value: str | None) -> bool:
+    if not value:
+        return False
+    value = value.strip()
+    return value not in {"[REDACTED]", "your_bot_token_here", "your_chat_id_here", "REDACTED"}
+
+
+_load_workspace_env()
 GROQ_AUDIO_SUFFIXES = {
     ".oga": ".ogg",
     ".opus": ".opus",
@@ -519,9 +545,14 @@ def provider_models(provider_id: str, provider: dict) -> list[str | None]:
 def invoke_openai_compatible(provider_id: str, provider: dict, model: str, prompt: str) -> str:
     env = provider.get("env_vars", {})
     base_url = (env.get("OPENAI_BASE_URL") or provider.get("default_base_url") or "https://api.openai.com/v1").rstrip("/")
-    api_key = env.get("OPENAI_API_KEY") or env.get("NVIDIA_API_KEY") or os.environ.get("OPENAI_API_KEY")
-    if not api_key:
-        raise RuntimeError(f"{provider_id} has no API key")
+    api_key = (
+        os.environ.get("NVIDIA_API_KEY")
+        or os.environ.get("OPENAI_API_KEY")
+        or env.get("NVIDIA_API_KEY")
+        or env.get("OPENAI_API_KEY")
+    )
+    if not _usable_secret(api_key):
+        raise RuntimeError(f"{provider_id} has no usable API key")
     payload = {
         "model": model,
         "messages": [
@@ -544,8 +575,13 @@ def invoke_openai_compatible(provider_id: str, provider: dict, model: str, promp
         data=json.dumps(payload).encode("utf-8"),
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
     )
-    with urllib.request.urlopen(req, timeout=90) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(req, timeout=90) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        if exc.code == 401:
+            raise RuntimeError(f"401 Unauthorized: chave API inválida/expirada para {provider_id}") from exc
+        raise
     content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
     if not content:
         raise RuntimeError(f"{provider_id}:{model} returned empty content")

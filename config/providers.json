@@ -21,7 +21,8 @@
       "requires_logout": true,
       "mode": "code",
       "fallback_models": [
-        "openrouter/owl-alpha"
+        "openrouter/owl-alpha",
+        "nex-agi/nex-n2-pro:free"
       ]
     },
     "nvidia": {
@@ -33,24 +34,24 @@
         "CLAUDE_CODE_USE_OPENAI": "1",
         "OPENAI_BASE_URL": "https://integrate.api.nvidia.com/v1",
         "OPENAI_API_KEY": "[REDACTED]",
-        "OPENAI_MODEL": "minimaxai/minimax-m3"
+        "OPENAI_MODEL": "stepfun-ai/step-3.7-flash"
       },
       "default_base_url": "https://integrate.api.nvidia.com/v1",
-      "default_model": "minimaxai/minimax-m3",
+      "default_model": "stepfun-ai/step-3.7-flash",
       "requires_logout": true,
       "fallback_models": [
-        "minimaxai/minimax-m3",
         "stepfun-ai/step-3.7-flash",
-        "moonshotai/kimi-k2.6",
         "deepseek-ai/deepseek-v4-flash",
         "z-ai/glm-5.1",
+        "moonshotai/kimi-k2.6",
         "nvidia/nemotron-3-ultra-550b-a55b",
         "nvidia/nemotron-3-super-120b-a12b",
         "qwen/qwen3.5-122b-a10b",
         "qwen/qwen3.5-397b-a17b",
         "openai/gpt-oss-120b",
         "microsoft/phi-4-multimodal-instruct",
-        "stepfun-ai/step-3.5-flash"
+        "stepfun-ai/step-3.5-flash",
+        "minimaxai/minimax-m3"
       ],
       "model_tiers": {
         "opus": "minimaxai/minimax-m3",
@@ -59,7 +60,6 @@
       },
       "fallback_providers": [
         "openrouter",
-        "codex_auth",
         "anthropic"
       ]
     },
@@ -133,5 +133,5 @@
       ]
     }
   },
-  "telegram_provider": "codex_auth"
+  "telegram_provider": "nvidia"
 }
