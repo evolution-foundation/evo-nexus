@@ -85,6 +85,16 @@ def _send_telegram(text: str) -> bool:
         return False
 
 
+def send_telegram_alert(text: str) -> bool:
+    """Send a preformatted Telegram alert.
+
+    Used by heartbeat_runner and other modules that already build the final
+    HTML message. Returns False only when Telegram credentials are missing or
+    Telegram rejects/fails the request.
+    """
+    return _send_telegram(text)
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).strftime("%H:%M UTC")
 
