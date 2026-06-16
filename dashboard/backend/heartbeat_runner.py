@@ -754,17 +754,11 @@ def run_heartbeat(heartbeat_id: str, triggered_by: str = "manual", trigger_id: s
         step8_persist(run_id, heartbeat_id, result, trigger_id, triggered_by, full_prompt, conn)
         print(f"[heartbeat_runner] step8 persisted run_id={run_id} status={result['status']}", flush=True)
 
-        # Failure alert (between persist and release)
+        # Notifications — success or failure via centralized module
         try:
-            step_alert_on_failure(heartbeat_id, result)
-        except Exception as alert_exc:
-            print(f"[heartbeat_runner] alert error (non-fatal): {alert_exc}", flush=True)
-
-        # Success report — Telegram notification for completed runs
-        try:
-            _step_report_success(heartbeat_id, result)
-        except Exception as report_exc:
-            print(f"[heartbeat_runner] success report error (non-fatal): {report_exc}", flush=True)
+            _send_heartbeat_notification(heartbeat_id, hb["agent"], result)
+        except Exception as notif_exc:
+            print(f"[heartbeat_runner] notification error (non-fatal): {notif_exc}", flush=True)
 
         # Step 9
         step9_release_checkout(task_id, run_id, conn)
@@ -776,6 +770,33 @@ def run_heartbeat(heartbeat_id: str, triggered_by: str = "manual", trigger_id: s
         conn.close()
 
     return run_id
+
+
+def _send_heartbeat_notification(heartbeat_id: str, agent: str, result: dict):
+    """Route heartbeat result to the correct notification."""
+    from notifications import notify_heartbeat_success, notify_heartbeat_failure
+
+    status = result.get("status", "fail")
+    duration_ms = result.get("duration_ms") or 0
+
+    if status == "success":
+        notify_heartbeat_success(
+            heartbeat_id=heartbeat_id,
+            agent=agent,
+            duration_ms=duration_ms,
+            model=result.get("model", ""),
+            cost_usd=result.get("cost_usd", 0),
+            tokens_in=result.get("tokens_in", 0),
+            tokens_out=result.get("tokens_out", 0),
+        )
+    else:
+        notify_heartbeat_failure(
+            heartbeat_id=heartbeat_id,
+            agent=agent,
+            error=result.get("error", "unknown"),
+            duration_ms=duration_ms,
+            attempt=result.get("attempt_number", 0),
+        )
 
 
 def main():

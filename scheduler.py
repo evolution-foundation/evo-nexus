@@ -99,6 +99,14 @@ def run_adw(name: str, script: str, args: str = ""):
         print(f"  {now} ✗ {name} error: {e}")
 
 
+def _hourly_report_safe():
+    """Wrapper that only runs hourly report during business hours (08h-20h BRT)."""
+    from datetime import datetime, timezone, timedelta
+    brt = datetime.now(timezone.utc) + timedelta(hours=-3)
+    if 8 <= brt.hour < 20:
+        run_adw("Hourly Report", "hourly_report.py")
+
+
 def setup_schedule():
     """Configure core routines. Custom routines loaded from config/routines.yaml."""
     import schedule
@@ -114,6 +122,9 @@ def setup_schedule():
     # Exercise every NVIDIA model so the active chain has fresh live traffic
     # evidence in /costs. Runs late at night to stay out of the way of heartbeats.
     schedule.every().day.at("04:00").do(run_adw, "Uso Modelos DIA", "uso_modelos_dia.py")
+
+    # Hourly activity report during business hours (08h-20h BRT)
+    schedule.every().hour.do(_hourly_report_safe)
 
     # ── Custom routines (from config/routines.yaml if exists) ──
     _load_custom_routines(schedule)
