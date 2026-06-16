@@ -111,6 +111,9 @@ def setup_schedule():
     # schedule.every().friday.at("08:00").do(run_adw, "Weekly Review", "weekly_review.py")
     schedule.every().sunday.at("09:00").do(run_adw, "Memory Lint", "memory_lint.py")
     schedule.every().day.at("21:00").do(run_adw, "Daily Backup", "backup.py")
+    # Exercise every NVIDIA model so the active chain has fresh live traffic
+    # evidence in /costs. Runs late at night to stay out of the way of heartbeats.
+    schedule.every().day.at("04:00").do(run_adw, "Uso Modelos DIA", "uso_modelos_dia.py")
 
     # ── Custom routines (from config/routines.yaml if exists) ──
     _load_custom_routines(schedule)

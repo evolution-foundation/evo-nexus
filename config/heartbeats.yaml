@@ -1,0 +1,76 @@
+heartbeats:
+- id: atlas-4h
+  agent: atlas-project
+  interval_seconds: 14400
+  max_turns: 10
+  timeout_seconds: 300
+  lock_timeout_seconds: 1800
+  wake_triggers:
+  - interval
+  - mention
+  - manual
+  enabled: true
+  goal_id: null
+  required_secrets: []
+  decision_prompt: 'You are Atlas, the project agent. Review Linear for stale PRs
+    and issues older than 3 days with no activity. Check GitHub for open PRs waiting
+    on review. Decide: should you act now (comment, triage, escalate) or is there
+    nothing urgent? Respond with a JSON object: {"action": "work"|"skip", "reason":
+    "<1 sentence>", "tasks": [<list of issue ids to touch, if action=work>]}.
+
+    '
+- id: zara-2h
+  agent: zara-cs
+  interval_seconds: 7200
+  max_turns: 15
+  timeout_seconds: 300
+  lock_timeout_seconds: 1800
+  wake_triggers:
+  - interval
+  - new_task
+  - manual
+  enabled: true
+  goal_id: null
+  required_secrets: []
+  decision_prompt: 'You are Zara, the customer success agent. Check the support queue
+    for tickets with status "open" or "pending" assigned to you. Pick the highest-priority
+    ticket (by urgency label, then oldest created_at). Decide: should you work on
+    it now or is the queue empty/nothing actionable? Respond with JSON: {"action":
+    "work"|"skip", "reason": "<1 sentence>", "ticket_id": "<id or null>"}.
+
+    '
+- id: flux-6h
+  agent: flux-finance
+  interval_seconds: 21600
+  max_turns: 10
+  timeout_seconds: 300
+  lock_timeout_seconds: 1800
+  wake_triggers:
+  - interval
+  - manual
+  enabled: true
+  goal_id: null
+  required_secrets:
+  - STRIPE_KEY
+  - OMIE_APP_KEY
+  decision_prompt: 'You are Flux, the finance agent. Check Stripe for failed payments
+    or subscriptions that lapsed in the last 6 hours. Check Omie for pending NF-e
+    that need action. Decide: is there something urgent requiring action or escalation
+    to Davidson via Telegram? Respond with JSON: {"action": "work"|"skip", "reason":
+    "<1 sentence>", "alerts": [<list of critical items, if any>]}.
+
+    '
+- id: integrations-health
+  agent: system
+  interval_seconds: 900
+  max_turns: 0
+  timeout_seconds: 60
+  lock_timeout_seconds: 1800
+  wake_triggers:
+  - interval
+  - manual
+  enabled: true
+  goal_id: null
+  required_secrets: []
+  decision_prompt: ''
+  handler: plugin_integration_health.tick

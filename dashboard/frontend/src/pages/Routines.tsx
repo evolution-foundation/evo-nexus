@@ -93,7 +93,10 @@ function transformRoutineMetrics(data: any): Routine[] {
     const totalCost = Number(m.total_cost_usd || 0)
     const avgCost = Number(m.avg_cost_usd || 0)
     const avgSeconds = Number(m.avg_seconds || 0)
+    const lastSuccess = typeof m.last_success === 'boolean' ? m.last_success : null
     const status: 'healthy' | 'warning' | 'critical' =
+      lastSuccess === false ? 'critical' :
+      lastSuccess === true && successRate < 90 ? 'warning' :
       successRate >= 90 ? 'healthy' : successRate >= 70 ? 'warning' : 'critical'
     return {
       name,

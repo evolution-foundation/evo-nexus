@@ -27,6 +27,7 @@ import re
 import shutil
 import signal
 import subprocess
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -34,6 +35,23 @@ from typing import Iterator
 
 WORKSPACE = Path(__file__).resolve().parent.parent.parent
 PROVIDERS_CONFIG = WORKSPACE / "config" / "providers.json"
+
+# ── Per-model inflight lock ──────────────────────────────────────────────────
+# Prevents two heartbeat threads from picking the same model at the same
+# instant and getting back-to-back 429s. Each call acquires the model key for
+# the duration of its HTTP round-trip; the next caller will pick a different
+# model from the chain instead of doubling up.
+_inflight_locks: dict[str, threading.Lock] = {}
+_inflight_locks_guard = threading.Lock()
+
+
+def _model_lock(model_key: str) -> threading.Lock:
+    with _inflight_locks_guard:
+        lk = _inflight_locks.get(model_key)
+        if lk is None:
+            lk = threading.Lock()
+            _inflight_locks[model_key] = lk
+        return lk
 
 # ── Error patterns that trigger fallback ──────────────────────────────────────
 
@@ -77,7 +95,7 @@ def is_429_error(error_text: str) -> bool:
 # ── Cooldown tracking ─────────────────────────────────────────────────────────
 
 _cooldowns: dict[str, float] = {}
-DEFAULT_COOLDOWN_SECONDS = 300  # 5 min
+DEFAULT_COOLDOWN_SECONDS = 60   # 1 min — faster rotation through the NVIDIA chain
 
 
 def set_cooldown(key: str, duration_seconds: float = DEFAULT_COOLDOWN_SECONDS):
@@ -102,6 +120,39 @@ def clear_all_cooldowns():
     _cooldowns.clear()
 
 
+def _agent_prompt(agent: str | None) -> str:
+    """Return agent persona text without YAML frontmatter."""
+    if not agent:
+        return ""
+    agent_file = WORKSPACE / ".claude" / "agents" / f"{agent}.md"
+    try:
+        content = agent_file.read_text(encoding="utf-8")
+    except OSError:
+        return f"You are the {agent} agent."
+    if content.startswith("---"):
+        parts = content.split("---", 2)
+        if len(parts) == 3:
+            content = parts[2]
+    for marker in ("\n# Persistent Agent Memory", "\n## MEMORY.md"):
+        if marker in content:
+            content = content.split(marker, 1)[0]
+    return content.strip()
+
+
+def _embed_agent_for_openclaude(prompt: str, agent: str | None) -> str:
+    """OpenClaude can misparse --agent frontmatter; embed persona in prompt."""
+    persona = _agent_prompt(agent)
+    if not persona:
+        return prompt
+    return (
+        f"{persona}\n\n"
+        f"CRITICAL: You MUST fully embody this agent persona. "
+        f"You are NOT Claude, OpenClaude, or a generic assistant — you ARE {agent}. "
+        f"Never break character. Follow ALL instructions above.\n\n"
+        f"---\n\nTask:\n{prompt}"
+    )
+
+
 # ── Config reading ─────────────────────────────────────────────────────────────
 
 def _read_providers_config() -> dict:
@@ -118,9 +169,31 @@ def _read_providers_config() -> dict:
 # NVIDIA: models are independent — quota on one doesn't block others.
 # Primary is GLM 5.1 on NVIDIA; if quota/rate-limit hits, rotate inside
 # NVIDIA first, then leave the provider only after these core models fail.
+# NVIDIA chain — 12 models validated on integrate.api.nvidia.com/v1.
+# Two principles shape the order:
+#   1. Don't double up on the same model — multiple agents pulling the same
+#      model at once produces burst 429s that waste quotas. The dispatcher
+#      uses per-model inflight locks above to stagger picks; this list is the
+#      fallback rotation when one model hits quota.
+#   2. Variety matters more than "best first" because of cooldown windows —
+#      if z-ai/glm-5.1 just bounced, we should be able to keep working
+#      without leaving NVIDIA. Hence deepseek + kimi + mistral + stepfun all
+#      having slots equal to their flagship counterparts.
+#
+# Felipe-specified order (validated 2026-06-16, all 12 return 200 on /chat/completions):
 NVIDIA_MODEL_CHAIN = [
-    "z-ai/glm-5.1",            # Primary — Telegram + agents default
-    "minimaxai/minimax-m3",    # 2nd
+    "minimaxai/minimax-m3",                  # 1  — MiniMax M3
+    "stepfun-ai/step-3.7-flash",             # 2  — StepFun 3.7 Flash
+    "moonshotai/kimi-k2.6",                  # 3  — Moonshot Kimi K2.6
+    "deepseek-ai/deepseek-v4-flash",         # 4  — DeepSeek V4 Flash
+    "z-ai/glm-5.1",                          # 5  — Z.AI GLM 5.1 (flagship)
+    "nvidia/nemotron-3-ultra-550b-a55b",     # 6  — NVIDIA Nemotron 3 Ultra 550B
+    "nvidia/nemotron-3-super-120b-a12b",     # 7  — NVIDIA Nemotron 3 Super 120B
+    "qwen/qwen3.5-122b-a10b",                # 8  — Qwen 3.5 122B A10B
+    "qwen/qwen3.5-397b-a17b",                # 9  — Qwen 3.5 397B A17B (big MoE)
+    "openai/gpt-oss-120b",                   # 10 — OpenAI GPT-OSS 120B
+    "microsoft/phi-4-multimodal-instruct",   # 11 — Microsoft Phi-4 Multimodal
+    "stepfun-ai/step-3.5-flash",             # 12 — StepFun 3.5 Flash
 ]
 
 # Provider chain: NVIDIA → OpenRouter (owl-alpha) → Codex (GPT-5.x OAuth) → Claude nativo
@@ -294,6 +367,9 @@ def _invoke_cli(
 
     cmd = [cli_bin, "--print", "--max-turns", str(max_turns),
            "--dangerously-skip-permissions", "--output-format", "json"]
+    if cli_command == "openclaude":
+        prompt = _embed_agent_for_openclaude(prompt, agent)
+        agent = ""
     if agent:
         cmd.extend(["--agent", agent])
     cmd.extend(["--", prompt])
@@ -304,6 +380,54 @@ def _invoke_cli(
             if v is not None:
                 run_env[k] = str(v)
 
+    # Acquire a per-model inflight lock so concurrent calls cannot pick the same
+    # model at the same instant (the canonical cause of burst 429s on shared
+    # providers). Non-blocking acquire: if another worker is mid-flight against
+    # this model, return a sentinel and let the caller skip to the next chain
+    # member instead of doubling up the quota burn.
+    model_key = f"{provider_id}:{model}" if model else f"{provider_id}:native-{os.getpid()}"
+    lk = _model_lock(model_key)
+    if not lk.acquire(blocking=False):
+        return {
+            "status": "fail",
+            "error": f"model {model} busy (concurrent call in flight) — skip to next model",
+            "output": "",
+            "duration_ms": 0,
+            "tokens_in": None, "tokens_out": None, "cost_usd": None,
+            "fallback_exhausted": False,
+            "skip_advance_model": True,
+        }
+    try:
+        return _invoke_cli_run(cmd, run_env, timeout_seconds, WORKSPACE)
+    finally:
+        lk.release()
+
+    # The CLI emits a JSON result envelope (--output-format json) carrying token
+    # usage and cost — parse it so heartbeat runs land accurate numbers on the
+    # /costs page instead of nulls. Best-effort: never let parsing break a run.
+    tokens_in = tokens_out = cost_usd = None
+    try:
+        envelope = json.loads(output)
+        usage = envelope.get("usage") or {}
+        tokens_in = usage.get("input_tokens")
+        tokens_out = usage.get("output_tokens")
+        cost_usd = envelope.get("total_cost_usd")
+    except (json.JSONDecodeError, AttributeError, TypeError):
+        pass
+
+    return {
+        "status": status, "output": output, "error": error,
+        "duration_ms": duration_ms,
+        "tokens_in": tokens_in, "tokens_out": tokens_out, "cost_usd": cost_usd,
+    }
+
+
+
+def _invoke_cli_run(cmd: list, run_env: dict, timeout_seconds: int, workspace: Path) -> dict:
+    """Inner run — assume the per-model inflight lock is already held.
+    Holds the subprocess, parses tokens, applies backoff on 429, returns dict.
+    """
+    import subprocess as _sp
     start_time = time.time()
     proc = None
     output = ""
@@ -311,9 +435,9 @@ def _invoke_cli(
     status = "success"
 
     try:
-        proc = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, cwd=str(WORKSPACE), start_new_session=True, env=run_env,
+        proc = _sp.Popen(
+            cmd, stdout=_sp.PIPE, stderr=_sp.PIPE,
+            text=True, cwd=str(workspace), start_new_session=True, env=run_env,
         )
         try:
             stdout, stderr = proc.communicate(timeout=timeout_seconds)
@@ -321,14 +445,14 @@ def _invoke_cli(
             if proc.returncode != 0:
                 status = "fail"
                 error = stderr[:2000] if stderr else f"exit code {proc.returncode}"
-        except subprocess.TimeoutExpired:
+        except _sp.TimeoutExpired:
             try:
                 os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
             except (ProcessLookupError, OSError):
                 proc.kill()
             try:
                 proc.communicate(timeout=5)
-            except subprocess.TimeoutExpired:
+            except _sp.TimeoutExpired:
                 pass
             status = "timeout"
             error = f"Killed after {timeout_seconds}s timeout"
@@ -338,9 +462,6 @@ def _invoke_cli(
 
     duration_ms = int((time.time() - start_time) * 1000)
 
-    # The CLI emits a JSON result envelope (--output-format json) carrying token
-    # usage and cost — parse it so heartbeat runs land accurate numbers on the
-    # /costs page instead of nulls. Best-effort: never let parsing break a run.
     tokens_in = tokens_out = cost_usd = None
     try:
         envelope = json.loads(output)
