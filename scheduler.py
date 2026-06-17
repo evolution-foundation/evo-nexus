@@ -130,6 +130,23 @@ def setup_schedule():
     _load_custom_routines(schedule)
 
 
+def _coerce_interval(interval, time_str):
+    """Return an interval in minutes, or None to fall back to a daily .at(time).
+
+    Accepts an explicit `interval` (minutes) or a cron-style `*/N * * * *` time
+    field (common mistake / convenience), converting it to N minutes. Anything
+    else (HH:MM) returns None so the caller uses the daily-at path.
+    """
+    if interval is not None:
+        return int(interval)
+    if isinstance(time_str, str):
+        import re
+        m = re.match(r"^\*/(\d+)\s+\*\s+\*\s+\*\s+\*$", time_str.strip())
+        if m:
+            return int(m.group(1))
+    return None
+
+
 def _load_routines_from_yaml(schedule, config_path: Path, is_plugin: bool = False,
                              disabled_make_ids: set | None = None):
     """Load routines from a single YAML file into the schedule.
@@ -169,10 +186,15 @@ def _load_routines_from_yaml(schedule, config_path: Path, is_plugin: bool = Fals
                 if make_id in _disabled:
                     print(f"  [{source_label}] skipped disabled routine '{name}' ({make_id})")
                     continue
-            if r.get("interval"):
-                schedule.every(int(r["interval"])).minutes.do(run_adw, name, f"custom/{script}", args)
-            elif r.get("time"):
-                schedule.every().day.at(r["time"]).do(run_adw, name, f"custom/{script}", args)
+            try:
+                interval_min = _coerce_interval(r.get("interval"), r.get("time"))
+                if interval_min is not None:
+                    schedule.every(interval_min).minutes.do(run_adw, name, f"custom/{script}", args)
+                elif r.get("time"):
+                    schedule.every().day.at(r["time"]).do(run_adw, name, f"custom/{script}", args)
+            except Exception as exc:
+                print(f"  [{source_label}] SKIPPED routine '{name}': invalid schedule "
+                      f"(time={r.get('time')!r}, interval={r.get('interval')!r}): {exc}")
 
         for r in config.get("weekly", []) or []:
             if not r.get("enabled", True):
@@ -189,10 +211,15 @@ def _load_routines_from_yaml(schedule, config_path: Path, is_plugin: bool = Fals
             day = r.get("day", "friday").lower()
             time_str = r.get("time", "09:00")
             days = r.get("days", [day])
-            for d in days:
-                getattr(schedule.every(), d, schedule.every().friday).at(time_str).do(
-                    run_adw, name, f"custom/{script}", args
-                )
+            try:
+                for d in days:
+                    getattr(schedule.every(), d, schedule.every().friday).at(time_str).do(
+                        run_adw, name, f"custom/{script}", args
+                    )
+            except Exception as exc:
+                print(f"  [{source_label}] SKIPPED weekly routine '{name}': invalid time "
+                      f"{time_str!r}: {exc}")
+                continue
 
         global _monthly_routines
         monthly = config.get("monthly", []) or []
