@@ -36,6 +36,11 @@ DB_PATH = WORKSPACE / "dashboard" / "data" / "evonexus.db"
 LOGS_DIR = WORKSPACE / "ADWs" / "logs" / "heartbeats"
 AGENTS_DIR = WORKSPACE / ".claude" / "agents"
 
+# Agents that monitor external state (Linear, Stripe, Omie, …) and may have work
+# to do even with an empty ticket inbox. These bypass the empty-inbox cost guard;
+# every other agent skips (without invoking Claude) when it has no assigned work.
+STATE_MONITOR_AGENTS = {"atlas-project", "flux-finance"}
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
@@ -204,8 +209,28 @@ def step6_assemble_context(identity: str, decision_context: dict, goal_id: str |
 
 {decision_context['decision_prompt']}{inbox_summary}{approvals_summary}
 
-Respond concisely. If you decide to work, describe what you are doing.
-If you decide to skip, briefly explain why.
+---
+
+## Sua tarefa — responda em UMA única mensagem
+
+Decida o que fazer com o item de MAIOR prioridade da sua inbox acima, usando o que
+você já sabe sobre ele (título e descrição). NÃO narre ("vou fazer", "primeiro
+preciso ler"), NÃO peça para abrir arquivos — DECIDA AGORA e entregue o resultado
+na própria resposta.
+
+- `work` — você consegue entregar/avançar agora: uma decisão, um plano objetivo,
+  um texto pronto, uma resposta. Coloque o conteúdo/resultado concreto em `result`
+  e ajuste `new_status`.
+- `blocked` — depende de algo que só o Felipe fornece (credencial, acesso, dado,
+  aprovação, uma decisão dele). Preencha `blocked_reason` e `needs`.
+- `skip` — a inbox está vazia ou nada é acionável agora.
+
+## Responda SOMENTE com este JSON — nada antes, nada depois, tudo em uma linha:
+
+{{"action": "work"|"skip"|"blocked", "ticket_id": "<id da inbox ou null>", "result": "<resultado concreto em pt-BR>", "new_status": "in_progress"|"review"|"resolved"|null, "blocked_reason": "<por que travou, se blocked>", "needs": "<o que precisa do Felipe, se blocked>"}}
+
+`result` deve dizer o RESULTADO entregue, não "analisei" — ex.: "Plano P0: 3 canais
+(WhatsApp, IG, e-mail), oferta X, 1 post/dia; sucesso = 20 leads", não "vou montar o plano".
 """
 
     # Inject goal chain context (F1.2) if goal_id is set
@@ -760,6 +785,18 @@ def run_heartbeat(heartbeat_id: str, triggered_by: str = "manual", trigger_id: s
                 inbox = step3_query_inbox(hb["agent"], conn)
                 print(f"[heartbeat_runner] step3 inbox={len(inbox)}", flush=True)
 
+                # Cost guard: executor agents don't burn tokens "deciding to skip".
+                # If there's no assigned work and no pending approvals, skip the
+                # Claude invocation entirely (silent, ~zero cost). State-monitor
+                # agents (Linear/Stripe/etc.) opt out via STATE_MONITOR_AGENTS.
+                if (not inbox and not approvals
+                        and hb["agent"] not in STATE_MONITOR_AGENTS):
+                    print(f"[heartbeat_runner] cost-guard: empty inbox/approvals for {hb['agent']}, skipping without Claude", flush=True)
+                    result = {"status": "success", "error": None, "agent": hb["agent"],
+                              "duration_ms": 0, "output": '{"action":"skip","reason":"no assigned work"}'}
+                    step8_persist(run_id, heartbeat_id, result, trigger_id, triggered_by, "", conn)
+                    return
+
                 # Step 4
                 decision_ctx = step4_pick_priority(identity, approvals, inbox, hb["decision_prompt"])
                 print(f"[heartbeat_runner] step4 decision context assembled", flush=True)
@@ -807,7 +844,7 @@ def run_heartbeat(heartbeat_id: str, triggered_by: str = "manual", trigger_id: s
 
         # Notifications — success or failure via centralized module
         try:
-            _send_heartbeat_notification(heartbeat_id, hb["agent"], result)
+            _send_heartbeat_notification(heartbeat_id, hb["agent"], result, conn)
         except Exception as notif_exc:
             print(f"[heartbeat_runner] notification error (non-fatal): {notif_exc}", flush=True)
 
@@ -823,29 +860,43 @@ def run_heartbeat(heartbeat_id: str, triggered_by: str = "manual", trigger_id: s
     return run_id
 
 
-def _send_heartbeat_notification(heartbeat_id: str, agent: str, result: dict):
-    """Route heartbeat result to the correct notification."""
-    from notifications import notify_heartbeat_success, notify_heartbeat_failure
+def _send_heartbeat_notification(heartbeat_id: str, agent: str, result: dict, conn=None):
+    """Outcome-driven notification + kanban movement.
 
-    status = result.get("status", "fail")
-    duration_ms = result.get("duration_ms") or 0
+    Policy (decided with Felipe 2026-06-17): no more "Heartbeat OK". We only
+    message Telegram when an agent actually advanced/finished a task (the result)
+    or got blocked and needs intervention. Skips and empty runs stay silent.
+    See heartbeat_outcome.apply_outcome for the agent JSON contract.
+    """
+    from heartbeat_outcome import apply_outcome
 
-    if status == "success":
-        notify_heartbeat_success(
-            heartbeat_id=heartbeat_id,
-            agent=agent,
-            duration_ms=duration_ms,
-            model=result.get("model", ""),
-            cost_usd=result.get("cost_usd", 0),
-            tokens_in=result.get("tokens_in", 0),
-            tokens_out=result.get("tokens_out", 0),
-        )
-    else:
+    own_conn = conn is None
+    if own_conn:
+        conn = _get_db()
+    try:
+        spec = apply_outcome(heartbeat_id, agent, result, conn)
+    finally:
+        if own_conn:
+            conn.close()
+
+    if not spec:
+        return  # silence — nothing worth reporting
+
+    kind = spec.get("kind")
+    if kind == "result":
+        from notifications import notify_agent_result
+        notify_agent_result(spec["agent"], spec.get("ticket_title", ""),
+                            spec.get("new_status", ""), spec.get("summary", ""))
+    elif kind == "blocked":
+        from notifications import notify_agent_blocked
+        notify_agent_blocked(spec["agent"], spec.get("ticket_title", ""),
+                            spec.get("reason", ""), spec.get("needs", ""))
+    elif kind == "tech_fail":
+        from notifications import notify_heartbeat_failure
         notify_heartbeat_failure(
-            heartbeat_id=heartbeat_id,
-            agent=agent,
-            error=result.get("error", "unknown"),
-            duration_ms=duration_ms,
+            heartbeat_id=heartbeat_id, agent=agent,
+            error=spec.get("error", "unknown"),
+            duration_ms=result.get("duration_ms") or 0,
             attempt=result.get("attempt_number", 0),
         )
 

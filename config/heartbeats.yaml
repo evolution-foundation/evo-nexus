@@ -62,15 +62,32 @@ heartbeats:
     '
 - id: integrations-health
   agent: system
-  interval_seconds: 900
+  interval_seconds: 3600
   max_turns: 0
   timeout_seconds: 60
   lock_timeout_seconds: 1800
   wake_triggers:
   - interval
   - manual
-  enabled: true
+  enabled: false
   goal_id: null
   required_secrets: []
   decision_prompt: ''
   handler: plugin_integration_health.tick
+- id: nexus-orchestrator
+  agent: system
+  interval_seconds: 1800
+  max_turns: 0
+  timeout_seconds: 120
+  lock_timeout_seconds: 600
+  wake_triggers:
+  - interval
+  - manual
+  # Disabled until a reliable model is chosen for agent execution — the NVIDIA
+  # "flash" chain narrates intent instead of emitting the outcome JSON. See the
+  # decision-prompt contract in heartbeat_runner.step6_assemble_context.
+  enabled: false
+  goal_id: null
+  required_secrets: []
+  decision_prompt: ''
+  handler: nexus_orchestrator.tick

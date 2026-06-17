@@ -95,6 +95,44 @@ def send_telegram_alert(text: str) -> bool:
     return _send_telegram(text)
 
 
+def _esc(s: str) -> str:
+    """Escape HTML special chars for Telegram parse_mode=HTML."""
+    return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def notify_agent_result(agent: str, ticket_title: str, new_status: str,
+                        summary: str) -> bool:
+    """Outcome-driven: an agent advanced/finished a task. Report the RESULT.
+
+    This is the signal Felipe wants — what got done, not that a heartbeat ran.
+    """
+    status_emoji = "✅" if new_status in ("resolved", "closed") else "🟢"
+    status_label = {
+        "resolved": "concluída", "closed": "fechada", "review": "em revisão",
+        "in_progress": "em andamento", "blocked": "bloqueada",
+    }.get(new_status, new_status)
+    title = f" · <b>{_esc(ticket_title)}</b>" if ticket_title else ""
+    text = (
+        f"{status_emoji} <b>{_esc(agent)}</b>{title}\n"
+        f"➡️ {status_label}\n\n"
+        f"{_esc(summary[:600])}"
+    )
+    return _send_telegram(text)
+
+
+def notify_agent_blocked(agent: str, ticket_title: str, reason: str,
+                         needs: str = "") -> bool:
+    """Outcome-driven: an agent is blocked and needs Felipe to intervene."""
+    title = f" · <b>{_esc(ticket_title)}</b>" if ticket_title else ""
+    needs_line = f"\n\n🙋 <b>Preciso de você:</b> {_esc(needs[:300])}" if needs else ""
+    text = (
+        f"🔴 <b>{_esc(agent)}</b> bloqueado{title}\n\n"
+        f"{_esc(reason[:400])}"
+        f"{needs_line}"
+    )
+    return _send_telegram(text)
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).strftime("%H:%M UTC")
 
