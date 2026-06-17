@@ -3,7 +3,6 @@ import { useNavigate } from 'react-router-dom'
 import {
   AlertTriangle,
   ArrowDown,
-  ArrowRight,
   ArrowUp,
   CheckCircle,
   Clock,
