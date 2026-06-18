@@ -48,20 +48,24 @@ def _next_ticket(conn) -> sqlite3.Row | None:
 
     Prefers tickets linked to an active goal, then priority_rank, then age.
     """
-    # Only 'open' tickets — once an agent moves a ticket to in_progress/review/
-    # resolved it leaves the queue, so the orchestrator never reprocesses the same
-    # ticket in a loop. Tickets that stall in in_progress are for a human to nudge.
+    # Advance the board: 'open' first, then 'review', then 'in_progress' (push them
+    # toward resolved). Anti-loop guard: skip tickets touched in the last 15 min, so
+    # a ticket that stays in_progress isn't hammered every cycle. 'blocked' is never
+    # auto-processed — it waits for the human.
     return conn.execute(
         """
         SELECT t.id, t.title, t.assignee_agent, t.priority, t.goal_id
         FROM tickets t
         LEFT JOIN goals g ON g.id = t.goal_id
-        WHERE t.status = 'open'
+        WHERE t.status IN ('open', 'review', 'in_progress')
           AND t.locked_at IS NULL
           AND t.assignee_agent IS NOT NULL
           AND t.assignee_agent NOT IN ('system')
+          AND (t.updated_at IS NULL
+               OR t.updated_at < datetime('now', '-15 minutes'))
         ORDER BY
           CASE WHEN g.status = 'active' THEN 0 ELSE 1 END,
+          CASE t.status WHEN 'open' THEN 0 WHEN 'review' THEN 1 ELSE 2 END,
           COALESCE(t.priority_rank, 0) DESC,
           t.created_at ASC
         LIMIT 1
