@@ -76,7 +76,7 @@ heartbeats:
   handler: plugin_integration_health.tick
 - id: nexus-orchestrator
   agent: system
-  interval_seconds: 1800
+  interval_seconds: 300
   max_turns: 0
   timeout_seconds: 120
   lock_timeout_seconds: 600
