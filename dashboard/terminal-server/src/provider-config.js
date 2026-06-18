@@ -26,6 +26,62 @@ const ALLOWED_ENV_VARS = new Set([
   'CLOUD_ML_REGION',
 ]);
 
+// providers.json stores API keys as "[REDACTED]" placeholders; the real secrets
+// live in .env. The terminal-server doesn't load dotenv, so read them here and
+// swap placeholders for the real value — otherwise openclaude gets a bogus key
+// and every request 401s.
+const _SECRET_KEYS = ['OPENAI_API_KEY', 'NVIDIA_API_KEY', 'GEMINI_API_KEY', 'ANTHROPIC_API_KEY', 'CODEX_API_KEY'];
+
+function _isPlaceholderSecret(v) {
+  return !v || /redact/i.test(v) || v.trim().startsWith('[');
+}
+
+let _envSecretsCache = null;
+function _readEnvSecrets() {
+  if (_envSecretsCache) return _envSecretsCache;
+  const out = {};
+  try {
+    const txt = fs.readFileSync(path.join(WORKSPACE_ROOT, '.env'), 'utf8');
+    for (const line of txt.split('\n')) {
+      const t = line.trim();
+      if (!t || t.startsWith('#') || !t.includes('=')) continue;
+      const i = t.indexOf('=');
+      out[t.slice(0, i).trim()] = t.slice(i + 1).trim();
+    }
+  } catch (_) { /* no .env file */ }
+  _envSecretsCache = out;
+  return out;
+}
+
+// For each secret, the .env may hold it under a related name (NVIDIA uses an
+// OpenAI-compatible endpoint, so OPENAI_API_KEY is fed by NVIDIA_API_KEY).
+const _SECRET_FALLBACKS = {
+  OPENAI_API_KEY: ['OPENAI_API_KEY', 'NVIDIA_API_KEY'],
+  NVIDIA_API_KEY: ['NVIDIA_API_KEY', 'OPENAI_API_KEY'],
+  GEMINI_API_KEY: ['GEMINI_API_KEY'],
+  ANTHROPIC_API_KEY: ['ANTHROPIC_API_KEY'],
+  CODEX_API_KEY: ['CODEX_API_KEY'],
+};
+
+function _resolveSecrets(envObj) {
+  const secrets = _readEnvSecrets();
+  const lookup = (cands) => {
+    for (const c of cands) {
+      const v = process.env[c] || secrets[c];
+      if (v && !_isPlaceholderSecret(v)) return v;
+    }
+    return null;
+  };
+  for (const k of _SECRET_KEYS) {
+    if (k in envObj && _isPlaceholderSecret(envObj[k])) {
+      const real = lookup(_SECRET_FALLBACKS[k] || [k]);
+      if (real) envObj[k] = real;
+      else delete envObj[k]; // no real value → drop placeholder so it can't 401
+    }
+  }
+  return envObj;
+}
+
 function _normalizeModel(model) {
   return (model || '').trim().toLowerCase();
 }
@@ -86,7 +142,7 @@ function loadProviderConfig() {
       )
     );
 
-    const envVars = sanitizeEnv(provider.env_vars || {});
+    const envVars = _resolveSecrets(sanitizeEnv(provider.env_vars || {}));
 
     if (active === 'codex_auth' && 'OPENAI_API_KEY' in envVars) {
       delete envVars.OPENAI_API_KEY;
@@ -120,7 +176,7 @@ function loadProviderConfig() {
     for (const [id, p] of Object.entries(config.providers || {})) {
       let pCliCommand = p.cli_command || 'claude';
       if (!ALLOWED_CLI.has(pCliCommand)) pCliCommand = 'claude';
-      const pEnv = sanitizeEnv(p.env_vars || {});
+      const pEnv = _resolveSecrets(sanitizeEnv(p.env_vars || {}));
       if (id === 'codex_auth' && 'OPENAI_API_KEY' in pEnv) delete pEnv.OPENAI_API_KEY;
       if (!pEnv.NVIDIA_API_KEY && pEnv.OPENAI_API_KEY && /\bnvidia\.com\b/i.test(pEnv.OPENAI_BASE_URL || '')) {
         pEnv.NVIDIA_API_KEY = pEnv.OPENAI_API_KEY;

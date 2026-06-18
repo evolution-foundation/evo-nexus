@@ -143,6 +143,186 @@ def parse_agent_outcome(output) -> dict | None:
     return None
 
 
+_OUTCOME_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "action": {"type": "string", "enum": ["work", "skip", "blocked"]},
+        "ticket_id": {"type": ["string", "null"]},
+        "result": {"type": "string"},
+        "new_status": {"type": ["string", "null"]},
+        "blocked_reason": {"type": "string"},
+        "needs": {"type": "string"},
+    },
+    "required": ["action", "result"],
+}
+
+# Large models that reliably honor response_format=json_schema with good content.
+# A short chain so a 429 on one rotates to the next (NVIDIA is free; the limit is
+# rate, not cost — see the model-chain rationale).
+_STRUCTURER_MODELS = [
+    "nvidia/nemotron-3-ultra-550b-a55b",
+    "qwen/qwen3.5-397b-a17b",
+    "qwen/qwen3.5-122b-a10b",
+]
+
+
+def _nvidia_key_and_base() -> tuple[str, str]:
+    import os
+    key = os.environ.get("NVIDIA_API_KEY") or os.environ.get("OPENAI_API_KEY") or ""
+    base = "https://integrate.api.nvidia.com/v1"
+    if not key:
+        # last resort: read NVIDIA_API_KEY from .env at repo root
+        try:
+            from pathlib import Path
+            env = Path(__file__).resolve().parents[2] / ".env"
+            for line in env.read_text(encoding="utf-8").splitlines():
+                if line.strip().startswith("NVIDIA_API_KEY="):
+                    key = line.split("=", 1)[1].strip()
+                    break
+        except Exception:  # noqa: BLE001
+            pass
+    return key, base
+
+
+def structure_via_nvidia(agent_output, agent: str, conn) -> dict | None:
+    """Structure the agent's report into outcome JSON using NVIDIA (free).
+
+    The executor models run via the agentic CLI and rarely emit clean JSON. This
+    makes a single, cheap completion call with response_format=json_schema (strict)
+    on a large model, which guarantees structurally-valid JSON. Free — keeps the
+    whole loop on NVIDIA. Falls through to Claude only if every NVIDIA model fails.
+    """
+    import json as _json
+    import urllib.request
+    import urllib.error
+
+    report = _unwrap_provider_output(str(agent_output or "")).strip()
+    if not report:
+        return None
+    key, base = _nvidia_key_and_base()
+    if not key:
+        return None
+
+    rows = conn.execute(
+        "SELECT id, title FROM tickets WHERE assignee_agent = ? "
+        "AND status IN ('open','in_progress') ORDER BY priority_rank DESC LIMIT 10",
+        (agent,),
+    ).fetchall()
+    tickets = [{"id": (r["id"] if hasattr(r, "keys") else r[0]),
+                "title": (r["title"] if hasattr(r, "keys") else r[1])} for r in rows]
+
+    prompt = (
+        "Converta o relatório de um agente em um JSON de outcome.\n"
+        f"Tickets atribuídos ao agente: {_json.dumps(tickets, ensure_ascii=False)}\n\n"
+        f"Relatório do agente:\n{report[:4000]}\n\n"
+        "Regras:\n"
+        "- action='work' se o agente ENTREGOU ou avançou algo concreto (existe um "
+        "resultado). Defina new_status: 'resolved' se concluiu, 'review' se precisa "
+        "revisão, 'in_progress' se avançou parcialmente.\n"
+        "- action='blocked' se depende de algo que só o humano fornece (credencial, "
+        "acesso, dado, decisão). Preencha blocked_reason e needs.\n"
+        "- action='skip' SOMENTE se nada acionável foi feito.\n"
+        "- result: 1 frase em pt-BR com o resultado concreto. ticket_id: o id tratado."
+    )
+    body = {
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.2,
+        "max_tokens": 600,
+        "response_format": {"type": "json_schema",
+                            "json_schema": {"name": "outcome", "schema": _OUTCOME_SCHEMA,
+                                            "strict": True}},
+    }
+    for model in _STRUCTURER_MODELS:
+        body["model"] = model
+        try:
+            req = urllib.request.Request(
+                base + "/chat/completions",
+                data=_json.dumps(body).encode("utf-8"),
+                headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=90) as resp:
+                data = _json.loads(resp.read().decode("utf-8"))
+            content = (data.get("choices") or [{}])[0].get("message", {}).get("content")
+            if content:
+                parsed = _json.loads(content)
+                if isinstance(parsed, dict) and "action" in parsed:
+                    return parsed
+        except urllib.error.HTTPError as e:
+            if e.code == 429:
+                continue  # rate-limited → next model
+            continue
+        except Exception:  # noqa: BLE001
+            continue
+    return None
+
+
+def structure_via_claude(agent_output, agent: str, conn) -> dict | None:
+    """Hybrid fallback: NVIDIA executes (free, heavy), Claude structures (cheap).
+
+    The NVIDIA models do the actual work but often fail to emit the outcome JSON
+    reliably (they narrate, hit max turns, or answer generically). When the raw
+    parse fails, we ask the native `claude` CLI (Anthropic subscription) to turn
+    the agent's report into the outcome JSON — one turn, no tools, ~hundreds of
+    tokens, so it barely touches the Anthropic quota. Returns the outcome dict or
+    None if Claude is unavailable / also fails.
+    """
+    import os
+    import shutil
+    import subprocess
+
+    claude_bin = shutil.which("claude")
+    if not claude_bin:
+        return None
+
+    report = _unwrap_provider_output(str(agent_output or "")).strip()
+    if not report:
+        return None
+
+    # Inbox the agent could have acted on (id + title), so Claude can pick ticket_id
+    rows = conn.execute(
+        "SELECT id, title FROM tickets WHERE assignee_agent = ? "
+        "AND status IN ('open','in_progress') ORDER BY priority_rank DESC LIMIT 10",
+        (agent,),
+    ).fetchall()
+    tickets = []
+    for r in rows:
+        try:
+            tickets.append({"id": r["id"], "title": r["title"]})
+        except (TypeError, KeyError, IndexError):
+            tickets.append({"id": r[0], "title": r[1]})
+
+    prompt = (
+        "Você converte o relatório de um agente em um único JSON de outcome. "
+        "Tickets atribuídos ao agente (escolha o ticket_id correto):\n"
+        f"{json.dumps(tickets, ensure_ascii=False)}\n\n"
+        f"Relatório do agente:\n{report[:4000]}\n\n"
+        "Responda SOMENTE com este JSON (uma linha, nada antes/depois):\n"
+        '{"action":"work"|"skip"|"blocked","ticket_id":"<id ou null>",'
+        '"result":"<o que o agente concluiu, 1 frase pt-BR>",'
+        '"new_status":"in_progress"|"review"|"resolved"|null,'
+        '"blocked_reason":"<se blocked>","needs":"<se blocked, o que precisa do humano>"}\n'
+        "Regras: action=work se o agente entregou/avançou algo; blocked se ele "
+        "depende de dado/credencial/decisão humana; skip se nada foi feito."
+    )
+
+    # Clean env so the `claude` CLI uses the Anthropic subscription, not the
+    # NVIDIA/OpenAI override vars that may be set for the rest of the workspace.
+    env = {k: v for k, v in os.environ.items()
+           if not (k.startswith("OPENAI_") or k.startswith("CLAUDE_CODE_USE_")
+                   or k in ("ANTHROPIC_BASE_URL", "NVIDIA_API_KEY"))}
+    try:
+        proc = subprocess.run(
+            [claude_bin, "--print", "--output-format", "json",
+             "--max-turns", "1", "--tools", "", "--", prompt],
+            capture_output=True, text=True, timeout=90, env=env,
+        )
+    except (subprocess.TimeoutExpired, Exception):  # noqa: BLE001
+        return None
+    if proc.returncode != 0:
+        return None
+    return parse_agent_outcome(proc.stdout)
+
+
 def _ticket_title(ticket_id: str, conn) -> str:
     row = conn.execute("SELECT title FROM tickets WHERE id = ?", (ticket_id,)).fetchone()
     if not row:
@@ -198,8 +378,13 @@ def apply_outcome(heartbeat_id: str, agent: str, result: dict, conn) -> dict | N
     raw_output = result.get("output") or result.get("result") or result.get("handler_result")
     outcome = parse_agent_outcome(raw_output)
     if not outcome:
-        # No structured outcome → treat as a silent no-op (no more spam).
-        return None
+        # NVIDIA executed but didn't emit clean JSON → structure it. Try NVIDIA
+        # first (free, json_schema-forced), then Claude as a last resort.
+        outcome = structure_via_nvidia(raw_output, agent, conn)
+    if not outcome:
+        outcome = structure_via_claude(raw_output, agent, conn)
+    if not outcome:
+        return None  # nobody could structure it → silent no-op (no spam)
 
     action = str(outcome.get("action", "")).strip().lower()
     ticket_id = outcome.get("ticket_id") or None
