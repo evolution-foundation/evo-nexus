@@ -333,15 +333,48 @@ def _ticket_title(ticket_id: str, conn) -> str:
         return (row[0] if row[0] else ticket_id)
 
 
+def _advance_goal_for_ticket(ticket_id: str, old_status: str, new_status: str, conn) -> None:
+    """When a ticket linked to a goal becomes resolved/closed, advance the goal.
+
+    This is the integration that was missing: the orchestrator moves *tickets*,
+    but goal progress is tracked on the goal counter. Increment once, on the real
+    transition into a terminal status (idempotent — the orchestrator only acts on
+    'open' tickets so a ticket resolves once).
+    """
+    terminal = ("resolved", "closed")
+    if new_status not in terminal or old_status in terminal:
+        return
+    row = conn.execute("SELECT goal_id FROM tickets WHERE id = ?", (ticket_id,)).fetchone()
+    goal_id = (row["goal_id"] if row and hasattr(row, "keys") else (row[0] if row else None))
+    if not goal_id:
+        return
+    g = conn.execute("SELECT current_value, target_value, status FROM goals WHERE id = ?",
+                     (goal_id,)).fetchone()
+    if not g:
+        return
+    cur = (g["current_value"] if hasattr(g, "keys") else g[0]) or 0
+    target = (g["target_value"] if hasattr(g, "keys") else g[1]) or 0
+    gstatus = (g["status"] if hasattr(g, "keys") else g[2])
+    new_val = cur + 1
+    achieved = gstatus == "active" and target and new_val >= target
+    conn.execute(
+        "UPDATE goals SET current_value = ?, status = ?, updated_at = ? WHERE id = ?",
+        (new_val, "achieved" if achieved else gstatus, _now_iso(), goal_id),
+    )
+
+
 def _move_ticket(ticket_id: str, new_status: str, agent: str, comment: str, conn) -> None:
     """Update ticket status + log a comment and an activity event."""
     now = _now_iso()
+    prev = conn.execute("SELECT status FROM tickets WHERE id = ?", (ticket_id,)).fetchone()
+    old_status = (prev["status"] if prev and hasattr(prev, "keys") else (prev[0] if prev else ""))
     resolved_at = now if new_status in ("resolved", "closed") else None
     conn.execute(
         "UPDATE tickets SET status = ?, updated_at = ?, "
         "resolved_at = COALESCE(?, resolved_at) WHERE id = ?",
         (new_status, now, resolved_at, ticket_id),
     )
+    _advance_goal_for_ticket(ticket_id, old_status, new_status, conn)
     if comment:
         import uuid
         conn.execute(
