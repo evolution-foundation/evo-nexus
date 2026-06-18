@@ -142,7 +142,7 @@ def step3_query_inbox(agent: str, conn) -> list:
         rows = conn.execute(
             """SELECT id, title, description, priority, status, goal_id, project_id, created_at
                FROM tickets
-               WHERE assignee_agent = ? AND status IN ('open','in_progress')
+               WHERE assignee_agent = ? AND status IN ('open','in_progress','review')
                AND locked_at IS NULL
                ORDER BY
                  CASE priority
