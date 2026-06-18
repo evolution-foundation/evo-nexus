@@ -507,6 +507,40 @@ def format_chat_memory(messages: list[dict], *, current_speaker: str | None = No
     return memory[-MAX_MEMORY_CHARS:]
 
 
+_URL_RE = re.compile(r"https?://[^\s)>\]\"']+")
+
+
+def fetch_url_context(text: str, max_urls: int = 3, max_chars: int = 6000) -> str:
+    """Fetch the content of URLs mentioned in the message so the model can 'read'
+    them. The bot talks to NVIDIA via plain chat completions (no browser tool), so
+    without this it always answers 'não consigo navegar'. We fetch server-side and
+    inject the text."""
+    urls = []
+    for u in _URL_RE.findall(text or ""):
+        u = u.rstrip(".,;")
+        if u not in urls:
+            urls.append(u)
+        if len(urls) >= max_urls:
+            break
+    if not urls:
+        return ""
+    blocks = []
+    for u in urls:
+        try:
+            req = urllib.request.Request(u, headers={"User-Agent": "Mozilla/5.0 (EvoNexus)"})
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                ctype = resp.headers.get("Content-Type", "")
+                raw = resp.read(300000).decode("utf-8", "replace")
+            if "html" in ctype.lower() or raw.lstrip()[:1] == "<":
+                raw = re.sub(r"<(script|style)\b.*?</\1>", " ", raw, flags=re.DOTALL | re.I)
+                raw = re.sub(r"<[^>]+>", " ", raw)
+                raw = re.sub(r"\s+", " ", raw)
+            blocks.append(f"[Conteudo de {u}]\n{raw.strip()[:max_chars]}")
+        except Exception as e:  # noqa: BLE001
+            blocks.append(f"[Falha ao acessar {u}: {e}]")
+    return "\n\n".join(blocks)
+
+
 def build_prompt(chat_id: str, prompt_text: str, *, speaker: str | None = None) -> str:
     memory = format_chat_memory(load_chat_memory(chat_id), current_speaker=speaker)
     clean_prompt = redact_secrets(prompt_text.strip())
@@ -514,6 +548,7 @@ def build_prompt(chat_id: str, prompt_text: str, *, speaker: str | None = None) 
         "Voce e o runtime Telegram do EvoNexus, operando dentro do workspace local.",
         "Responda em portugues, curto e objetivo.",
         "Nao diga que nao tem acesso a ferramentas de forma generica.",
+        "Quando a mensagem contiver URLs, o conteudo delas ja foi buscado e esta abaixo em 'Conteudo das URLs' — USE esse conteudo; nunca diga que nao consegue navegar.",
         "Quando o usuario pedir uma acao, tente executar pelo workspace/integracoes disponiveis.",
         "Se houver bloqueio real, responda somente o bloqueio concreto: credencial, arquivo, permissao, endpoint ou erro.",
         "Se a mensagem veio de audio transcrito, use a transcricao apenas como entrada interna; nao repita a transcricao ao usuario.",
@@ -522,6 +557,9 @@ def build_prompt(chat_id: str, prompt_text: str, *, speaker: str | None = None) 
         workspace_context(),
         "",
     ]
+    url_ctx = fetch_url_context(clean_prompt)
+    if url_ctx:
+        parts.extend(["Conteudo das URLs mencionadas:", url_ctx, ""])
     if memory:
         parts.extend([
             "Memoria recente da conversa:",
@@ -536,9 +574,14 @@ def build_prompt(chat_id: str, prompt_text: str, *, speaker: str | None = None) 
 
 
 def is_provider_question(text: str) -> bool:
+    # Only a SHORT message can be a "which model are you using?" question. Pasted
+    # docs (llms.txt, etc.) mention "api/model/nvidia/usar" and were wrongly caught
+    # here, making the bot reply the provider status instead of answering.
+    if len(text.strip()) > 80:
+        return False
     lower = text.lower()
-    provider_terms = ("provider", "modelo", "model", "llm", "api", "nvidia", "codex", "openai")
-    question_terms = ("qual", "quem", "usando", "rodando", "usa", "ta com", "tá com")
+    provider_terms = ("provider", "modelo", "model", "llm", "nvidia", "codex", "openai")
+    question_terms = ("qual", "quem", "usando", "rodando", "ta com", "tá com")
     return any(term in lower for term in provider_terms) and any(term in lower for term in question_terms)
 
 
