@@ -83,10 +83,9 @@ heartbeats:
   wake_triggers:
   - interval
   - manual
-  # Disabled until a reliable model is chosen for agent execution — the NVIDIA
-  # "flash" chain narrates intent instead of emitting the outcome JSON. See the
-  # decision-prompt contract in heartbeat_runner.step6_assemble_context.
-  enabled: false
+  # Hybrid execution: NVIDIA agents do the work (free), then structure_via_nvidia
+  # forces the outcome JSON via response_format=json_schema (heartbeat_outcome.py).
+  enabled: true
   goal_id: null
   required_secrets: []
   decision_prompt: ''
