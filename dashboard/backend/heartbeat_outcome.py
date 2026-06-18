@@ -436,6 +436,7 @@ def apply_outcome(heartbeat_id: str, agent: str, result: dict, conn) -> dict | N
         return {
             "kind": "blocked",
             "agent": agent,
+            "ticket_id": ticket_id or "",
             "ticket_title": title,
             "reason": reason,
             "needs": needs,

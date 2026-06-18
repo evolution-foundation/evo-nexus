@@ -890,7 +890,8 @@ def _send_heartbeat_notification(heartbeat_id: str, agent: str, result: dict, co
     elif kind == "blocked":
         from notifications import notify_agent_blocked
         notify_agent_blocked(spec["agent"], spec.get("ticket_title", ""),
-                            spec.get("reason", ""), spec.get("needs", ""))
+                            spec.get("reason", ""), spec.get("needs", ""),
+                            ticket_id=spec.get("ticket_id", ""))
     elif kind == "tech_fail":
         from notifications import notify_heartbeat_failure
         notify_heartbeat_failure(

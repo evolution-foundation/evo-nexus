@@ -768,6 +768,50 @@ def save_offset(offset: int) -> None:
     DIRECT_STATE.write_text(json.dumps({"offset": offset}, indent=2) + "\n", encoding="utf-8")
 
 
+def unblock_ticket(ticket_id: str, reply_text: str, author: str) -> str:
+    """Ponte Telegram→ticket: anexa a resposta do humano como comentário e reabre
+    o ticket (blocked→open) para o orquestrador retomar. Cada round da entrevista
+    é um ciclo: agente pergunta (blocked) → humano responde (reply) → reabre."""
+    import sqlite3
+    import uuid
+    import datetime
+    db = ROOT / "dashboard" / "data" / "evonexus.db"
+    if not db.exists():
+        return "Banco de tickets não encontrado."
+    try:
+        c = sqlite3.connect(str(db))
+        c.row_factory = sqlite3.Row
+        row = c.execute(
+            "SELECT id, title, assignee_agent FROM tickets WHERE id = ? OR id LIKE ?",
+            (ticket_id, ticket_id + "%"),
+        ).fetchone()
+        if not row:
+            c.close()
+            return f"Ticket {ticket_id[:8]} não encontrado."
+        tid = row["id"]
+        now = datetime.datetime.now(datetime.timezone.utc)
+        # updated_at no passado para o orquestrador reprocessar já no próximo ciclo
+        stale = (now - datetime.timedelta(minutes=20)).isoformat()
+        c.execute(
+            "INSERT INTO ticket_comments (id, ticket_id, author, body, mentions, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (str(uuid.uuid4()), tid, f"human:{author}", reply_text, "[]", now.isoformat()),
+        )
+        c.execute(
+            "INSERT INTO ticket_activity (id, ticket_id, actor, action, payload, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (str(uuid.uuid4()), tid, f"human:{author}", "status_changed",
+             json.dumps({"new_status": "open", "via": "telegram_reply"}), now.isoformat()),
+        )
+        c.execute("UPDATE tickets SET status='open', updated_at=? WHERE id=?", (stale, tid))
+        c.commit()
+        c.close()
+        return (f"✅ Desbloqueado: {row['title'][:60]}\n"
+                f"Sua resposta foi anexada — {row['assignee_agent']} retoma na próxima rodada.")
+    except Exception as e:  # noqa: BLE001
+        return f"Erro ao desbloquear: {e}"
+
+
 def main() -> int:
     token = read_telegram_token()
     me = api(token, "getMe")
@@ -799,6 +843,15 @@ def main() -> int:
                     continue
                 if not allowed_chat(chat_id, from_id):
                     log(f"dropped non-allowlisted chat={chat_id}")
+                    continue
+                # Ponte de tickets: reply a uma notificação de bloqueio (#tkt:<id>)
+                # anexa a resposta e reabre o ticket para o orquestrador retomar.
+                reply_src = (message.get("reply_to_message") or {}).get("text") or ""
+                m_tkt = re.search(r"#tkt:([0-9a-fA-F-]+)", reply_src)
+                if m_tkt and text:
+                    result = unblock_ticket(m_tkt.group(1), text, sender_name or "humano")
+                    api(token, "sendMessage", {"chat_id": chat_id, "text": result})
+                    log(f"ticket-unblock chat={chat_id} ticket={m_tkt.group(1)[:8]}")
                     continue
                 audio_file_id = message_audio_file_id(message)
                 if audio_file_id:

@@ -121,14 +121,22 @@ def notify_agent_result(agent: str, ticket_title: str, new_status: str,
 
 
 def notify_agent_blocked(agent: str, ticket_title: str, reason: str,
-                         needs: str = "") -> bool:
-    """Outcome-driven: an agent is blocked and needs Felipe to intervene."""
+                         needs: str = "", ticket_id: str = "") -> bool:
+    """Outcome-driven: an agent is blocked and needs Felipe to intervene.
+
+    The ticket id is embedded as a marker so a Telegram REPLY to this message is
+    routed back to the ticket (telegram_provider_bot unblocks it with the reply).
+    """
     title = f" · <b>{_esc(ticket_title)}</b>" if ticket_title else ""
     needs_line = f"\n\n🙋 <b>Preciso de você:</b> {_esc(needs[:300])}" if needs else ""
+    hint = "\n\n<i>Responda (reply) esta mensagem para desbloquear.</i>" if ticket_id else ""
+    marker = f"\n#tkt:{ticket_id}" if ticket_id else ""
     text = (
         f"🔴 <b>{_esc(agent)}</b> bloqueado{title}\n\n"
         f"{_esc(reason[:400])}"
         f"{needs_line}"
+        f"{hint}"
+        f"{marker}"
     )
     return _send_telegram(text)
 

@@ -61,7 +61,8 @@ def _next_ticket(conn) -> sqlite3.Row | None:
           AND t.locked_at IS NULL
           AND t.assignee_agent IS NOT NULL
           AND t.assignee_agent NOT IN ('system')
-          AND (t.updated_at IS NULL
+          AND (t.status = 'open'
+               OR t.updated_at IS NULL
                OR t.updated_at < datetime('now', '-15 minutes'))
         ORDER BY
           CASE WHEN g.status = 'active' THEN 0 ELSE 1 END,
