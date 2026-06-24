@@ -30,6 +30,7 @@ dependencies = [
     "watchdog>=4.0",
     "sqlparse>=0.4,<1.0",
     "jsonschema>=4.21",
+    "python-socketio[client]>=5.11",
 ]
 
 [project.scripts]
