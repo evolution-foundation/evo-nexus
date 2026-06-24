@@ -291,6 +291,10 @@ PUBLIC_PATHS = {
     "/api/version",
     "/api/version/check",
     "/api/agents/active",
+    # Traefik forwardauth probe — validates the forwarded session cookie and
+    # returns 200 (allow) or 401 (deny). Must be PUBLIC_PATHS so this
+    # middleware doesn't reject it before the handler resolves the session.
+    "/api/auth/check",
 }
 
 def _try_api_token_auth():

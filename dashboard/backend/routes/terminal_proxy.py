@@ -1,11 +1,11 @@
 """Proxy HTTP and WebSocket traffic to the local terminal-server.
 
 The terminal-server (Node, dashboard/terminal-server/bin/server.js) binds to
-a random port (commonly 32352) on 0.0.0.0. Browsers connecting to the
-dashboard from a different host than `localhost` historically had to hit
+a random port (commonly 32352) on 127.0.0.1. Browsers connecting to the
+dashboard from a different host than ``localhost`` historically had to hit
 that port directly, which fails in three common scenarios:
 
-1. Browsing via SSH tunnel (`ssh -L 8080:localhost:8080`) — only port 8080
+1. Browsing via SSH tunnel (``ssh -L 8080:localhost:8080``) — only port 8080
    is forwarded, the random terminal-server port is not.
 2. Browsing via a public tunnel (Tailscale Funnel, Cloudflare Tunnel, an
    nginx reverse proxy on a VPS) — only the dashboard port is exposed.
@@ -19,6 +19,12 @@ expose.
 
 This module is intentionally minimal — it forwards bytes both ways for
 HTTP and WebSocket; it does not inspect or rewrite payloads.
+
+Security: the WebSocket proxy appends the shared ``TERMINAL_WS_TOKEN`` as a
+``?token=`` query param when connecting to the upstream terminal-server.  This
+lets the terminal-server's ``verifyClient`` hook reject unauthenticated
+WebSocket upgrades even when coming through the Traefik route (defence-in-
+depth layer 2).  The token never reaches the browser.
 """
 
 from __future__ import annotations
@@ -26,6 +32,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
+from urllib.parse import quote
 
 import requests
 from flask import Blueprint, Response, request, stream_with_context
@@ -41,6 +48,11 @@ TERMINAL_HOST = os.environ.get("TERMINAL_SERVER_HOST", "127.0.0.1")
 TERMINAL_PORT = int(os.environ.get("TERMINAL_SERVER_PORT", "32352"))
 TERMINAL_HTTP_BASE = f"http://{TERMINAL_HOST}:{TERMINAL_PORT}"
 TERMINAL_WS_BASE = f"ws://{TERMINAL_HOST}:{TERMINAL_PORT}"
+
+# Shared secret for terminal-server WebSocket auth (defence-in-depth layer 2).
+# The proxy appends this as ?token=<value> when connecting upstream; the
+# terminal-server's verifyClient rejects connections without a valid token.
+_TERMINAL_WS_TOKEN = os.environ.get("TERMINAL_WS_TOKEN", "").strip()
 
 # Hop-by-hop headers that must not be forwarded (RFC 7230 §6.1).
 _HOP_BY_HOP = frozenset(
@@ -153,7 +165,11 @@ def register_websocket_proxy(sock) -> None:
                 pass
             return
 
-        target = f"{TERMINAL_WS_BASE}/ws"
+        # Append the shared token so the terminal-server's verifyClient
+        # accepts this connection (defence-in-depth — auth already enforced
+        # above via current_user.is_authenticated).
+        token_qs = f"?token={quote(_TERMINAL_WS_TOKEN, safe='')}" if _TERMINAL_WS_TOKEN else ""
+        target = f"{TERMINAL_WS_BASE}/ws{token_qs}"
         try:
             upstream = create_connection(target, timeout=10)
         except Exception as exc:

@@ -47,6 +47,18 @@ def _as_text(value) -> str:
     return "" if value is None else str(value)
 
 
+# ── ForwardAuth check — used by Traefik forwardauth middleware ───────────────
+# Returns 200 if the current session is authenticated, 401 otherwise.
+# Traefik forwardauth: any 2xx = allow, any other status = deny (returns the
+# response body + status directly to the client).
+# This endpoint must be in PUBLIC_PATHS so auth_middleware doesn't block it.
+@bp.route("/api/auth/check")
+def auth_check():
+    if current_user.is_authenticated:
+        return "", 200
+    return jsonify({"error": "Authentication required"}), 401
+
+
 # ── Setup (first run only) ───────────────────────────
 
 @bp.route("/api/auth/needs-setup")

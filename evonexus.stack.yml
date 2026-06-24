@@ -47,6 +47,11 @@ services:
       - EVONEXUS_PORT=8080
       - TERMINAL_SERVER_PORT=32352
       - FORWARDED_ALLOW_IPS=*
+      ## Shared secret for terminal-server WebSocket auth (defence-in-depth).
+      ## Set this to a random 64-char hex string (e.g. openssl rand -hex 32).
+      ## Both the dashboard proxy and the terminal-server must use the same value.
+      ## If unset, token verification is disabled (dev mode only).
+      - TERMINAL_WS_TOKEN=${TERMINAL_WS_TOKEN}
 
     deploy:
       placement:
@@ -71,14 +76,21 @@ services:
 
         ## Terminal-server router — Node PTY (HTTP + WebSocket) on port 32352.
         ## Higher priority (10) so /terminal/* wins over the primary router.
-        ## The stripprefix middleware removes /terminal before forwarding
-        ## because the terminal-server exposes /api/... at its root.
+        ##
+        ## Auth chain: forwardauth → /api/auth/check (Flask, port 8080).
+        ## Traefik forwards the original request headers (including the session
+        ## cookie) to Flask. Flask returns 200 (authenticated) or 401 (denied).
+        ## On 401, Traefik returns the Flask response directly to the client
+        ## instead of forwarding to the terminal-server.
+        ## The stripprefix middleware then removes /terminal before forwarding.
         - traefik.http.routers.evonexus_terminal.rule=Host(`evonexus.example.com`) && PathPrefix(`/terminal`)
         - traefik.http.routers.evonexus_terminal.entrypoints=websecure
         - traefik.http.routers.evonexus_terminal.priority=10
         - traefik.http.routers.evonexus_terminal.tls.certresolver=letsencryptresolver
         - traefik.http.routers.evonexus_terminal.service=evonexus_terminal
-        - traefik.http.routers.evonexus_terminal.middlewares=evonexus_terminal_strip
+        - traefik.http.routers.evonexus_terminal.middlewares=evonexus_terminal_auth,evonexus_terminal_strip
+        - traefik.http.middlewares.evonexus_terminal_auth.forwardauth.address=http://127.0.0.1:8080/api/auth/check
+        - traefik.http.middlewares.evonexus_terminal_auth.forwardauth.authResponseHeaders=X-User-Id,X-User-Role
         - traefik.http.middlewares.evonexus_terminal_strip.stripprefix.prefixes=/terminal
         - traefik.http.services.evonexus_terminal.loadbalancer.server.port=32352
         - traefik.http.services.evonexus_terminal.loadbalancer.passHostHeader=true
