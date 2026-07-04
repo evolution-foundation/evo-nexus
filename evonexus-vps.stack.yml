@@ -20,6 +20,7 @@ services:
     volumes:
       - evonexus_config:/workspace/config
       - evonexus_workspace:/workspace/workspace
+      - evonexus_backups:/workspace/backups
       - evonexus_dashboard_data:/workspace/dashboard/data
       - evonexus_memory:/workspace/memory
       - evonexus_adw_logs:/workspace/ADWs/logs
@@ -156,6 +157,7 @@ services:
 volumes:
   evonexus_config:
   evonexus_workspace:
+  evonexus_backups:
   evonexus_dashboard_data:
   evonexus_memory:
   evonexus_adw_logs:

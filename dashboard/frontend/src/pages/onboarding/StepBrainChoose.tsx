@@ -33,12 +33,12 @@ export default function StepBrainChoose({ token, onNext, onBack }: StepBrainChoo
   useEffect(() => {
     if (mode === 'existing') {
       setLoadingRepos(true)
-      api.get('/brain-repo/detect')
+      api.get(`/brain-repo/detect?token=${encodeURIComponent(token)}`)
         .then((data: { repos: Repo[] }) => setRepos(data.repos || []))
         .catch(() => setRepos([]))
         .finally(() => setLoadingRepos(false))
     }
-  }, [mode])
+  }, [mode, token])
 
   const handleSave = async () => {
     setError('')
