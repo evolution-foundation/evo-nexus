@@ -7,6 +7,8 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT = 60  # seconds
+DEFAULT_GIT_USER_NAME = "EvoNexus"
+DEFAULT_GIT_USER_EMAIL = "evonexus@users.noreply.github.com"
 
 
 def _masked_url(url: str, token: str) -> str:
@@ -25,6 +27,27 @@ def _run(cmd: list[str], cwd: Path | None = None, timeout: int = DEFAULT_TIMEOUT
         text=True,
         timeout=timeout,
     )
+
+
+def _ensure_identity(repo_dir: Path) -> None:
+    """Ensure local git author identity exists before commit/tag operations."""
+    name_result = _run(["git", "config", "--get", "user.name"], cwd=repo_dir, timeout=10)
+    if name_result.returncode != 0 or not name_result.stdout.strip():
+        result = _run(["git", "config", "user.name", DEFAULT_GIT_USER_NAME], cwd=repo_dir, timeout=10)
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"git config user.name failed (exit {result.returncode}): "
+                f"stderr={result.stderr[:200]!r}"
+            )
+
+    email_result = _run(["git", "config", "--get", "user.email"], cwd=repo_dir, timeout=10)
+    if email_result.returncode != 0 or not email_result.stdout.strip():
+        result = _run(["git", "config", "user.email", DEFAULT_GIT_USER_EMAIL], cwd=repo_dir, timeout=10)
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"git config user.email failed (exit {result.returncode}): "
+                f"stderr={result.stderr[:200]!r}"
+            )
 
 
 def clone(url: str, token: str, target: Path) -> None:
@@ -56,6 +79,8 @@ def commit_all(repo_dir: Path, message: str) -> bool:
     Returns False if there was nothing to commit (git exits 1 with no staged
     changes), True on success, raises RuntimeError on other failures.
     """
+    _ensure_identity(repo_dir)
+
     add_result = _run(["git", "add", "-A"], cwd=repo_dir)
     if add_result.returncode != 0:
         raise RuntimeError(
@@ -164,6 +189,7 @@ def create_tag(repo_dir: Path, tag: str, message: str, force: bool = False) -> b
     Returns False on failure (never raises).
     """
     try:
+        _ensure_identity(repo_dir)
         cmd = ["git", "tag", "-a", tag, "-m", message]
         if force:
             cmd.insert(2, "-f")
