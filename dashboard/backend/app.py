@@ -457,9 +457,11 @@ with app.app_context():
                 PRIMARY KEY (plugin_slug, handler_path)
             );
             CREATE INDEX IF NOT EXISTS idx_plugins_status ON plugins_installed(status);
-            CREATE INDEX IF NOT EXISTS idx_plugin_audit_plugin ON plugin_audit_log(plugin_id, created_at);
             CREATE INDEX IF NOT EXISTS idx_hook_cb_disabled ON plugin_hook_circuit_state(disabled_until);
         """)
+        _pal_cols = {row[1] for row in _cur.execute("PRAGMA table_info(plugin_audit_log)").fetchall()}
+        if "plugin_id" in _pal_cols:
+            _cur.execute("CREATE INDEX IF NOT EXISTS idx_plugin_audit_plugin ON plugin_audit_log(plugin_id, created_at)")
         _conn.commit()
     # --- End plugins migration ---
 

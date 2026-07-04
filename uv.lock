@@ -617,7 +617,6 @@ dependencies = [
     { name = "flask-sqlalchemy" },
     { name = "google-genai" },
     { name = "jsonschema" },
-    { name = "marker-pdf" },
     { name = "openai" },
     { name = "psycopg2-binary" },
     { name = "pydantic" },
@@ -627,10 +626,18 @@ dependencies = [
     { name = "requests" },
     { name = "rich" },
     { name = "schedule" },
-    { name = "sentence-transformers" },
     { name = "sqlparse" },
     { name = "tiktoken" },
     { name = "watchdog" },
+]
+
+[package.optional-dependencies]
+knowledge-ml = [
+    { name = "marker-pdf" },
+    { name = "sentence-transformers" },
+]
+local-embeddings = [
+    { name = "sentence-transformers" },
 ]
 
 [package.dev-dependencies]
@@ -653,7 +660,7 @@ requires-dist = [
     { name = "flask-sqlalchemy", specifier = ">=3.1" },
     { name = "google-genai", specifier = ">=0.3" },
     { name = "jsonschema", specifier = ">=4.21" },
-    { name = "marker-pdf", specifier = ">=1.6.1" },
+    { name = "marker-pdf", marker = "extra == 'knowledge-ml'", specifier = ">=1.6.1" },
     { name = "openai", specifier = ">=1.0" },
     { name = "psycopg2-binary" },
     { name = "pydantic", specifier = ">=2.0" },
@@ -663,11 +670,13 @@ requires-dist = [
     { name = "requests", specifier = ">=2.31" },
     { name = "rich", specifier = ">=13.0" },
     { name = "schedule", specifier = ">=1.2" },
-    { name = "sentence-transformers", specifier = ">=3.0" },
+    { name = "sentence-transformers", marker = "extra == 'knowledge-ml'", specifier = ">=3.0" },
+    { name = "sentence-transformers", marker = "extra == 'local-embeddings'", specifier = ">=3.0" },
     { name = "sqlparse", specifier = ">=0.4,<1.0" },
     { name = "tiktoken", specifier = ">=0.7" },
     { name = "watchdog", specifier = ">=4.0" },
 ]
+provides-extras = ["knowledge-ml", "local-embeddings"]
 
 [package.metadata.requires-dev]
 dev = [{ name = "pytest", specifier = ">=9.0.3" }]

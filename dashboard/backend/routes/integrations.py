@@ -23,7 +23,7 @@ bp = Blueprint("integrations", __name__)
 WORKSPACE = Path(__file__).resolve().parent.parent.parent.parent
 SKILLS_DIR = WORKSPACE / ".claude" / "skills"
 PLUGINS_DIR = WORKSPACE / "plugins"
-DB_PATH = WORKSPACE / "dashboard" / "data" / "dashboard.db"
+DB_PATH = WORKSPACE / "dashboard" / "data" / "evonexus.db"
 
 #
 # Each entry declares the env vars that must all be set for the integration to

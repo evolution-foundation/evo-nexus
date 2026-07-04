@@ -1,0 +1,169 @@
+## ============================================================================
+## EvoNexus — VPS / Docker Swarm stack
+##
+## Target VPS:
+##   * Traefik already attached to external network_public
+##   * TLS entrypoint: websecure
+##   * Cert resolver: letsencryptresolver
+##   * Public host: nexus.workflowapi.com.br
+##
+## Runtime credentials are configured after first boot through the dashboard UI.
+## This stack intentionally contains no API keys, tokens, or database passwords.
+## ============================================================================
+version: "3.7"
+
+services:
+
+  evonexus_dashboard:
+    image: excarplex/evo-nexus-dashboard:latest
+
+    volumes:
+      - evonexus_config:/workspace/config
+      - evonexus_workspace:/workspace/workspace
+      - evonexus_dashboard_data:/workspace/dashboard/data
+      - evonexus_memory:/workspace/memory
+      - evonexus_adw_logs:/workspace/ADWs/logs
+      - evonexus_agent_memory:/workspace/.claude/agent-memory
+      - evonexus_claude_auth:/root/.claude
+      - evonexus_codex_auth:/root/.codex
+
+    networks:
+      - network_public
+
+    environment:
+      - TZ=America/Sao_Paulo
+      - EVONEXUS_PORT=8080
+      - TERMINAL_SERVER_PORT=32352
+      - FORWARDED_ALLOW_IPS=*
+      - SMTP_DOMAIN=${SMTP_DOMAIN}
+      - SMTP_USERNAME=${SMTP_USERNAME}
+      - SMTP_PASSWORD=${SMTP_PASSWORD}
+      - SMTP_ADDRESS=${SMTP_ADDRESS}
+      - SMTP_PORT=${SMTP_PORT}
+      - SMTP_AUTHENTICATION=${SMTP_AUTHENTICATION}
+      - SMTP_ENABLE_STARTTLS_AUTO=${SMTP_ENABLE_STARTTLS_AUTO}
+
+    deploy:
+      placement:
+        constraints:
+          - node.role == manager
+      resources:
+        limits:
+          cpus: "1"
+          memory: 1024M
+      labels:
+        - traefik.enable=true
+        - traefik.docker.network=network_public
+
+        ## Flask API + React SPA on :8080
+        - traefik.http.routers.evonexus_dashboard.rule=Host(`nexus.workflowapi.com.br`)
+        - traefik.http.routers.evonexus_dashboard.entrypoints=websecure
+        - traefik.http.routers.evonexus_dashboard.priority=1
+        - traefik.http.routers.evonexus_dashboard.tls.certresolver=letsencryptresolver
+        - traefik.http.routers.evonexus_dashboard.service=evonexus_dashboard
+        - traefik.http.services.evonexus_dashboard.loadbalancer.server.port=8080
+        - traefik.http.services.evonexus_dashboard.loadbalancer.passHostHeader=true
+
+        ## Embedded terminal-server on :32352. /terminal is stripped before proxying.
+        - traefik.http.routers.evonexus_terminal.rule=Host(`nexus.workflowapi.com.br`) && PathPrefix(`/terminal`)
+        - traefik.http.routers.evonexus_terminal.entrypoints=websecure
+        - traefik.http.routers.evonexus_terminal.priority=10
+        - traefik.http.routers.evonexus_terminal.tls.certresolver=letsencryptresolver
+        - traefik.http.routers.evonexus_terminal.service=evonexus_terminal
+        - traefik.http.routers.evonexus_terminal.middlewares=evonexus_terminal_strip
+        - traefik.http.middlewares.evonexus_terminal_strip.stripprefix.prefixes=/terminal
+        - traefik.http.services.evonexus_terminal.loadbalancer.server.port=32352
+        - traefik.http.services.evonexus_terminal.loadbalancer.passHostHeader=true
+
+  evonexus_telegram:
+    image: excarplex/evo-nexus-runtime:latest
+    command:
+      - "claude"
+      - "--channels"
+      - "plugin:telegram@claude-plugins-official"
+      - "--dangerously-skip-permissions"
+
+    volumes:
+      - evonexus_config:/workspace/config
+      - evonexus_workspace:/workspace/workspace
+      - evonexus_memory:/workspace/memory
+      - evonexus_adw_logs:/workspace/ADWs/logs
+      - evonexus_agent_memory:/workspace/.claude/agent-memory
+      - evonexus_claude_auth:/root/.claude
+      - evonexus_codex_auth:/root/.codex
+
+    networks:
+      - network_public
+
+    environment:
+      - TZ=America/Sao_Paulo
+      - REQUIRE_ANTHROPIC_KEY=1
+      - SMTP_DOMAIN=${SMTP_DOMAIN}
+      - SMTP_USERNAME=${SMTP_USERNAME}
+      - SMTP_PASSWORD=${SMTP_PASSWORD}
+      - SMTP_ADDRESS=${SMTP_ADDRESS}
+      - SMTP_PORT=${SMTP_PORT}
+      - SMTP_AUTHENTICATION=${SMTP_AUTHENTICATION}
+      - SMTP_ENABLE_STARTTLS_AUTO=${SMTP_ENABLE_STARTTLS_AUTO}
+
+    stdin_open: true
+    tty: true
+
+    deploy:
+      placement:
+        constraints:
+          - node.role == manager
+      resources:
+        limits:
+          cpus: "1"
+          memory: 1024M
+
+  evonexus_scheduler:
+    image: excarplex/evo-nexus-runtime:latest
+    command: ["uv", "run", "python", "scheduler.py"]
+
+    volumes:
+      - evonexus_config:/workspace/config
+      - evonexus_workspace:/workspace/workspace
+      - evonexus_memory:/workspace/memory
+      - evonexus_adw_logs:/workspace/ADWs/logs
+      - evonexus_agent_memory:/workspace/.claude/agent-memory
+      - evonexus_codex_auth:/root/.codex
+
+    networks:
+      - network_public
+
+    environment:
+      - TZ=America/Sao_Paulo
+      - REQUIRE_ANTHROPIC_KEY=1
+      - SMTP_DOMAIN=${SMTP_DOMAIN}
+      - SMTP_USERNAME=${SMTP_USERNAME}
+      - SMTP_PASSWORD=${SMTP_PASSWORD}
+      - SMTP_ADDRESS=${SMTP_ADDRESS}
+      - SMTP_PORT=${SMTP_PORT}
+      - SMTP_AUTHENTICATION=${SMTP_AUTHENTICATION}
+      - SMTP_ENABLE_STARTTLS_AUTO=${SMTP_ENABLE_STARTTLS_AUTO}
+
+    deploy:
+      placement:
+        constraints:
+          - node.role == manager
+      resources:
+        limits:
+          cpus: "1"
+          memory: 1024M
+
+volumes:
+  evonexus_config:
+  evonexus_workspace:
+  evonexus_dashboard_data:
+  evonexus_memory:
+  evonexus_adw_logs:
+  evonexus_agent_memory:
+  evonexus_claude_auth:
+  evonexus_codex_auth:
+
+networks:
+  network_public:
+    external: true
+    name: network_public

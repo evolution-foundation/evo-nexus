@@ -54,7 +54,7 @@ WORKDIR /workspace
 
 # Python deps (cache-friendly layer)
 COPY pyproject.toml uv.lock ./
-RUN uv venv .venv && uv sync
+RUN uv venv .venv && uv sync --no-dev
 
 # Application code — everything else
 COPY . .
