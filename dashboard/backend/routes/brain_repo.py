@@ -348,7 +348,9 @@ def connect():
     # + first commit + push) moved to job_runner.enqueue_bootstrap below — it's the
     # slow part and Cloudflare's 100 s request limit was killing first-time connects.
     bootstrap_pending = False
+    clone_pending = False
     bootstrap_params: dict | None = None
+    clone_params: dict | None = None
     if create_repo:
         try:
             from brain_repo.github_api import create_private_repo, get_github_username
@@ -401,6 +403,12 @@ def connect():
             abort(400, description="Repository must be private")
         repo_owner = repo_info.get("owner", {}).get("login", "")
         repo_name = repo_info.get("name", "")
+        clone_pending = True
+        clone_params = {
+            "token": token,
+            "repo_url": repo_url,
+            "repo_name": repo_name,
+        }
 
     # Encrypt and store token.
     #
@@ -471,6 +479,17 @@ def connect():
             )
         except ImportError:
             log.error("connect: job_runner unavailable — bootstrap will not run")
+    elif clone_pending and clone_params is not None:
+        try:
+            from brain_repo import job_runner
+            from flask import current_app
+            job_runner.enqueue_clone(
+                current_app._get_current_object(),  # type: ignore[attr-defined]
+                current_user.id,
+                **clone_params,
+            )
+        except ImportError:
+            log.error("connect: job_runner unavailable — clone will not run")
 
     return jsonify(config.to_dict())
 
