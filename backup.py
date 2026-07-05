@@ -454,6 +454,20 @@ def cleanup_old_backups(s3_bucket: str = None):
 # ── Restore ──────────────────────────────────────
 
 
+def _remove_stale_wal(dest: Path, data: bytes) -> None:
+    """After replacing a SQLite DB, drop leftover -wal/-shm from the old DB.
+
+    Backups store WAL-folded snapshots (no -wal/-shm in the ZIP). If the
+    destination had a live WAL-mode database, its journal files survive the
+    overwrite and SQLite then reports 'database disk image is malformed'
+    when pairing them with the freshly restored file.
+    """
+    if data[:16] != SQLITE_MAGIC:
+        return
+    for suffix in ("-wal", "-shm"):
+        Path(str(dest) + suffix).unlink(missing_ok=True)
+
+
 def restore_local(zip_path: Path, mode: str = "merge"):
     """Restore workspace from a ZIP backup."""
     banner("Backup — Restore")
@@ -496,6 +510,7 @@ def restore_local(zip_path: Path, mode: str = "merge"):
                         dest.parent.mkdir(parents=True, exist_ok=True)
                         data = zf.read(rel)
                         dest.write_bytes(data)
+                        _remove_stale_wal(dest, data)
                         restored += 1
                     progress.advance(task)
         else:
@@ -513,6 +528,7 @@ def restore_local(zip_path: Path, mode: str = "merge"):
                     dest.parent.mkdir(parents=True, exist_ok=True)
                     data = zf.read(rel)
                     dest.write_bytes(data)
+                    _remove_stale_wal(dest, data)
                     restored += 1
 
     if HAS_RICH:
