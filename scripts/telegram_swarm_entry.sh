@@ -98,13 +98,17 @@ EOF
 fi
 
 # Whatever the restore produced, force the first-run flags — a backup taken
-# from a half-initialized run leaves claude stuck at the theme picker and
-# the channel never starts.
+# from a half-initialized run leaves claude stuck at the theme picker or at
+# the /workspace trust dialog, and the channel never starts.
 _tmp_cfg=$(mktemp)
 if jq '.theme //= "dark"
        | .hasCompletedOnboarding = true
        | .hasSeenWelcome = true
-       | .bypassPermissionsModeAccepted = true' \
+       | .bypassPermissionsModeAccepted = true
+       | .projects["/workspace"] = ((.projects["/workspace"] // {}) + {
+           "hasTrustDialogAccepted": true,
+           "hasCompletedProjectOnboarding": true
+         })' \
       /root/.claude.json > "$_tmp_cfg" 2>/dev/null; then
     mv "$_tmp_cfg" /root/.claude.json
 else
