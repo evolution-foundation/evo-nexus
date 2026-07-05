@@ -79,6 +79,7 @@ COPY .claude/         .claude/
 COPY memory/          memory/
 COPY ADWs/            ADWs/
 COPY config/          config/
+COPY docs/            docs/
 COPY Makefile         ./
 COPY .env.example     ./
 
