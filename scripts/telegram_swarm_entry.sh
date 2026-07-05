@@ -45,11 +45,31 @@ if [ ! -f "$CHANNEL_DIR/.env" ] && [ -n "${TELEGRAM_BOT_TOKEN:-}" ]; then
     chmod 600 "$CHANNEL_DIR/.env"
     echo "[$(date -Is)] seeded $CHANNEL_DIR/.env" >&2
 fi
-if [ ! -f "$CHANNEL_DIR/access.json" ] && [ -n "${TELEGRAM_CHAT_ID:-}" ]; then
-    printf '{"dmPolicy":"allowlist","allowFrom":["%s"],"groups":{},"pending":{}}\n' \
-        "$TELEGRAM_CHAT_ID" > "$CHANNEL_DIR/access.json"
-    chmod 600 "$CHANNEL_DIR/access.json"
-    echo "[$(date -Is)] seeded $CHANNEL_DIR/access.json (allowlist: $TELEGRAM_CHAT_ID)" >&2
+if [ -n "${TELEGRAM_CHAT_ID:-}" ]; then
+    if [ ! -f "$CHANNEL_DIR/access.json" ]; then
+        printf '{"dmPolicy":"allowlist","allowFrom":["%s"],"groups":{},"pending":{}}\n' \
+            "$TELEGRAM_CHAT_ID" > "$CHANNEL_DIR/access.json"
+        chmod 600 "$CHANNEL_DIR/access.json"
+        echo "[$(date -Is)] seeded $CHANNEL_DIR/access.json (allowlist: $TELEGRAM_CHAT_ID)" >&2
+    else
+        # The file may predate TELEGRAM_CHAT_ID landing in .env (first DM
+        # creates it with the sender stuck in "pending", and the bot keeps
+        # answering with the pairing prompt forever). Merge the owner into
+        # the allowlist on every boot — idempotent.
+        _tmp_acc=$(mktemp)
+        if jq --arg id "$TELEGRAM_CHAT_ID" \
+              '.dmPolicy //= "allowlist"
+               | .allowFrom = ((.allowFrom // []) + [$id] | unique)
+               | .pending = ((.pending // {}) | del(.[$id]))' \
+              "$CHANNEL_DIR/access.json" > "$_tmp_acc" 2>/dev/null; then
+            mv "$_tmp_acc" "$CHANNEL_DIR/access.json"
+            chmod 600 "$CHANNEL_DIR/access.json"
+            echo "[$(date -Is)] ensured $TELEGRAM_CHAT_ID in access.json allowlist" >&2
+        else
+            rm -f "$_tmp_acc"
+            echo "[$(date -Is)] WARNING: could not patch access.json allowlist" >&2
+        fi
+    fi
 fi
 
 # --- 3. Start the LiteLLM proxy ---------------------------------------------
