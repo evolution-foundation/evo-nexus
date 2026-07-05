@@ -96,6 +96,12 @@ RUN mkdir -p /workspace/_defaults/config \
     && cp -a /workspace/config/. /workspace/_defaults/config/ 2>/dev/null || true \
     && cp /workspace/.env.example /workspace/_defaults/.env.example 2>/dev/null || true
 
+# Stash .claude so the entrypoint can re-seed built-ins into the mounted
+# /workspace/.claude volume on every boot (custom-*/plugin-* files persist).
+# agent-memory is excluded — it has its own volume and must never be reset.
+RUN cp -a /workspace/.claude /workspace/_defaults/claude \
+    && rm -rf /workspace/_defaults/claude/agent-memory
+
 # Bootstrap wrapper (config volume + source .env + wait-for-key)
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh

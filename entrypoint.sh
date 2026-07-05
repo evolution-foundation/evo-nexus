@@ -60,6 +60,17 @@ if [ -d "$DEFAULTS_DIR" ]; then
     done
 fi
 
+# --- 2b. Seed/refresh /workspace/.claude from image defaults ---------------
+# /workspace/.claude may be a named volume (persists custom-* skills/agents/
+# commands and plugin-* artifacts across restarts). Built-ins are re-copied
+# from the image on every boot so upgrades propagate; anything not shipped
+# in the image (custom-*, plugin-*, settings.local.json) is left untouched.
+# agent-memory is not in the stash — it has its own volume.
+if [ -d "$DEFAULTS_DIR/claude" ]; then
+    mkdir -p /workspace/.claude
+    cp -a "$DEFAULTS_DIR/claude/." /workspace/.claude/ 2>/dev/null || true
+fi
+
 # --- 3. Ensure EVONEXUS_SECRET_KEY exists (Flask session signing) ----------
 # Without this, Flask invalidates every session on restart. We generate it
 # once on first boot and persist it in the same .env the UI edits.
