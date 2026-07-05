@@ -160,5 +160,47 @@ if [ "${REQUIRE_ANTHROPIC_KEY:-0}" = "1" ]; then
     echo "[$(date -Is)] ANTHROPIC_API_KEY detected — starting $*" >&2
 fi
 
+# --- 8b. Claude CLI headless bootstrap --------------------------------------
+# Heartbeats/routines invoke `claude --print --dangerously-skip-permissions`
+# as root. Two first-run gates block that in a fresh container:
+#   1) /root/.claude.json lives in the container layer (wiped on redeploy);
+#      without the trust flags for /workspace the CLI ignores the project's
+#      .claude/settings.json permissions and fails with "this workspace has
+#      not been trusted".
+#   2) Claude Code refuses --dangerously-skip-permissions as root unless
+#      IS_SANDBOX=1 signals a containerized environment.
+# Same fix as start-dashboard.sh / telegram_swarm_entry.sh.
+export IS_SANDBOX="${IS_SANDBOX:-1}"
+_PYBIN="/workspace/.venv/bin/python3"
+[ -x "$_PYBIN" ] || _PYBIN="$(command -v python3 || true)"
+if [ -n "$_PYBIN" ]; then
+    "$_PYBIN" - <<'EOF' || echo "[$(date -Is)] WARNING: could not patch /root/.claude.json flags" >&2
+import json, os
+
+path = "/root/.claude.json"
+cfg = {}
+if os.path.exists(path):
+    try:
+        with open(path) as f:
+            cfg = json.load(f)
+    except Exception:
+        cfg = {}
+
+cfg.setdefault("theme", "dark")
+cfg["hasCompletedOnboarding"] = True
+cfg["hasSeenWelcome"] = True
+cfg["bypassPermissionsModeAccepted"] = True
+project = cfg.setdefault("projects", {}).setdefault("/workspace", {})
+project["hasTrustDialogAccepted"] = True
+project["hasCompletedProjectOnboarding"] = True
+
+with open(path, "w") as f:
+    json.dump(cfg, f, indent=2)
+EOF
+else
+    echo "[$(date -Is)] WARNING: no python3 — /root/.claude.json not patched" >&2
+fi
+unset _PYBIN
+
 # --- 9. Hand off to the actual process -------------------------------------
 exec "$@"
