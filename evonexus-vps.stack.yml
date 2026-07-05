@@ -79,11 +79,10 @@ services:
 
   evonexus_telegram:
     image: excarplex/evo-nexus-runtime:latest
-    command:
-      - "claude"
-      - "--channels"
-      - "plugin:telegram@claude-plugins-official"
-      - "--dangerously-skip-permissions"
+    # Wrapper: LiteLLM proxy (Anthropic -> NVIDIA NIM) + claude --channels.
+    # Waits for NVIDIA_API_KEY instead of ANTHROPIC_API_KEY — the bot runs on
+    # an NVIDIA model through the proxy. See scripts/telegram_swarm_entry.sh.
+    command: ["bash", "scripts/telegram_swarm_entry.sh"]
 
     volumes:
       - evonexus_config:/workspace/config
@@ -100,7 +99,6 @@ services:
 
     environment:
       - TZ=America/Sao_Paulo
-      - REQUIRE_ANTHROPIC_KEY=1
       - SMTP_DOMAIN=${SMTP_DOMAIN}
       - SMTP_USERNAME=${SMTP_USERNAME}
       - SMTP_PASSWORD=${SMTP_PASSWORD}

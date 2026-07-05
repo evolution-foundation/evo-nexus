@@ -56,6 +56,11 @@ WORKDIR /workspace
 COPY pyproject.toml uv.lock ./
 RUN uv venv .venv && uv sync --no-dev
 
+# LiteLLM proxy — fronts NVIDIA NIM with an Anthropic-compatible /v1/messages
+# endpoint so `claude --channels` (Telegram bot) can run without an Anthropic
+# key. Used by scripts/telegram_swarm_entry.sh.
+RUN uv pip install --python .venv/bin/python 'litellm[proxy]'
+
 # Application code — everything else
 COPY . .
 
