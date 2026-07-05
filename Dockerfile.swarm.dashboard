@@ -74,6 +74,7 @@ RUN uv venv .venv && uv sync --no-dev
 COPY dashboard/       dashboard/
 COPY social-auth/     social-auth/
 COPY scheduler.py     ./
+COPY backup.py        ./
 COPY .claude/         .claude/
 COPY memory/          memory/
 COPY ADWs/            ADWs/
