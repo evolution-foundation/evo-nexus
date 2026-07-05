@@ -74,11 +74,38 @@ for _ in $(seq 1 60); do
 done
 echo "[$(date -Is)] LiteLLM proxy ready on 127.0.0.1:$PROXY_PORT" >&2
 
-# --- 4. Run the channel against the proxy -----------------------------------
+# --- 4. Restore /root/.claude.json (same rationale as start-dashboard.sh) --
+# The main CLI config is a SIBLING of /root/.claude/ (the volume), so it
+# lives in the container layer and is wiped on redeploy. Restore the latest
+# backup from the volume, or seed a minimal one to skip first-run prompts.
+if [ ! -f /root/.claude.json ]; then
+    latest_backup=$(ls -t /root/.claude/backups/.claude.json.backup.* 2>/dev/null | head -n1 || true)
+    if [ -n "${latest_backup:-}" ] && [ -f "${latest_backup}" ]; then
+        echo "[$(date -Is)] restoring /root/.claude.json from ${latest_backup}" >&2
+        cp "${latest_backup}" /root/.claude.json
+    else
+        echo "[$(date -Is)] seeding minimal /root/.claude.json" >&2
+        cat > /root/.claude.json <<'EOF'
+{
+  "theme": "dark",
+  "hasCompletedOnboarding": true,
+  "hasSeenWelcome": true,
+  "bypassPermissionsModeAccepted": true,
+  "telemetry": false
+}
+EOF
+    fi
+fi
+
+# --- 5. Run the channel against the proxy -----------------------------------
 export ANTHROPIC_BASE_URL="http://127.0.0.1:$PROXY_PORT"
 export ANTHROPIC_AUTH_TOKEN="$PROXY_KEY"
 export ANTHROPIC_MODEL="telegram-nvidia"
 unset ANTHROPIC_API_KEY 2>/dev/null || true
+
+# The container runs as root; Claude Code refuses --dangerously-skip-
+# permissions as root unless it knows it's inside a sandboxed container.
+export IS_SANDBOX=1
 
 exec claude \
     --channels "plugin:telegram@claude-plugins-official" \
