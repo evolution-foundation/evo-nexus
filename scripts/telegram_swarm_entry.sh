@@ -126,6 +126,15 @@ unset ANTHROPIC_API_KEY 2>/dev/null || true
 # permissions as root unless it knows it's inside a sandboxed container.
 export IS_SANDBOX=1
 
+# First boot: the plugin cache lives on the /root/.claude volume and starts
+# empty — install the telegram channel plugin before starting the channel.
+if [ ! -d "$HOME/.claude/plugins/cache/claude-plugins-official/telegram" ]; then
+    echo "[$(date -Is)] installing telegram channel plugin" >&2
+    claude plugin marketplace add anthropics/claude-plugins-official >/dev/null 2>&1 || true
+    claude plugin install telegram@claude-plugins-official --scope user \
+        || echo "[$(date -Is)] WARNING: telegram plugin install failed" >&2
+fi
+
 exec claude \
     --channels "plugin:telegram@claude-plugins-official" \
     --dangerously-skip-permissions
