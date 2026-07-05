@@ -26,13 +26,30 @@ reload_env() {
     set +a
 }
 
-# --- 1. Wait for NVIDIA_API_KEY (same UI-first pattern as entrypoint.sh) ----
+# --- 1. Decide auth mode -----------------------------------------------------
+# Channels availability is verified server-side by Anthropic at startup and
+# CANNOT be verified through the LiteLLM/NVIDIA proxy — claude prints
+# "Channels are not currently available" and ignores --channels. If a
+# claude.ai login exists on the auth volume (run `claude /login` once via
+# docker exec; persisted in /root/.claude/.credentials.json), run the channel
+# directly on Anthropic. TELEGRAM_FORCE_PROXY=1 keeps the NVIDIA proxy
+# regardless (channel stays dead until Anthropic supports proxied channels).
 reload_env
-while [ -z "${NVIDIA_API_KEY:-}" ]; do
-    echo "[$(date -Is)] waiting for NVIDIA_API_KEY — configure via dashboard → Providers" >&2
-    sleep 30
-    reload_env
-done
+DIRECT_MODE=0
+if [ "${TELEGRAM_FORCE_PROXY:-0}" != "1" ] \
+   && grep -q '"claudeAiOauth"' /root/.claude/.credentials.json 2>/dev/null; then
+    DIRECT_MODE=1
+    echo "[$(date -Is)] claude.ai login found — running channel directly on Anthropic" >&2
+fi
+
+# --- 1b. Wait for NVIDIA_API_KEY (proxy mode only) ---------------------------
+if [ "$DIRECT_MODE" = "0" ]; then
+    while [ -z "${NVIDIA_API_KEY:-}" ]; do
+        echo "[$(date -Is)] waiting for NVIDIA_API_KEY — configure via dashboard → Providers" >&2
+        sleep 30
+        reload_env
+    done
+fi
 
 if [ -z "${TELEGRAM_BOT_TOKEN:-}" ]; then
     echo "[$(date -Is)] WARNING: TELEGRAM_BOT_TOKEN not set — the channel will not authenticate" >&2
@@ -72,27 +89,29 @@ if [ -n "${TELEGRAM_CHAT_ID:-}" ]; then
     fi
 fi
 
-# --- 3. Start the LiteLLM proxy ---------------------------------------------
+# --- 3. Start the LiteLLM proxy (proxy mode only) ----------------------------
 # Prefer a user-customized copy on the config volume; fall back to the image
 # default stashed by the Dockerfile (the volume shadows the image's config/).
-LITELLM_CONFIG="$CONFIG_DIR/litellm-telegram.yaml"
-[ -f "$LITELLM_CONFIG" ] || LITELLM_CONFIG=/workspace/_defaults/config/litellm-telegram.yaml
+if [ "$DIRECT_MODE" = "0" ]; then
+    LITELLM_CONFIG="$CONFIG_DIR/litellm-telegram.yaml"
+    [ -f "$LITELLM_CONFIG" ] || LITELLM_CONFIG=/workspace/_defaults/config/litellm-telegram.yaml
 
-.venv/bin/litellm --config "$LITELLM_CONFIG" --host 127.0.0.1 --port "$PROXY_PORT" &
-PROXY_PID=$!
-trap 'kill "$PROXY_PID" 2>/dev/null || true' EXIT
+    .venv/bin/litellm --config "$LITELLM_CONFIG" --host 127.0.0.1 --port "$PROXY_PORT" &
+    PROXY_PID=$!
+    trap 'kill "$PROXY_PID" 2>/dev/null || true' EXIT
 
-for _ in $(seq 1 60); do
-    if curl -fsS "http://127.0.0.1:$PROXY_PORT/health/readiness" >/dev/null 2>&1; then
-        break
-    fi
-    if ! kill -0 "$PROXY_PID" 2>/dev/null; then
-        echo "[$(date -Is)] LiteLLM proxy died during startup" >&2
-        exit 1
-    fi
-    sleep 2
-done
-echo "[$(date -Is)] LiteLLM proxy ready on 127.0.0.1:$PROXY_PORT" >&2
+    for _ in $(seq 1 60); do
+        if curl -fsS "http://127.0.0.1:$PROXY_PORT/health/readiness" >/dev/null 2>&1; then
+            break
+        fi
+        if ! kill -0 "$PROXY_PID" 2>/dev/null; then
+            echo "[$(date -Is)] LiteLLM proxy died during startup" >&2
+            exit 1
+        fi
+        sleep 2
+    done
+    echo "[$(date -Is)] LiteLLM proxy ready on 127.0.0.1:$PROXY_PORT" >&2
+fi
 
 # --- 4. Restore /root/.claude.json (same rationale as start-dashboard.sh) --
 # The main CLI config is a SIBLING of /root/.claude/ (the volume), so it
@@ -136,11 +155,18 @@ else
     echo "[$(date -Is)] WARNING: could not patch /root/.claude.json flags" >&2
 fi
 
-# --- 5. Run the channel against the proxy -----------------------------------
-export ANTHROPIC_BASE_URL="http://127.0.0.1:$PROXY_PORT"
-export ANTHROPIC_AUTH_TOKEN="$PROXY_KEY"
-export ANTHROPIC_MODEL="telegram-nvidia"
-unset ANTHROPIC_API_KEY 2>/dev/null || true
+# --- 5. Run the channel --------------------------------------------------------
+if [ "$DIRECT_MODE" = "1" ]; then
+    # The claude.ai OAuth login must win — any Anthropic env credential
+    # (possibly sourced from config/.env) would shadow it and fail the
+    # server-side channels entitlement check.
+    unset ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN ANTHROPIC_MODEL ANTHROPIC_API_KEY 2>/dev/null || true
+else
+    export ANTHROPIC_BASE_URL="http://127.0.0.1:$PROXY_PORT"
+    export ANTHROPIC_AUTH_TOKEN="$PROXY_KEY"
+    export ANTHROPIC_MODEL="telegram-nvidia"
+    unset ANTHROPIC_API_KEY 2>/dev/null || true
+fi
 
 # The container runs as root; Claude Code refuses --dangerously-skip-
 # permissions as root unless it knows it's inside a sandboxed container.
