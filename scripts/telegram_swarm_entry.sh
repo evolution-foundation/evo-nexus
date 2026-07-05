@@ -97,6 +97,21 @@ EOF
     fi
 fi
 
+# Whatever the restore produced, force the first-run flags — a backup taken
+# from a half-initialized run leaves claude stuck at the theme picker and
+# the channel never starts.
+_tmp_cfg=$(mktemp)
+if jq '.theme //= "dark"
+       | .hasCompletedOnboarding = true
+       | .hasSeenWelcome = true
+       | .bypassPermissionsModeAccepted = true' \
+      /root/.claude.json > "$_tmp_cfg" 2>/dev/null; then
+    mv "$_tmp_cfg" /root/.claude.json
+else
+    rm -f "$_tmp_cfg"
+    echo "[$(date -Is)] WARNING: could not patch /root/.claude.json flags" >&2
+fi
+
 # --- 5. Run the channel against the proxy -----------------------------------
 export ANTHROPIC_BASE_URL="http://127.0.0.1:$PROXY_PORT"
 export ANTHROPIC_AUTH_TOKEN="$PROXY_KEY"
