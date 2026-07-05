@@ -171,6 +171,19 @@ fi
 #      IS_SANDBOX=1 signals a containerized environment.
 # Same fix as start-dashboard.sh / telegram_swarm_entry.sh.
 export IS_SANDBOX="${IS_SANDBOX:-1}"
+# Restore the latest backup BEFORE seeding/patching. The main config is a
+# sibling of /root/.claude/ (the volume) and is wiped on redeploy; blind
+# seeding here would shadow the backup restore downstream (telegram wrapper /
+# start-dashboard check "[ ! -f ]") and lose account state — e.g. the
+# channels feature gate — that only the backup carries.
+if [ ! -f /root/.claude.json ]; then
+    _latest_backup=$(ls -t /root/.claude/backups/.claude.json.backup.* 2>/dev/null | head -n1 || true)
+    if [ -n "${_latest_backup:-}" ] && [ -f "$_latest_backup" ]; then
+        echo "[$(date -Is)] restoring /root/.claude.json from $_latest_backup" >&2
+        cp "$_latest_backup" /root/.claude.json
+    fi
+fi
+unset _latest_backup
 _PYBIN="/workspace/.venv/bin/python3"
 [ -x "$_PYBIN" ] || _PYBIN="$(command -v python3 || true)"
 if [ -n "$_PYBIN" ]; then
