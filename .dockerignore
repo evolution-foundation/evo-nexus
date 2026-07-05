@@ -6,7 +6,6 @@ config/.reload
 config/providers.json
 config/heartbeats.yaml
 config/smart-router.json
-config/litellm-telegram.yaml
 .pytest_cache/
 .handoffs/
 __pycache__/
