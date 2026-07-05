@@ -46,6 +46,10 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
 # Todoist CLI (used by int-todoist skill)
 RUN npm install -g todoist-ts-cli
 
+# Bun — required by Claude Code channel plugins (the telegram channel's
+# start script is `bun install && bun server.ts`)
+RUN npm install -g bun
+
 # Timezone (default America/Sao_Paulo, override via TZ env var)
 ENV TZ=America/Sao_Paulo
 RUN ln -snf /usr/share/zoneinfo/${TZ} /etc/localtime && echo "${TZ}" > /etc/timezone
