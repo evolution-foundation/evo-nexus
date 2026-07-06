@@ -53,12 +53,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 ENV PATH="/root/.local/bin:${PATH}"
 
-# Both CLIs — the Providers page in the UI switches between them at runtime.
+# CLIs — the Providers page in the UI switches between them at runtime.
 # @gitlawb/openclaude@latest is pinned to the npm dist-tag which as of the
 # current fix is ≥0.3.0 (first version with the Codex shortcut endpoint).
+# @openai/codex is used only to run the supported Codex device-auth flow and
+# persist ~/.codex/auth.json for OpenClaude's codex_auth provider.
 RUN npm install -g \
         @anthropic-ai/claude-code \
-        @gitlawb/openclaude@latest
+        @gitlawb/openclaude@latest \
+        @openai/codex
 
 # Timezone
 ENV TZ=America/Sao_Paulo

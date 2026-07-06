@@ -664,9 +664,9 @@ export default function Providers() {
                       </a>
                     </div>
                     <div className="space-y-2">
-                      <p className="text-xs text-[#5a6b7f]"><span className="text-white font-medium">2.</span> Authorize access. If the callback does not close automatically, paste the final URL here:</p>
+                      <p className="text-xs text-[#5a6b7f]"><span className="text-white font-medium">2.</span> Authorize access, then paste the final localhost callback URL here. Do not replace localhost with your domain.</p>
                       <input type="text" value={callbackUrl} onChange={(e) => setCallbackUrl(e.target.value)}
-                        placeholder="https://your-domain/auth/callback?code=..."
+                        placeholder="http://localhost:1455/auth/callback?code=..."
                         className={inp} autoComplete="off" />
                     </div>
                   </>

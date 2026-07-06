@@ -12,11 +12,11 @@ test('getProviderMode returns anthropic for the native provider', () => {
 
 test('getProviderMode falls back to the model-name heuristic', () => {
   assert.equal(
-    getProviderMode({ active: 'openrouter', env_vars: { OPENAI_MODEL: 'qwen-coder' } }),
+    getProviderMode({ active: 'custom', env_vars: { OPENAI_MODEL: 'qwen-coder' } }),
     'code'
   );
   assert.equal(
-    getProviderMode({ active: 'openrouter', env_vars: { OPENAI_MODEL: 'openrouter/owl-alpha' } }),
+    getProviderMode({ active: 'custom', env_vars: { OPENAI_MODEL: 'openrouter/owl-alpha' } }),
     'chat'
   );
 });
@@ -35,7 +35,18 @@ test('explicit mode overrides the model-name heuristic', () => {
 test('invalid mode values are ignored', () => {
   assert.equal(
     getProviderMode({ active: 'openrouter', mode: 'bogus', env_vars: { OPENAI_MODEL: 'openrouter/owl-alpha' } }),
-    'chat'
+    'code'
+  );
+});
+
+test('OpenClaude terminal providers default to code mode for opaque hosted models', () => {
+  assert.equal(
+    getProviderMode({ active: 'omnirouter', env_vars: { OPENAI_MODEL: 'z-ai/glm-5.2' } }),
+    'code'
+  );
+  assert.equal(
+    getProviderMode({ active: 'nvidia', env_vars: { OPENAI_MODEL: 'z-ai/glm-5.2' } }),
+    'code'
   );
 });
 

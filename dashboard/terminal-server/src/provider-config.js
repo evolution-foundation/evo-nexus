@@ -7,6 +7,7 @@ const PROVIDERS_EXAMPLE_PATH = path.join(WORKSPACE_ROOT, 'config', 'providers.ex
 
 const ALLOWED_CLI = new Set(['claude', 'openclaude']);
 const ALLOWED_MODES = new Set(['code', 'chat']);
+const DEFAULT_CODE_PROVIDERS = new Set(['openrouter', 'omnirouter', 'nvidia', 'codex_auth']);
 const ALLOWED_ENV_VARS = new Set([
   'ANTHROPIC_API_KEY',
   'CLAUDE_CODE_USE_OPENAI',
@@ -119,6 +120,9 @@ function getProviderMode(providerConfig) {
   // Explicit per-provider mode in providers.json wins over the name heuristic —
   // model names like "openrouter/owl-alpha" are agentic but don't match isCodeModel.
   if (ALLOWED_MODES.has(providerConfig?.mode)) return providerConfig.mode;
+  // These providers run through OpenClaude in the Terminal. Opaque hosted model
+  // names such as z-ai/glm-5.2 should not be downgraded to Chat by heuristic.
+  if (DEFAULT_CODE_PROVIDERS.has(active)) return 'code';
   const model = resolveProviderModel(providerConfig);
   if (isCodeModel(model)) return 'code';
   return 'chat';
