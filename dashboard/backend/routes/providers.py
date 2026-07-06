@@ -17,7 +17,7 @@ import time
 import urllib.parse
 from pathlib import Path
 
-from flask import Blueprint, jsonify, redirect, request, session
+from flask import Blueprint, jsonify, request, session, url_for
 from flask_login import login_required
 
 from routes._helpers import WORKSPACE
@@ -25,6 +25,7 @@ from routes._helpers import WORKSPACE
 bp = Blueprint("providers", __name__)
 
 PROVIDERS_CONFIG = WORKSPACE / "config" / "providers.json"
+PROVIDERS_EXAMPLE_CONFIG = WORKSPACE / "config" / "providers.example.json"
 
 OPENAI_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 OPENAI_AUTH_URL = "https://auth.openai.com/oauth/authorize"
@@ -57,16 +58,72 @@ ALLOWED_ENV_VARS = frozenset({
 })
 
 
+def _merge_provider_defaults(config: dict) -> tuple[dict, bool]:
+    """Merge providers.example.json into an existing config without overwriting secrets."""
+    if not PROVIDERS_EXAMPLE_CONFIG.is_file():
+        return config, False
+
+    try:
+        defaults = json.loads(PROVIDERS_EXAMPLE_CONFIG.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return config, False
+
+    changed = False
+    if not isinstance(config, dict):
+        config = {}
+        changed = True
+
+    for key, value in defaults.items():
+        if key == "providers":
+            continue
+        if key not in config:
+            config[key] = value
+            changed = True
+
+    providers = config.setdefault("providers", {})
+    if not isinstance(providers, dict):
+        config["providers"] = {}
+        providers = config["providers"]
+        changed = True
+
+    for provider_id, default_provider in (defaults.get("providers") or {}).items():
+        if provider_id not in providers or not isinstance(providers.get(provider_id), dict):
+            providers[provider_id] = default_provider
+            changed = True
+            continue
+
+        provider = providers[provider_id]
+        for key, value in default_provider.items():
+            if key == "env_vars":
+                env = provider.setdefault("env_vars", {})
+                if not isinstance(env, dict):
+                    provider["env_vars"] = {}
+                    env = provider["env_vars"]
+                    changed = True
+                for env_key, env_default in (value or {}).items():
+                    if env_key not in env:
+                        env[env_key] = env_default
+                        changed = True
+            elif key not in provider:
+                provider[key] = value
+                changed = True
+
+    return config, changed
+
+
 def _read_config() -> dict:
     """Read providers.json. If missing, copy from providers.example.json."""
     try:
         if not PROVIDERS_CONFIG.is_file():
-            example = PROVIDERS_CONFIG.parent / "providers.example.json"
-            if example.is_file():
+            if PROVIDERS_EXAMPLE_CONFIG.is_file():
                 import shutil as _shutil
-                _shutil.copy2(example, PROVIDERS_CONFIG)
+                _shutil.copy2(PROVIDERS_EXAMPLE_CONFIG, PROVIDERS_CONFIG)
         if PROVIDERS_CONFIG.is_file():
-            return json.loads(PROVIDERS_CONFIG.read_text(encoding="utf-8"))
+            config = json.loads(PROVIDERS_CONFIG.read_text(encoding="utf-8"))
+            config, changed = _merge_provider_defaults(config)
+            if changed:
+                _write_config(config)
+            return config
     except (json.JSONDecodeError, OSError):
         pass
     return {"active_provider": "anthropic", "providers": {}}
@@ -168,6 +225,34 @@ def _save_codex_auth(tokens: dict):
 
     CODEX_AUTH_FILE.parent.mkdir(parents=True, exist_ok=True)
     CODEX_AUTH_FILE.write_text(json.dumps(auth_data, indent=2), encoding="utf-8")
+
+
+def _external_url(endpoint: str) -> str:
+    """Build an externally visible URL behind Traefik/nginx when available."""
+    proto = request.headers.get("X-Forwarded-Proto", request.scheme)
+    host = request.headers.get("X-Forwarded-Host", request.host)
+    if host:
+        return urllib.parse.urlunparse((proto, host, url_for(endpoint), "", "", ""))
+    return url_for(endpoint, _external=True)
+
+
+def _exchange_openai_code(code: str, code_verifier: str, redirect_uri: str):
+    import requests as http_req
+
+    return http_req.post(OPENAI_TOKEN_URL, data={
+        "grant_type": "authorization_code",
+        "code": code,
+        "redirect_uri": redirect_uri,
+        "client_id": OPENAI_CLIENT_ID,
+        "code_verifier": code_verifier,
+    }, timeout=30)
+
+
+def _activate_codex_provider():
+    config = _read_config()
+    providers = config.get("providers", {})
+    config["active_provider"] = "codex_auth" if "codex_auth" in providers else "openai"
+    _write_config(config)
 
 
 # ── Endpoints ──────────────────────────────────────────────
@@ -382,13 +467,16 @@ def openai_auth_start():
     code_challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
     state = secrets.token_urlsafe(32)
 
+    redirect_uri = _external_url("providers.openai_auth_callback")
+
     session["openai_code_verifier"] = code_verifier
     session["openai_oauth_state"] = state
+    session["openai_redirect_uri"] = redirect_uri
 
     params = {
         "response_type": "code",
         "client_id": OPENAI_CLIENT_ID,
-        "redirect_uri": "http://localhost:1455/auth/callback",
+        "redirect_uri": redirect_uri,
         "scope": "openid profile email offline_access api.connectors.read api.connectors.invoke",
         "code_challenge": code_challenge,
         "code_challenge_method": "S256",
@@ -397,15 +485,47 @@ def openai_auth_start():
         "codex_cli_simplified_flow": "true",
     }
     url = f"{OPENAI_AUTH_URL}?{urllib.parse.urlencode(params)}"
-    return jsonify({"authorize_url": url})
+    return jsonify({"authorize_url": url, "redirect_uri": redirect_uri})
+
+
+@bp.route("/auth/callback")
+@login_required
+def openai_auth_callback():
+    """Complete Codex OAuth when OpenAI redirects back to the dashboard."""
+    code = request.args.get("code")
+    state = request.args.get("state")
+    expected_state = session.pop("openai_oauth_state", None)
+    code_verifier = session.pop("openai_code_verifier", None)
+    redirect_uri = session.pop("openai_redirect_uri", None) or _external_url("providers.openai_auth_callback")
+
+    if not code:
+        return "Codex OAuth falhou: callback sem codigo de autorizacao.", 400
+    if expected_state and state != expected_state:
+        return "Codex OAuth falhou: state invalido.", 400
+    if not code_verifier:
+        return "Codex OAuth falhou: sessao expirada. Volte ao dashboard e inicie o login novamente.", 400
+
+    resp = _exchange_openai_code(code, code_verifier, redirect_uri)
+    if resp.status_code != 200:
+        return f"Codex OAuth falhou na troca de token (HTTP {resp.status_code}).", 400
+
+    _save_codex_auth(resp.json())
+    _activate_codex_provider()
+    return (
+        "<!doctype html><meta charset='utf-8'>"
+        "<title>Codex OAuth conectado</title>"
+        "<body style='font-family:system-ui;background:#0b1018;color:#e2e8f0;padding:32px'>"
+        "<h1 style='font-size:18px'>Codex OAuth conectado</h1>"
+        "<p>Token salvo. Você já pode voltar ao EvoNexus.</p>"
+        "<script>setTimeout(() => window.close(), 1200)</script>"
+        "</body>"
+    )
 
 
 @bp.route("/api/providers/openai/auth-complete", methods=["POST"])
 @login_required
 def openai_auth_complete():
     """Receive callback URL pasted by user, extract code, exchange for tokens."""
-    import requests as http_req
-
     data = request.get_json(silent=True) or {}
     callback_url = data.get("callback_url", "")
 
@@ -421,26 +541,16 @@ def openai_auth_complete():
         return jsonify({"error": "Sessao expirada - inicie o login novamente"}), 400
 
     session.pop("openai_oauth_state", None)
+    redirect_uri = session.pop("openai_redirect_uri", None) or "http://localhost:1455/auth/callback"
 
-    resp = http_req.post(OPENAI_TOKEN_URL, data={
-        "grant_type": "authorization_code",
-        "code": code,
-        "redirect_uri": "http://localhost:1455/auth/callback",
-        "client_id": OPENAI_CLIENT_ID,
-        "code_verifier": code_verifier,
-    }, timeout=30)
+    resp = _exchange_openai_code(code, code_verifier, redirect_uri)
 
     if resp.status_code != 200:
         return jsonify({"error": f"Falha na troca de token (HTTP {resp.status_code})"}), 400
 
     _save_codex_auth(resp.json())
 
-    config = _read_config()
-    # Use dedicated codex_auth provider key when OAuth is used (falls back to
-    # openai for backward compatibility if codex_auth is not configured).
-    providers = config.get("providers", {})
-    config["active_provider"] = "codex_auth" if "codex_auth" in providers else "openai"
-    _write_config(config)
+    _activate_codex_provider()
 
     return jsonify({"status": "ok", "message": "Autenticado com sucesso!"})
 

@@ -3,6 +3,7 @@ const path = require('path');
 
 const WORKSPACE_ROOT = path.resolve(__dirname, '..', '..', '..');
 const PROVIDERS_PATH = path.join(WORKSPACE_ROOT, 'config', 'providers.json');
+const PROVIDERS_EXAMPLE_PATH = path.join(WORKSPACE_ROOT, 'config', 'providers.example.json');
 
 const ALLOWED_CLI = new Set(['claude', 'openclaude']);
 const ALLOWED_MODES = new Set(['code', 'chat']);
@@ -123,13 +124,54 @@ function getProviderMode(providerConfig) {
   return 'chat';
 }
 
+function _mergeProviderDefaults(config) {
+  try {
+    if (!fs.existsSync(PROVIDERS_EXAMPLE_PATH)) return config;
+    const defaults = JSON.parse(fs.readFileSync(PROVIDERS_EXAMPLE_PATH, 'utf8'));
+    if (!config || typeof config !== 'object' || Array.isArray(config)) config = {};
+
+    for (const [key, value] of Object.entries(defaults)) {
+      if (key === 'providers') continue;
+      if (!(key in config)) config[key] = value;
+    }
+
+    if (!config.providers || typeof config.providers !== 'object' || Array.isArray(config.providers)) {
+      config.providers = {};
+    }
+
+    for (const [providerId, defaultProvider] of Object.entries(defaults.providers || {})) {
+      const existing = config.providers[providerId];
+      if (!existing || typeof existing !== 'object' || Array.isArray(existing)) {
+        config.providers[providerId] = defaultProvider;
+        continue;
+      }
+
+      for (const [key, value] of Object.entries(defaultProvider)) {
+        if (key === 'env_vars') {
+          if (!existing.env_vars || typeof existing.env_vars !== 'object' || Array.isArray(existing.env_vars)) {
+            existing.env_vars = {};
+          }
+          for (const [envKey, envDefault] of Object.entries(value || {})) {
+            if (!(envKey in existing.env_vars)) existing.env_vars[envKey] = envDefault;
+          }
+        } else if (!(key in existing)) {
+          existing[key] = value;
+        }
+      }
+    }
+  } catch (_) {
+    return config;
+  }
+  return config;
+}
+
 function loadProviderConfig() {
   try {
     if (!fs.existsSync(PROVIDERS_PATH)) {
       return { cli_command: 'claude', env_vars: {}, active: 'anthropic', fallback_models: [], fallback_providers: [], providers: {}, model_tiers: {} };
     }
 
-    const config = JSON.parse(fs.readFileSync(PROVIDERS_PATH, 'utf8'));
+    const config = _mergeProviderDefaults(JSON.parse(fs.readFileSync(PROVIDERS_PATH, 'utf8')));
     const active = config.active_provider || 'anthropic';
     const provider = config.providers?.[active] || {};
 
@@ -231,4 +273,3 @@ module.exports = {
   isCodeModel,
   isChatCompletionModel,
 };
-

@@ -655,6 +655,9 @@ with app.app_context():
     # ({active_provider, providers: {...}}), copy providers.example.json
     # over it. This recovers from broken state left by older versions of
     # the onboarding wizard that naively wrote {<id>: {api_key, enabled}}.
+    # If the schema is valid but older than the bundled example, merge missing
+    # providers/fields from providers.example.json without overwriting secrets
+    # stored in the persistent Docker volume.
     try:
         _providers_file = WORKSPACE / "config" / "providers.json"
         _providers_example = WORKSPACE / "config" / "providers.example.json"
@@ -673,6 +676,18 @@ with app.app_context():
                 import shutil as _shutil
                 _shutil.copy2(_providers_example, _providers_file)
                 print("[migration] providers.json had invalid schema, restored from providers.example.json")
+            elif _ok and _providers_example.is_file():
+                try:
+                    from routes.providers import _merge_provider_defaults as _merge_provider_defaults
+                    _merged, _changed = _merge_provider_defaults(_data)
+                    if _changed:
+                        _providers_file.write_text(
+                            _json.dumps(_merged, indent=2, ensure_ascii=False) + "\n",
+                            encoding="utf-8",
+                        )
+                        print("[migration] providers.json merged missing provider defaults")
+                except Exception as _merge_exc:
+                    print(f"[migration] providers.json default merge skipped: {_merge_exc}")
     except Exception as _mig_exc:
         print(f"[migration] providers.json normalization skipped: {_mig_exc}")
     # --- End providers.json migration ---
