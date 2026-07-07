@@ -1,0 +1,137 @@
+{
+  "active_provider": "nvidia",
+  "providers": {
+    "anthropic": {
+      "name": "Anthropic (Claude nativo)",
+      "cli_command": "claude",
+      "env_vars": {},
+      "requires_logout": false
+    },
+    "openrouter": {
+      "name": "OpenRouter",
+      "cli_command": "openclaude",
+      "env_vars": {
+        "CLAUDE_CODE_USE_OPENAI": "1",
+        "OPENAI_BASE_URL": "https://openrouter.ai/api/v1",
+        "OPENAI_API_KEY": "[REDACTED]",
+        "OPENAI_MODEL": "openrouter/owl-alpha"
+      },
+      "default_base_url": "https://openrouter.ai/api/v1",
+      "default_model": "openrouter/owl-alpha",
+      "requires_logout": true,
+      "mode": "code",
+      "fallback_models": [
+        "openrouter/owl-alpha",
+        "nex-agi/nex-n2-pro:free"
+      ]
+    },
+    "nvidia": {
+      "name": "NVIDIA NIM",
+      "description": "Modelos hospedados na NVIDIA (DeepSeek, Llama, Qwen, etc.) via API OpenAI-compatível",
+      "cli_command": "openclaude",
+      "mode": "code",
+      "env_vars": {
+        "CLAUDE_CODE_USE_OPENAI": "1",
+        "OPENAI_BASE_URL": "https://integrate.api.nvidia.com/v1",
+        "OPENAI_API_KEY": "[REDACTED]",
+        "OPENAI_MODEL": "stepfun-ai/step-3.7-flash"
+      },
+      "default_base_url": "https://integrate.api.nvidia.com/v1",
+      "default_model": "stepfun-ai/step-3.7-flash",
+      "requires_logout": true,
+      "fallback_models": [
+        "stepfun-ai/step-3.7-flash",
+        "deepseek-ai/deepseek-v4-flash",
+        "z-ai/glm-5.1",
+        "moonshotai/kimi-k2.6",
+        "nvidia/nemotron-3-ultra-550b-a55b",
+        "nvidia/nemotron-3-super-120b-a12b",
+        "qwen/qwen3.5-122b-a10b",
+        "qwen/qwen3.5-397b-a17b",
+        "openai/gpt-oss-120b",
+        "microsoft/phi-4-multimodal-instruct",
+        "stepfun-ai/step-3.5-flash",
+        "minimaxai/minimax-m3"
+      ],
+      "model_tiers": {
+        "opus": "minimaxai/minimax-m3",
+        "sonnet": "minimaxai/minimax-m3",
+        "haiku": "minimaxai/minimax-m3"
+      },
+      "fallback_providers": [
+        "openrouter",
+        "anthropic"
+      ]
+    },
+    "openai": {
+      "name": "OpenAI",
+      "description": "GPT-4.x via API Key ou GPT-5.x via Codex OAuth",
+      "cli_command": "openclaude",
+      "env_vars": {
+        "CLAUDE_CODE_USE_OPENAI": "1",
+        "OPENAI_API_KEY": "[REDACTED]",
+        "OPENAI_MODEL": ""
+      },
+      "default_model": "gpt-4.1",
+      "requires_logout": true
+    },
+    "gemini": {
+      "name": "Google Gemini (em breve)",
+      "cli_command": "openclaude",
+      "env_vars": {
+        "CLAUDE_CODE_USE_GEMINI": "1",
+        "GEMINI_API_KEY": "[REDACTED]",
+        "GEMINI_MODEL": "gemini-2.5-pro"
+      },
+      "default_model": "gemini-2.5-pro",
+      "requires_logout": true,
+      "coming_soon": true
+    },
+    "bedrock": {
+      "name": "AWS Bedrock (em breve)",
+      "cli_command": "openclaude",
+      "env_vars": {
+        "CLAUDE_CODE_USE_BEDROCK": "1",
+        "AWS_REGION": "",
+        "AWS_BEARER_TOKEN_BEDROCK": "[REDACTED]"
+      },
+      "requires_logout": true,
+      "coming_soon": true
+    },
+    "vertex": {
+      "name": "Google Vertex AI (em breve)",
+      "cli_command": "openclaude",
+      "env_vars": {
+        "CLAUDE_CODE_USE_VERTEX": "1",
+        "ANTHROPIC_VERTEX_PROJECT_ID": "",
+        "CLOUD_ML_REGION": ""
+      },
+      "default_region": "us-east5",
+      "requires_logout": true,
+      "coming_soon": true
+    },
+    "codex_auth": {
+      "name": "OpenAI Codex (OAuth)",
+      "description": "GPT-5.x via ChatGPT Codex — login OAuth, sem API key",
+      "cli_command": "openclaude",
+      "env_vars": {
+        "CLAUDE_CODE_USE_OPENAI": "1",
+        "OPENAI_MODEL": "codexplan"
+      },
+      "default_model": "codexplan",
+      "auth_type": "oauth",
+      "auth_file": "~/.codex/auth.json",
+      "requires_logout": true,
+      "setup_hint": "Use o botão Login para autenticar via OAuth do ChatGPT",
+      "mode": "code",
+      "fallback_providers": [
+        "nvidia"
+      ],
+      "fallback_models": [
+        "codexplan",
+        "codexspark"
+      ]
+    }
+  },
+  "telegram_provider": "nvidia"
+}

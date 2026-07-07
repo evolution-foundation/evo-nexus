@@ -134,3 +134,25 @@ plugins/*/
 
 # ── Brain Repo raw transcripts (not backed up to brain repo) ──
 memory/raw-transcripts/
+
+# ── Private root-level workspace data (business content, runtime) ──
+# These top-level folders hold the user's private operational output and must
+# never be committed (especially not in a public PR). Mirrors workspace/** rule.
+/community/
+/courses/
+/daily-logs/
+/finance/
+/logs/
+/meetings/
+/projects/
+/social/
+/strategy/
+
+# ── Local backups & reload triggers ──
+*.bak.telegram
+.env.bak*
+config/.reload
+
+# ── One-off integration test scaffolding (may contain hardcoded creds) ──
+scripts/ghost_integration_test.py
+.git-rewrite

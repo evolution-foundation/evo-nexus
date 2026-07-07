@@ -43,7 +43,7 @@ FROM python:3.12-slim AS runtime
 # System deps: curl for healthcheck + Node.js 22 for terminal-server binary.
 # We use NodeSource so the final image is clean (no build toolchain).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        curl ca-certificates gnupg openssl \
+        curl ca-certificates git gnupg openssl \
     && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && apt-get clean \
@@ -53,12 +53,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 ENV PATH="/root/.local/bin:${PATH}"
 
-# Both CLIs — the Providers page in the UI switches between them at runtime.
+# CLIs — the Providers page in the UI switches between them at runtime.
 # @gitlawb/openclaude@latest is pinned to the npm dist-tag which as of the
 # current fix is ≥0.3.0 (first version with the Codex shortcut endpoint).
+# @openai/codex is used only to run the supported Codex device-auth flow and
+# persist ~/.codex/auth.json for OpenClaude's codex_auth provider.
 RUN npm install -g \
         @anthropic-ai/claude-code \
-        @gitlawb/openclaude@latest
+        @gitlawb/openclaude@latest \
+        @openai/codex
 
 # Timezone
 ENV TZ=America/Sao_Paulo
@@ -74,10 +77,12 @@ RUN uv venv .venv && uv sync --no-dev
 COPY dashboard/       dashboard/
 COPY social-auth/     social-auth/
 COPY scheduler.py     ./
+COPY backup.py        ./
 COPY .claude/         .claude/
 COPY memory/          memory/
 COPY ADWs/            ADWs/
 COPY config/          config/
+COPY docs/            docs/
 COPY Makefile         ./
 COPY .env.example     ./
 
@@ -94,6 +99,12 @@ RUN mkdir -p dashboard/data
 RUN mkdir -p /workspace/_defaults/config \
     && cp -a /workspace/config/. /workspace/_defaults/config/ 2>/dev/null || true \
     && cp /workspace/.env.example /workspace/_defaults/.env.example 2>/dev/null || true
+
+# Stash .claude so the entrypoint can re-seed built-ins into the mounted
+# /workspace/.claude volume on every boot (custom-*/plugin-* files persist).
+# agent-memory is excluded — it has its own volume and must never be reset.
+RUN cp -a /workspace/.claude /workspace/_defaults/claude \
+    && rm -rf /workspace/_defaults/claude/agent-memory
 
 # Bootstrap wrapper (config volume + source .env + wait-for-key)
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh

@@ -28,7 +28,25 @@ def _load_dotenv():
 
 _load_dotenv()
 
-BASE_URL = "https://graph.facebook.com/v25.0"
+# Two Meta products, two API hosts:
+#   - "Login do Facebook" tokens (EAA...) → graph.facebook.com, need a linked FB Page
+#   - "Instagram API com Login do Instagram" tokens (IGAA...) → graph.instagram.com, direct
+FB_BASE_URL = "https://graph.facebook.com/v25.0"
+IG_BASE_URL = "https://graph.instagram.com/v23.0"
+
+
+def _is_ig_login_token(token: str) -> bool:
+    """Instagram-Login tokens start with IGAA (vs Facebook EAA tokens)."""
+    return token.startswith("IG")
+
+
+def _base_for_token(token: str) -> str:
+    return IG_BASE_URL if _is_ig_login_token(token) else FB_BASE_URL
+
+
+def _node_id(account: dict, token: str) -> str:
+    """Path for the IG user node. IG-Login accepts 'me'; Facebook needs the IG id."""
+    return account.get("account_id", "") or ("me" if _is_ig_login_token(token) else "")
 
 
 # ── Account discovery ────────────────────────────────
@@ -71,11 +89,11 @@ def _token(account: dict) -> str:
 
 # ── API calls ────────────────────────────────────────
 
-def _api_get(path: str, params: dict = None) -> dict:
+def _api_get(path: str, params: dict = None, base: str = FB_BASE_URL) -> dict:
     """Make GET request to Graph API."""
     params = params or {}
     query = urllib.parse.urlencode(params)
-    url = f"{BASE_URL}/{path}"
+    url = f"{base}/{path}"
     if query:
         url += f"?{query}"
 
@@ -94,15 +112,16 @@ def _api_get(path: str, params: dict = None) -> dict:
 
 def profile(account: dict) -> dict:
     """Get Instagram profile — followers, media count, username."""
-    ig_id = account.get("account_id", "")
     token = _token(account)
+    base = _base_for_token(token)
+    ig_id = _node_id(account, token)
     if not ig_id or not token:
         return {"error": "No account_id or token configured"}
 
     data = _api_get(ig_id, {
         "fields": "username,name,biography,followers_count,follows_count,media_count,profile_picture_url,website",
         "access_token": token,
-    })
+    }, base=base)
 
     if "error" in data and "detail" not in data:
         return data
@@ -123,8 +142,9 @@ def profile(account: dict) -> dict:
 
 def recent_posts(account: dict, limit: int = 10) -> dict:
     """Get recent posts with engagement metrics."""
-    ig_id = account.get("account_id", "")
     token = _token(account)
+    base = _base_for_token(token)
+    ig_id = _node_id(account, token)
     if not ig_id or not token:
         return {"error": "No account_id or token configured"}
 
@@ -132,7 +152,7 @@ def recent_posts(account: dict, limit: int = 10) -> dict:
         "fields": "id,caption,media_type,media_url,thumbnail_url,permalink,timestamp,like_count,comments_count",
         "limit": limit,
         "access_token": token,
-    })
+    }, base=base)
 
     if "error" in data and "detail" not in data:
         return data
@@ -170,10 +190,12 @@ def recent_posts(account: dict, limit: int = 10) -> dict:
 def post_insights(account: dict, post_id: str) -> dict:
     """Get insights for a specific post."""
     token = _token(account)
+    base = _base_for_token(token)
+    metric = "reach,likes,comments,saved,shares" if _is_ig_login_token(token) else "impressions,reach,engagement"
     data = _api_get(f"{post_id}/insights", {
-        "metric": "impressions,reach,engagement",
+        "metric": metric,
         "access_token": token,
-    })
+    }, base=base)
 
     if "error" in data:
         return data
@@ -187,16 +209,17 @@ def post_insights(account: dict, post_id: str) -> dict:
 
 def account_insights(account: dict) -> dict:
     """Get account-level insights (last 30 days)."""
-    ig_id = account.get("account_id", "")
     token = _token(account)
+    base = _base_for_token(token)
+    ig_id = _node_id(account, token)
     if not ig_id or not token:
         return {"error": "No account_id or token configured"}
 
-    data = _api_get(f"{ig_id}/insights", {
-        "metric": "impressions,reach,profile_views",
-        "period": "day",
-        "access_token": token,
-    })
+    params = {"metric": "impressions,reach,profile_views", "period": "day", "access_token": token}
+    if _is_ig_login_token(token):
+        # IG-Login deprecated 'impressions'; reach is the reliable time-series metric
+        params["metric"] = "reach"
+    data = _api_get(f"{ig_id}/insights", params, base=base)
 
     if "error" in data:
         return data

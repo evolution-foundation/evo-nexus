@@ -46,6 +46,10 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
 # Todoist CLI (used by int-todoist skill)
 RUN npm install -g todoist-ts-cli
 
+# Bun — required by Claude Code channel plugins (the telegram channel's
+# start script is `bun install && bun server.ts`)
+RUN npm install -g bun
+
 # Timezone (default America/Sao_Paulo, override via TZ env var)
 ENV TZ=America/Sao_Paulo
 RUN ln -snf /usr/share/zoneinfo/${TZ} /etc/localtime && echo "${TZ}" > /etc/timezone
@@ -54,7 +58,12 @@ WORKDIR /workspace
 
 # Python deps (cache-friendly layer)
 COPY pyproject.toml uv.lock ./
-RUN uv venv .venv && uv sync
+RUN uv venv .venv && uv sync --no-dev
+
+# LiteLLM proxy — fronts NVIDIA NIM with an Anthropic-compatible /v1/messages
+# endpoint so `claude --channels` (Telegram bot) can run without an Anthropic
+# key. Used by scripts/telegram_swarm_entry.sh.
+RUN uv pip install --python .venv/bin/python 'litellm[proxy]'
 
 # Application code — everything else
 COPY . .
@@ -68,6 +77,14 @@ RUN mkdir -p /workspace/_defaults/config \
        fi \
     && if [ -f /workspace/.env.example ]; then \
           cp /workspace/.env.example /workspace/_defaults/.env.example; \
+       fi
+
+# Stash .claude so the entrypoint can re-seed built-ins into the mounted
+# /workspace/.claude volume on every boot (custom-*/plugin-* files persist).
+# agent-memory is excluded — it has its own volume and must never be reset.
+RUN if [ -d /workspace/.claude ]; then \
+          cp -a /workspace/.claude /workspace/_defaults/claude \
+          && rm -rf /workspace/_defaults/claude/agent-memory; \
        fi
 
 # Bootstrap / secrets-to-env / wait-for-config wrapper

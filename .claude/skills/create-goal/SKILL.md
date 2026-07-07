@@ -48,25 +48,54 @@ For a Project:
 For a Mission:
 - **Slug, title, description, target_metric, target_value, due_date, status** — same pattern
 
-## Step 3: Call the API
+## Step 3: Write to Nexus
 
-Use `from dashboard.backend.sdk_client import evo` — auto-handles URL + auth.
+Use the local writer script. Do **not** rely on browser auth, cookies, or `DASHBOARD_API_TOKEN`; OpenClaude sessions may not share dashboard auth state.
 
-```python
-from dashboard.backend.sdk_client import evo
+List the current hierarchy first:
 
-# Goal:
-goal = evo.post("/api/goals", {
-    "slug": "evo-ai-100-customers",
-    "project_id": project_id,
-    "title": "100 paying customers by Jun 30",
-    "metric_type": "count",
-    "target_metric": "paying customers",
-    "target_value": 100,
-    "due_date": "2026-06-30",
-})
+```bash
+python3 .claude/skills/create-goal/scripts/nexus_goal.py list
+```
 
-# Same shape for /api/projects and /api/missions.
+Create a goal:
+
+```bash
+python3 .claude/skills/create-goal/scripts/nexus_goal.py create-goal \
+  --title "100 paying customers by Jun 30" \
+  --slug evo-ai-100-customers \
+  --project-slug evo-ai \
+  --project-title "Evo AI" \
+  --metric-type count \
+  --target-metric "paying customers" \
+  --target-value 100 \
+  --due-date 2026-06-30
+```
+
+Create a mission or project explicitly when needed:
+
+```bash
+python3 .claude/skills/create-goal/scripts/nexus_goal.py create-mission \
+  --title "Evolution MRR Q4 2026" \
+  --slug evolution-mrr-q4-2026 \
+  --target-metric "MRR" \
+  --target-value 1000000 \
+  --due-date 2026-12-31
+
+python3 .claude/skills/create-goal/scripts/nexus_goal.py create-project \
+  --title "Evo AI" \
+  --slug evo-ai \
+  --mission-slug evolution-mrr-q4-2026
+```
+
+Create starter tasks:
+
+```bash
+python3 .claude/skills/create-goal/scripts/nexus_goal.py create-task \
+  --goal-slug evo-ai-100-customers \
+  --title "Launch annual billing plan" \
+  --assignee-agent mako-marketing \
+  --priority 2
 ```
 
 Response includes `id` and `slug`.
@@ -87,7 +116,7 @@ Return the slug and show how to attach it to a routine, heartbeat, or ticket:
   ...
 
 # ticket
-evo.post("/api/tickets", {"title": "...", "goal_id": goal["id"]})
+Create or edit the ticket with goal_id=<numeric goal id>.
 ```
 
 When linked, the agent running the work receives Mission → Project → Goal chain automatically in its prompt.

@@ -93,6 +93,12 @@ except AttributeError:
 
 CORS(app, origins=_cors_allowed_origins(), supports_credentials=True)
 
+# --------------- Rate limiting (in-memory, single-process Flask) ---------------
+# Vault audit §2.S1 CRITICAL: all public endpoints require rate limiting.
+# The limiter singleton lives in rate_limit.py to avoid circular imports with blueprints.
+from rate_limit import limiter
+limiter.init_app(app)
+
 # --------------- Database ---------------
 from models import db, User, BrainRepoConfig, needs_setup, seed_roles, seed_systems
 db.init_app(app)
@@ -132,6 +138,7 @@ with app.app_context():
                 goal_id TEXT,
                 required_secrets TEXT DEFAULT '[]',
                 decision_prompt TEXT NOT NULL,
+                handler TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
@@ -450,9 +457,11 @@ with app.app_context():
                 PRIMARY KEY (plugin_slug, handler_path)
             );
             CREATE INDEX IF NOT EXISTS idx_plugins_status ON plugins_installed(status);
-            CREATE INDEX IF NOT EXISTS idx_plugin_audit_plugin ON plugin_audit_log(plugin_id, created_at);
             CREATE INDEX IF NOT EXISTS idx_hook_cb_disabled ON plugin_hook_circuit_state(disabled_until);
         """)
+        _pal_cols = {row[1] for row in _cur.execute("PRAGMA table_info(plugin_audit_log)").fetchall()}
+        if "plugin_id" in _pal_cols:
+            _cur.execute("CREATE INDEX IF NOT EXISTS idx_plugin_audit_plugin ON plugin_audit_log(plugin_id, created_at)")
         _conn.commit()
     # --- End plugins migration ---
 
@@ -516,6 +525,10 @@ with app.app_context():
     # source_plugin: tag heartbeats that were contributed by a plugin so the
     # plugin detail page can filter them via GET /api/heartbeats?source_plugin=.
     _hb_cols = {row[1] for row in _cur.execute("PRAGMA table_info(heartbeats)").fetchall()}
+    if "handler" not in _hb_cols:
+        _cur.execute("ALTER TABLE heartbeats ADD COLUMN handler TEXT")
+        _conn.commit()
+        _hb_cols.add("handler")
     if "source_plugin" not in _hb_cols:
         _cur.execute("ALTER TABLE heartbeats ADD COLUMN source_plugin TEXT")
         _conn.commit()
@@ -603,6 +616,27 @@ with app.app_context():
         _conn.commit()
     # --- End Wave 2.2r migration ---
 
+    # --- B3 safe_uninstall migration: plugin_orphans table ---
+    _existing_tables_b3 = {row[0] for row in _cur.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    if "plugin_orphans" not in _existing_tables_b3:
+        _cur.executescript("""
+            CREATE TABLE IF NOT EXISTS plugin_orphans (
+                id TEXT PRIMARY KEY,
+                slug TEXT NOT NULL,
+                tablename TEXT NOT NULL,
+                orphaned_at TEXT NOT NULL,
+                orphaned_by_user_id INTEGER,
+                original_plugin_version TEXT,
+                original_sha256 TEXT,
+                original_publisher_url TEXT,
+                recovered_at TEXT,
+                UNIQUE(slug, tablename)
+            );
+            CREATE INDEX IF NOT EXISTS idx_plugin_orphans_slug ON plugin_orphans(slug);
+        """)
+        _conn.commit()
+    # --- End B3 safe_uninstall migration ---
+
     # Fix corrupted datetime columns (NULL or non-string values crash SQLAlchemy)
     for _tbl, _col in [("roles", "created_at"), ("users", "created_at"), ("users", "last_login")]:
         try:
@@ -621,6 +655,9 @@ with app.app_context():
     # ({active_provider, providers: {...}}), copy providers.example.json
     # over it. This recovers from broken state left by older versions of
     # the onboarding wizard that naively wrote {<id>: {api_key, enabled}}.
+    # If the schema is valid but older than the bundled example, merge missing
+    # providers/fields from providers.example.json without overwriting secrets
+    # stored in the persistent Docker volume.
     try:
         _providers_file = WORKSPACE / "config" / "providers.json"
         _providers_example = WORKSPACE / "config" / "providers.example.json"
@@ -639,6 +676,18 @@ with app.app_context():
                 import shutil as _shutil
                 _shutil.copy2(_providers_example, _providers_file)
                 print("[migration] providers.json had invalid schema, restored from providers.example.json")
+            elif _ok and _providers_example.is_file():
+                try:
+                    from routes.providers import _merge_provider_defaults as _merge_provider_defaults
+                    _merged, _changed = _merge_provider_defaults(_data)
+                    if _changed:
+                        _providers_file.write_text(
+                            _json.dumps(_merged, indent=2, ensure_ascii=False) + "\n",
+                            encoding="utf-8",
+                        )
+                        print("[migration] providers.json merged missing provider defaults")
+                except Exception as _merge_exc:
+                    print(f"[migration] providers.json default merge skipped: {_merge_exc}")
     except Exception as _mig_exc:
         print(f"[migration] providers.json normalization skipped: {_mig_exc}")
     # --- End providers.json migration ---
@@ -732,7 +781,7 @@ login_manager.init_app(app)
 
 @login_manager.user_loader
 def load_user(user_id):
-    return User.query.get(int(user_id))
+    return db.session.get(User, int(user_id))
 
 @login_manager.unauthorized_handler
 def unauthorized():
@@ -796,6 +845,7 @@ def auth_middleware():
         path in PUBLIC_PATHS
         or path.startswith("/api/docs")
         or path.startswith("/api/triggers/webhook/")
+        or path.startswith("/api/instagram/webhook")
         or (path.startswith("/api/shares/") and "/view" in path)
         or path.startswith("/api/knowledge/v1/")
     ):
@@ -850,6 +900,8 @@ from routes.knowledge_v1 import bp as knowledge_v1_bp
 from routes.databases import bp as databases_bp
 from routes.plugins import bp as plugins_bp
 from routes.mcp_servers import bp as mcp_servers_bp
+from routes.plugin_public_pages import bp as plugin_public_pages_bp
+from routes.instagram import bp as instagram_api_bp
 
 # Brain Repo + Onboarding blueprints (loaded after routes are created)
 try:
@@ -890,6 +942,9 @@ app.register_blueprint(tasks_bp)
 app.register_blueprint(triggers_bp)
 app.register_blueprint(terminal_proxy_bp)
 
+# Instagram API routes (webhooks, publish, comments, DMs)
+app.register_blueprint(instagram_api_bp)
+
 # Mount the terminal-server WebSocket proxy on the same Sock instance the
 # rest of the app uses. Done after the blueprint is registered so route
 # names are unique. Without this, browsers connecting from a host other
@@ -922,8 +977,15 @@ app.register_blueprint(knowledge_v1_bp)
 app.register_blueprint(databases_bp)
 app.register_blueprint(plugins_bp)
 app.register_blueprint(mcp_servers_bp)
+# B2.0: plugin public pages (unauthenticated, token-bound portals)
+app.register_blueprint(plugin_public_pages_bp)
 
 # --------------- Social Auth blueprints ---------------
+# The social-auth package lives as a sibling directory; add it once so the
+# dashboard backend can mount the same OAuth blueprints on port 8080.
+SOCIAL_AUTH_DIR = WORKSPACE / "social-auth"
+if SOCIAL_AUTH_DIR.is_dir() and str(SOCIAL_AUTH_DIR) not in sys.path:
+    sys.path.insert(0, str(SOCIAL_AUTH_DIR))
 from auth.youtube import bp as youtube_auth_bp
 from auth.instagram import bp as instagram_auth_bp
 from auth.linkedin import bp as linkedin_auth_bp

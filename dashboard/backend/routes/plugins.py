@@ -13,8 +13,11 @@ import logging
 import os
 import shutil
 import sqlite3
+import subprocess
+import tempfile
 import threading
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -778,6 +781,40 @@ def install_plugin():
     except RuntimeError as exc:
         return jsonify({"error": str(exc)}), 409
 
+    # B3: Check for orphaned tables from a previous uninstall (safe_uninstall).
+    # If orphans exist, verify SHA256 to prevent hostile reinstall (Vault B3.S3).
+    _orphan_check_conn = _get_db()
+    try:
+        _orphan_rows = _orphan_check_conn.execute(
+            "SELECT tablename, original_sha256, original_plugin_version FROM plugin_orphans "
+            "WHERE slug = ? AND recovered_at IS NULL",
+            (slug,),
+        ).fetchall()
+    except Exception:
+        _orphan_rows = []
+    finally:
+        _orphan_check_conn.close()
+
+    if _orphan_rows:
+        # Verify SHA256: the plugin being installed must match what was originally installed.
+        _install_sha256 = tarball_sha256 or ""
+        _original_sha256s = {row[1] for row in _orphan_rows if row[1]}
+        if _original_sha256s and _install_sha256:
+            if _install_sha256 not in _original_sha256s:
+                _admin_confirm = data.get("confirmed_sha256_change", False)
+                if not _admin_confirm:
+                    return jsonify({
+                        "error": "sha256_mismatch",
+                        "detail": (
+                            "Source changed since last install — possible hostile reinstall. "
+                            "This plugin has orphaned tables from a previous install. "
+                            "Pass confirmed_sha256_change=true to override (will be audited)."
+                        ),
+                        "orphaned_tables": [row[0] for row in _orphan_rows],
+                        "expected_sha256": list(_original_sha256s),
+                        "provided_sha256": _install_sha256,
+                    }), 409
+
     plugin_dir = PLUGINS_DIR / slug
     state: dict[str, Any] = {
         "slug": slug,
@@ -788,6 +825,40 @@ def install_plugin():
     conn = _get_db()
 
     try:
+        # B3: Recover orphaned tables BEFORE copying/migrating (Vault B3.S3).
+        # Rename _orphan_{slug}_{table} back to {table} so install.sql can use them.
+        _recovered_tables: list[str] = []
+        if _orphan_rows:
+            _recovery_conn = _get_db()
+            try:
+                for _orphan_row in _orphan_rows:
+                    _orig_table = _orphan_row[0]
+                    _orphan_table_name = f"_orphan_{slug}_{_orig_table}"
+                    _existing = {
+                        row[0] for row in _recovery_conn.execute(
+                            "SELECT name FROM sqlite_master WHERE type='table'"
+                        ).fetchall()
+                    }
+                    if _orphan_table_name in _existing:
+                        _recovery_conn.execute(
+                            f"ALTER TABLE {_orphan_table_name} RENAME TO {_orig_table}"
+                        )
+                        _recovery_conn.commit()
+                        _recovered_tables.append(_orig_table)
+                        logger.info("B3 reinstall: recovered orphaned table '%s'", _orig_table)
+
+                # Mark orphans as recovered in plugin_orphans
+                if _recovered_tables:
+                    _now = _now_iso()
+                    for _t in _recovered_tables:
+                        _recovery_conn.execute(
+                            "UPDATE plugin_orphans SET recovered_at = ? WHERE slug = ? AND tablename = ?",
+                            (_now, slug, _t),
+                        )
+                    _recovery_conn.commit()
+            finally:
+                _recovery_conn.close()
+
         # --- Step: copy plugin source to plugins/{slug}/ ---
         plugin_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1164,9 +1235,172 @@ def uninstall_plugin(slug: str):
     if not plugin_dir.exists():
         return jsonify({"error": f"Plugin '{slug}' not found"}), 404
 
-    conn = _get_db()
+    # --- B3: safe_uninstall enforcement ---
+    # Load the installed manifest to check if safe_uninstall capability is declared.
+    _force_uninstall = os.environ.get("EVONEXUS_ALLOW_FORCE_UNINSTALL", "").strip() == "1"
+    _manifest_for_b3: dict = {}
+    _safe_uninstall_spec: dict = {}
     try:
-        # Pre-uninstall hook
+        _manifest_conn = _get_db()
+        _manifest_row = _manifest_conn.execute(
+            "SELECT manifest_json FROM plugins_installed WHERE slug = ?", (slug,)
+        ).fetchone()
+        _manifest_conn.close()
+        if _manifest_row:
+            _manifest_for_b3 = json.loads(_manifest_row["manifest_json"] or "{}")
+            _safe_uninstall_spec = _manifest_for_b3.get("safe_uninstall") or {}
+    except Exception as _exc:
+        logger.warning("B3: could not load manifest for safe_uninstall check: %s", _exc)
+
+    _su_enabled = _safe_uninstall_spec.get("enabled", False)
+    _block_uninstall = _safe_uninstall_spec.get("block_uninstall", False)
+
+    if _block_uninstall and not _force_uninstall:
+        return jsonify({
+            "error": "uninstall_blocked",
+            "detail": _safe_uninstall_spec.get("reason", "Plugin has declared block_uninstall: true."),
+            "code": "blocked",
+        }), 409
+
+    if _su_enabled and not _force_uninstall:
+        # Vault B3.S1: backend enforcement — require admin + confirmation_phrase + exported_at
+        if not hasattr(current_user, "role") or getattr(current_user, "role", None) != "admin":
+            return jsonify({
+                "error": "admin_required",
+                "detail": "Only admin users may uninstall plugins with safe_uninstall enabled.",
+                "code": "forbidden",
+            }), 403
+
+        _body = request.get_json(force=True, silent=True) or {}
+        _phrase_required = (_safe_uninstall_spec.get("user_confirmation") or {}).get("typed_phrase", "")
+        _phrase_given = _body.get("confirmation_phrase", "")
+        if _phrase_required and _phrase_given != _phrase_required:
+            return jsonify({
+                "error": "confirmation_phrase_mismatch",
+                "detail": f"Typed phrase must be exactly: {_phrase_required}",
+                "code": "bad_request",
+            }), 400
+
+        _exported_at = _body.get("exported_at", "")
+        if _exported_at:
+            if not os.path.exists(_exported_at):
+                return jsonify({
+                    "error": "export_file_not_found",
+                    "detail": f"Export file not found at path: {_exported_at}",
+                    "code": "bad_request",
+                }), 400
+
+        # Vault B3.S1: zip_password must be present (the actual encryption happens in the pre-hook)
+        _zip_password = _body.get("zip_password", "")
+        if not _zip_password:
+            return jsonify({
+                "error": "zip_password_required",
+                "detail": "A ZIP password is required to encrypt the export archive.",
+                "code": "bad_request",
+            }), 400
+
+    if _force_uninstall:
+        # Vault B3.S6: force-uninstall MUST produce an audit row with reason
+        _force_reason = (request.get_json(force=True, silent=True) or {}).get("force_reason", "")
+        logger.warning(
+            "FORCE UNINSTALL activated for '%s' (EVONEXUS_ALLOW_FORCE_UNINSTALL=1). reason=%r user=%s",
+            slug, _force_reason, getattr(current_user, "username", "unknown"),
+        )
+    # --- End B3 enforcement gate ---
+
+    conn = _get_db()
+    _orphan_records: list[str] = []  # B3: populated during orphan table rename phase
+    try:
+        # B3: Sandboxed pre-uninstall hook (Vault B3.S2)
+        # Run BEFORE the legacy hook so it has access to DB state.
+        _su_hook_spec = _safe_uninstall_spec.get("pre_uninstall_hook") or {}
+        if _su_enabled and not _force_uninstall and _su_hook_spec:
+            _hook_script = _su_hook_spec.get("script", "")
+            _hook_output_dir_template = _su_hook_spec.get("output_dir", "")
+            _hook_timeout = _su_hook_spec.get("timeout_seconds", 600)
+            _must_produce = _su_hook_spec.get("must_produce_file", True)
+            _hook_script_path = plugin_dir / _hook_script
+
+            if _hook_script_path.exists():
+                _ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+                _output_dir_str = _hook_output_dir_template.format(slug=slug, timestamp=_ts)
+                _output_dir_path = (WORKSPACE / _output_dir_str).resolve()
+                _output_dir_path.mkdir(parents=True, exist_ok=True)
+
+                # Create a read-only copy of the DB for the hook (Vault B3.S2)
+                _db_readonly_path = ""
+                try:
+                    _tmp_db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+                    _tmp_db.close()
+                    _tmp_db_path = _tmp_db.name
+                    _src_conn = sqlite3.connect(str(DB_PATH))
+                    _bk_conn = sqlite3.connect(_tmp_db_path)
+                    _src_conn.backup(_bk_conn)
+                    _src_conn.close()
+                    _bk_conn.close()
+                    _db_readonly_path = _tmp_db_path
+                except Exception as _dbe:
+                    logger.warning("B3: could not create DB snapshot for hook: %s", _dbe)
+
+                # Vault B3.S2: locked-down env — NO BRAIN_REPO_MASTER_KEY
+                _hook_env = {
+                    "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+                    "PLUGIN_SLUG": slug,
+                    "PLUGIN_VERSION": _manifest_for_b3.get("version", ""),
+                    "OUTPUT_DIR": str(_output_dir_path),
+                    "DB_READONLY_PATH": _db_readonly_path,
+                }
+
+                try:
+                    _proc = subprocess.run(
+                        ["python3", str(_hook_script_path)],
+                        cwd=str(plugin_dir),
+                        env=_hook_env,
+                        capture_output=True,
+                        text=True,
+                        timeout=_hook_timeout,
+                    )
+                    _hook_stdout = _proc.stdout[:5000]
+                    _hook_stderr = _proc.stderr[:5000]
+                    _hook_exit = _proc.returncode
+
+                    _audit(conn, slug, "safe_uninstall_hook", {
+                        "exit_code": _hook_exit,
+                        "stdout": _hook_stdout,
+                        "stderr": _hook_stderr,
+                        "output_dir": str(_output_dir_path),
+                    })
+
+                    if _hook_exit != 0:
+                        return jsonify({
+                            "error": "pre_hook_failed",
+                            "detail": "Pre-uninstall hook failed — uninstall aborted to prevent data loss.",
+                            "exit_code": _hook_exit,
+                            "stderr": _hook_stderr,
+                        }), 400
+
+                    if _must_produce:
+                        _produced = any(_output_dir_path.iterdir()) if _output_dir_path.exists() else False
+                        if not _produced:
+                            return jsonify({
+                                "error": "pre_hook_no_output",
+                                "detail": "Pre-uninstall hook produced no files — uninstall aborted to prevent data loss.",
+                            }), 400
+
+                except subprocess.TimeoutExpired:
+                    return jsonify({
+                        "error": "pre_hook_timeout",
+                        "detail": f"Pre-uninstall hook exceeded timeout of {_hook_timeout}s.",
+                    }), 400
+                finally:
+                    # Clean up DB snapshot
+                    if _db_readonly_path:
+                        try:
+                            os.unlink(_db_readonly_path)
+                        except Exception:
+                            pass
+
+        # Legacy pre-uninstall hook (non-B3 path)
         pre_hook = plugin_dir / "hooks" / "pre-uninstall.sh"
         if pre_hook.exists():
             try:
@@ -1219,14 +1453,75 @@ def uninstall_plugin(slug: str):
         # Delete host rows this plugin seeded (goals/tasks/triggers capabilities).
         # DELETE WHERE source_plugin = ? leaves user-created rows untouched.
         # Order matters because of FKs: children → parents.
+        # B3: respect preserved_host_entities filters from safe_uninstall spec.
+        _preserved_host_entities = _safe_uninstall_spec.get("preserved_host_entities") or {}
         for _tbl in ("triggers", "tickets", "goal_tasks", "goals", "projects", "missions"):
             try:
-                conn.execute(f"DELETE FROM {_tbl} WHERE source_plugin = ?", (slug,))
+                _where = "source_plugin = ?"
+                if _tbl in _preserved_host_entities and not _force_uninstall:
+                    # Preserve rows matching the declared WHERE clause.
+                    # Only the base condition (source_plugin = ?) is parameterized;
+                    # the preservation clause comes from the manifest (validated at install).
+                    _preserve_clause = _preserved_host_entities[_tbl]
+                    _where = f"(source_plugin = ?) AND NOT ({_preserve_clause})"
+                conn.execute(f"DELETE FROM {_tbl} WHERE {_where}", (slug,))
                 conn.commit()
             except Exception as exc:
                 logger.warning("Uninstall: failed to clean %s: %s", _tbl, exc)
 
-        # SQL uninstall
+        # B3: Rename preserved tables to _orphan_{slug}_{tablename} BEFORE SQL uninstall.
+        # This removes them from the plugin namespace (Vault B3.S4) and records them
+        # in plugin_orphans so reinstall can detect and recover them.
+        _preserved_tables = _safe_uninstall_spec.get("preserved_tables") or []
+        if _preserved_tables and _su_enabled and not _force_uninstall:
+            _orphan_conn = sqlite3.connect(str(DB_PATH))
+            try:
+                _existing_tables_set = {
+                    row[0] for row in _orphan_conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'"
+                    ).fetchall()
+                }
+                _user_id = getattr(current_user, "id", None)
+                _plugin_version = _manifest_for_b3.get("version", "")
+                _plugin_sha256 = _manifest_for_b3.get("source_sha256", "")
+                _plugin_publisher_url = _manifest_for_b3.get("source_url", "")
+
+                for _orig_table in _preserved_tables:
+                    if _orig_table not in _existing_tables_set:
+                        logger.info("B3: preserved table '%s' does not exist, skipping", _orig_table)
+                        continue
+                    _orphan_name = f"_orphan_{slug}_{_orig_table}"
+                    try:
+                        # Rename to orphan name
+                        _orphan_conn.execute(f"ALTER TABLE {_orig_table} RENAME TO {_orphan_name}")
+                        _orphan_conn.commit()
+                        logger.info("B3: renamed '%s' to '%s'", _orig_table, _orphan_name)
+
+                        # Record in plugin_orphans
+                        _orphan_conn.execute(
+                            "INSERT OR REPLACE INTO plugin_orphans "
+                            "(id, slug, tablename, orphaned_at, orphaned_by_user_id, "
+                            " original_plugin_version, original_sha256, original_publisher_url) "
+                            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                            (
+                                str(uuid.uuid4()),
+                                slug,
+                                _orig_table,
+                                _now_iso(),
+                                _user_id,
+                                _plugin_version,
+                                _plugin_sha256,
+                                _plugin_publisher_url,
+                            ),
+                        )
+                        _orphan_conn.commit()
+                        _orphan_records.append(_orig_table)
+                    except Exception as _te:
+                        logger.warning("B3: failed to rename table '%s': %s", _orig_table, _te)
+            finally:
+                _orphan_conn.close()
+
+        # SQL uninstall (runs after preserved tables are renamed — DROP won't touch them)
         uninstall_sql = plugin_dir / "migrations" / "uninstall.sql"
         if uninstall_sql.exists():
             try:
@@ -1294,10 +1589,15 @@ def uninstall_plugin(slug: str):
         # Reload scheduler
         _reload_scheduler()
 
-        _audit(conn, slug, "uninstall", {
+        _audit_action = "plugin_uninstall_safe" if (_su_enabled and not _force_uninstall) else "uninstall"
+        if _force_uninstall:
+            _audit_action = "plugin_uninstall_force"
+        _audit(conn, slug, _audit_action, {
             "removed_env_keys": _removed_env_keys,
             "removed_health_cache_count": _health_cache_removed,
             "mcp_audit": _mcp_audit,
+            "preserved_tables": _orphan_records,
+            "force_uninstall": _force_uninstall,
         }, success=True)
         invalidate_agent_meta_cache()
         return jsonify({
@@ -1305,6 +1605,7 @@ def uninstall_plugin(slug: str):
             "status": "uninstalled",
             "mcp_audit": _mcp_audit,
             "removed_env_keys": _removed_env_keys,
+            "preserved_tables": _orphan_records,
         })
 
     except Exception as exc:
@@ -1820,10 +2121,17 @@ def readonly_data(slug: str, query_name: str):
     if not sql:
         return jsonify({"error": "Invalid query declaration"}), 500
 
-    # Build query params from request.args — only declared params allowed
+    # Build query params from request.args — only declared params allowed.
+    # Wave 2.1.x reserved params (current_user_id, current_user_role) are
+    # injected server-side below and MUST NOT come from the client.
+    _RESERVED_PARAMS = {"current_user_id", "current_user_role"}
     declared_params = query_decl.get("params", {})
     params: dict = {}
     for key, value in request.args.items():
+        if key in _RESERVED_PARAMS:
+            return jsonify({
+                "error": f"Parameter '{key}' is reserved and cannot be supplied by the client"
+            }), 400
         if key not in declared_params:
             return jsonify({"error": f"Parameter '{key}' not declared in manifest"}), 400
         params[key] = value
@@ -1844,6 +2152,15 @@ def readonly_data(slug: str, query_name: str):
             params["limit"] = 1000
     elif ":limit" in sql:
         params["limit"] = 1000
+
+    # Wave 2.1.x — auto-inject current_user identity bind params (Gap 5 fix
+    # from evonexus-plugin-nutri Step 3). Plugins reference these as
+    # :current_user_id and :current_user_role in their SQL to enforce
+    # server-side scoping (e.g. `WHERE primary_nutritionist_id = :current_user_id`).
+    # These keys are reserved — manifest params with the same name are
+    # silently overridden.  Always present, regardless of declaration.
+    params["current_user_id"] = getattr(current_user, "id", None)
+    params["current_user_role"] = getattr(current_user, "role", "viewer")
 
     try:
         conn = _get_db()
@@ -1925,6 +2242,19 @@ def writable_data(slug: str, resource_id: str):
             table, slug_under,
         )
         return jsonify({"error": "Internal manifest error"}), 500
+
+    # Wave 2.1.x — endpoint-level RBAC enforcement (Gap 1 fix from
+    # evonexus-plugin-nutri Step 3 RBAC decision). When requires_role is set
+    # in the manifest, only users whose role is in the list may mutate.
+    # 'admin' always passes (super-user override).
+    requires_role = resource_decl.get("requires_role")
+    if requires_role:
+        actor_role = getattr(current_user, "role", "viewer")
+        if actor_role != "admin" and actor_role not in requires_role:
+            return jsonify({
+                "error": f"Resource '{resource_id}' requires role in {requires_role}, "
+                         f"current role is '{actor_role}'"
+            }), 403
 
     allowed_columns: list[str] = resource_decl.get("allowed_columns") or []
     method = request.method

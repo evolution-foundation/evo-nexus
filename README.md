@@ -8,276 +8,257 @@
   <img src="public/cover.svg" alt="EvoNexus" width="100%"/>
 </p>
 
-<h1 align="center">EvoNexus</h1>
+<h1 align="center">Omni-Nexus</h1>
 
 <p align="center">
-  Multi-agent operating layer built around the Claude Code CLI — part of the Evolution Foundation ecosystem.
+  Distribuição turbinada do <a href="https://github.com/evolution-foundation/evo-nexus">EvoNexus</a> pronta para VPS —
+  com gateway de IA <a href="https://github.com/diegosouzapw/OmniRoute">OmniRoute</a> embutido na stack,
+  seletor de providers e bot do Telegram multi-provider.
 </p>
 
 <p align="center">
-  <a href="https://github.com/evolution-foundation/evo-nexus/releases/latest"><img src="https://img.shields.io/github/v/release/evolution-foundation/evo-nexus?include_prereleases&label=version&color=00ffa7" alt="Latest version" /></a>
+  Uma camada de upgrade mantida por <a href="https://sistemabritto.com.br">Sistema Britto</a> sobre o EvoNexus da Evolution Foundation.
+</p>
+
+<p align="center">
+  <a href="https://github.com/evolution-foundation/evo-nexus"><img src="https://img.shields.io/badge/upstream-evolution--foundation%2Fevo--nexus-00ffa7" alt="Upstream" /></a>
   <a href="https://opensource.org/licenses/Apache-2.0"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License: Apache 2.0" /></a>
-  <a href="https://docs.evolutionfoundation.com.br"><img src="https://img.shields.io/badge/Docs-evolutionfoundation.com.br-00ffa7" alt="Documentation" /></a>
-  <a href="https://evolutionfoundation.com.br/community"><img src="https://img.shields.io/badge/Community-Join%20us-white" alt="Community" /></a>
+  <a href="https://sistemabritto.com.br"><img src="https://img.shields.io/badge/by-sistemabritto.com.br-white" alt="Sistema Britto" /></a>
 </p>
 
 <p align="center">
-  <a href="https://evolutionfoundation.com.br">Website</a> &middot;
-  <a href="https://docs.evolutionfoundation.com.br">Documentation</a> &middot;
-  <a href="#quick-start">Quick Start</a> &middot;
-  <a href="#web-dashboard">Dashboard</a> &middot;
-  <a href="https://evolutionfoundation.com.br/community">Community</a> &middot;
-  <a href="mailto:suporte@evofoundation.com.br">Support</a>
+  <a href="https://sistemabritto.com.br">Sistema Britto</a> &middot;
+  <a href="https://github.com/evolution-foundation/evo-nexus">Projeto original</a> &middot;
+  <a href="#deploy-completo-na-vps-passo-a-passo">Deploy na VPS</a> &middot;
+  <a href="#omniroute--o-gateway-de-ia-da-stack">OmniRoute</a> &middot;
+  <a href="#bot-do-telegram-multi-provider">Telegram</a> &middot;
+  <a href="#créditos--agradecimentos">Créditos</a>
 </p>
 
 ---
 
-> **Disclaimer:** EvoNexus is an independent, **unofficial open-source project**. It is **not affiliated with, endorsed by, or sponsored by Anthropic**. "Claude" and "Claude Code" are trademarks of Anthropic, PBC. This project integrates with Claude Code as a third-party tool and requires users to provide their own installation and credentials.
+> **Disclaimer:** assim como o EvoNexus original, este é um projeto open source **não oficial**, **não afiliado, endossado ou patrocinado pela Anthropic**. "Claude" e "Claude Code" são marcas da Anthropic, PBC. O projeto integra o Claude Code como ferramenta de terceiros e exige que você forneça sua própria instalação e credenciais.
 
 ---
 
-## What It Is
+## O que é este fork
 
-EvoNexus is an open source, **unofficial** multi-agent operating layer built around the [Claude Code](https://docs.anthropic.com/en/docs/claude-code) CLI protocol — but **not locked to any single LLM provider**. It runs natively on Anthropic's `claude` CLI by default, and can transparently switch to OpenAI, Google Gemini, OpenRouter (200+ models), AWS Bedrock, Google Vertex AI, or Codex Auth via [OpenClaude](https://www.npmjs.com/package/@gitlawb/openclaude). Same agents, same skills, same workflows — your choice of backend.
+O [EvoNexus](https://github.com/evolution-foundation/evo-nexus) é uma camada operacional multi-agente construída sobre o CLI do Claude Code: **38 agentes especializados** (17 de negócio + 21 de engenharia), 190+ skills, rotinas agendadas, heartbeats, tickets, goals e um dashboard web completo. Toda essa base vem do projeto original da [Evolution Foundation](https://evolutionfoundation.com.br) — leia o [README upstream](https://github.com/evolution-foundation/evo-nexus#readme) para conhecer a plataforma em profundidade.
 
-It turns a single CLI installation into a team of **38 specialized agents** organized in two ortogonal layers — **17 business agents** (operations, finance, community, marketing, HR, legal, product, data, learning retention) and **21 engineering agents** (architecture, planning, code review, testing, debugging, security, design, cycle orchestration, retrospective — 19 derived from [oh-my-claudecode](https://github.com/yeachan-heo/oh-my-claudecode), MIT, by Yeachan Heo + 2 native: Helm and Mirror). The engineering layer follows a canonical 6-phase workflow documented in `.claude/rules/dev-phases.md`.
+O **Omni-Nexus** é a camada de upgrade do [Sistema Britto](https://sistemabritto.com.br) em cima disso, com um objetivo claro: **rodar o EvoNexus inteiro numa VPS com Docker Swarm, sem depender de nenhum gateway de IA externo e sem exigir login claude.ai** — usando o provider que você quiser, inclusive vários ao mesmo tempo com fallback automático.
 
-**This is not a chatbot.** It is a real operating layer that runs routines, generates HTML reports, syncs meetings, triages emails, monitors community health, tracks financial metrics, and consolidates everything into a unified dashboard — all automated.
+### O upgrade em resumo
 
-## Part of the Evolution Foundation ecosystem
-
-EvoNexus is one of the projects maintained by Evolution Foundation. It is the operating layer that orchestrates the Foundation's own work — including the development of [Evo CRM Community](https://github.com/evolution-foundation/evo-crm-community), [Evolution API](https://github.com/evolution-foundation/evolution-api) and [Evolution Go](https://github.com/evolution-foundation/evolution-go).
-
-### Why EvoNexus?
-
-- **Markdown-first agents** — agents are `.md` files with system prompts, not code. No SDK, no compile step. Add an agent by dropping a file in `.claude/agents/`, or package reusable bundles via the plugin system (see [`docs/introduction.md`](docs/introduction.md))
-- **Skills as instructions** — reusable capabilities are markdown too. 190+ skills covering finance, community, social, engineering, data, legal, HR, ops, product, CS
-- **Multi-provider by design** — default runs on Anthropic's native `claude` CLI, but can switch to OpenRouter, OpenAI, Gemini, AWS Bedrock, Google Vertex, or Codex Auth via [OpenClaude](https://www.npmjs.com/package/@gitlawb/openclaude) without touching a line of code. Your keys, your model choice, no vendor lock-in
-- **MCP integrations** — first-class support for Google Calendar, Gmail, GitHub, Linear, Telegram, Canva, Notion, and more via the Model Context Protocol
-- **Slash commands** — `/clawdia`, `/flux`, `/pulse`, `/apex` invoke agents directly from the terminal
-- **Persistent memory** — `CLAUDE.md` + per-agent memory survives across sessions
-- **CLI-first, local-only** — runs anywhere the Claude CLI (or OpenClaude) runs. Your data never leaves your infrastructure
-
----
-
-## Key Features
-
-- **Multi-Provider** — runs on Anthropic (native `claude`) or any of 6 alternate backends via [OpenClaude](https://www.npmjs.com/package/@gitlawb/openclaude): OpenRouter (200+ models), OpenAI, Google Gemini, Codex Auth, AWS Bedrock, Google Vertex AI. Switch providers from the dashboard, no code changes
-- **17 Core Business Agents + Custom** — Ops, Finance, Projects, Community, Social, Strategy, Sales, Courses, Learning Retention, Personal, Knowledge, Marketing, HR, Customer Success, Legal, Product, Data — plus user-created `custom-*` agents (gitignored)
-- **21 Engineering Agents** — architecture, planning, code review, testing, debugging, security, design, cycle orchestration, retrospective
-- **190+ Skills + Custom** — organized by domain prefix (`social-`, `fin-`, `int-`, `prod-`, `mkt-`, `gog-`, `obs-`, `discord-`, `pulse-`, `sage-`, `hr-`, `legal-`, `ops-`, `cs-`, `data-`, `pm-`, `dev-`)
-- **7 Core + 20 Custom Routines** — daily, weekly, and monthly ADWs managed by a scheduler
-- **Web Dashboard** — React + Flask app with auth, roles, web terminal, service management
-- **19+ Integrations** — Google Calendar, Gmail, Linear, GitHub, Discord, Telegram, Stripe, Omie, Bling, Asaas, Fathom, Todoist, YouTube, Instagram, LinkedIn, Evolution API, Evolution Go, Evo CRM, and more
-- **Persistent Memory** — two-tier system (CLAUDE.md + memory/) with LLM Wiki pattern
-- **Knowledge Base** — optional semantic search via [MemPalace](https://github.com/milla-jovovich/mempalace) (local ChromaDB vectors, one-click install)
-- **Full Observability** — JSONL logs, execution metrics, cost tracking per routine
-- **Heartbeats** — proactive agents that wake on a schedule, run a 9-step protocol, and decide whether to act
-- **Goal Cascade** — Mission → Project → Goal → Task hierarchy
-- **Tickets** — persistent conversation/work threads with atomic checkout
-
----
-
-## Screenshots
-
-<p align="center">
-  <img src="public/print-overview.webp" alt="Overview" width="49%" />
-  <img src="public/print-chat.webp" alt="Agent Chat" width="49%" />
-</p>
-<p align="center">
-  <img src="public/print-agents.webp" alt="Agents" width="49%" />
-  <img src="public/print-integrations.webp" alt="Integrations" width="49%" />
-</p>
-<p align="center">
-  <img src="public/print-costs.webp" alt="Costs" width="49%" />
-</p>
-
----
-
-## Quick Start
-
-> **Starting out?** After installing, open Claude Code and call **`/oracle`**. It's the official entry point of EvoNexus: runs the initial setup, interviews you about your business, shows what the toolkit can automate for you, and delivers a phased activation plan.
-
-### Method 1 — Docker (no setup, runs anywhere)
-
-```bash
-curl -O https://raw.githubusercontent.com/evolution-foundation/evo-nexus/main/docker-compose.hub.yml
-docker compose -f docker-compose.hub.yml up -d
-open http://localhost:8080
-```
-
-The setup wizard loads on first boot. Paste your Anthropic / OpenAI / Codex key and you're done. Full guide: [docs/guides/docker-install.md](docs/guides/docker-install.md).
-
-### Method 2 — One command (CLI)
-
-```bash
-npx @evoapi/evo-nexus
-```
-
-### Method 3 — Manual clone (developers / contributors)
-
-```bash
-git clone --depth 1 https://github.com/evolution-foundation/evo-nexus.git
-cd evo-nexus
-
-# Interactive setup wizard
-make setup
-```
-
-### Prerequisites
-
-| Tool | Required | Install |
-|---|---|---|
-| **Claude Code** | Yes (CLI install) | `npm install -g @anthropic-ai/claude-code` |
-| **Python 3.11+** | Yes (CLI install) | via `uv` |
-| **Node.js 18+** | Yes (CLI install) | [nodejs.org](https://nodejs.org) |
-| **uv** | Yes (CLI install) | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
-| **Docker Engine 24+** | Yes (Docker install) | [docs.docker.com/engine/install](https://docs.docker.com/engine/install/) |
-
----
-
-## AI Providers
-
-EvoNexus runs on **Anthropic's Claude** by default. For OpenAI, Gemini, Bedrock, OpenRouter, Vertex AI, or Codex Auth, it switches to [OpenClaude](https://www.npmjs.com/package/@gitlawb/openclaude).
-
-| Provider | Binary | Key env vars |
-|---|---|---|
-| **Anthropic** (default) | `claude` | native auth |
-| **OpenRouter** (200+ models) | `openclaude` | `CLAUDE_CODE_USE_OPENAI`, `OPENAI_BASE_URL`, `OPENAI_API_KEY`, `OPENAI_MODEL` |
-| **OpenAI** | `openclaude` | `CLAUDE_CODE_USE_OPENAI`, `OPENAI_API_KEY`, `OPENAI_MODEL` |
-| **Google Gemini** | `openclaude` | `CLAUDE_CODE_USE_GEMINI`, `GEMINI_API_KEY`, `GEMINI_MODEL` |
-| **Codex Auth** | `openclaude` | `CLAUDE_CODE_USE_OPENAI`, `OPENAI_MODEL=codexplan` |
-| **AWS Bedrock** | `openclaude` | `CLAUDE_CODE_USE_BEDROCK`, `AWS_REGION`, `AWS_BEARER_TOKEN_BEDROCK` |
-| **Google Vertex AI** | `openclaude` | `CLAUDE_CODE_USE_VERTEX`, `ANTHROPIC_VERTEX_PROJECT_ID`, `CLOUD_ML_REGION` |
-
-```bash
-npm install -g @gitlawb/openclaude
-```
-
-The setup wizard asks which provider you want during `make setup`, and you can switch at any time from the **Providers** page in the dashboard.
-
----
-
-## Web Dashboard
-
-A full web UI at `http://localhost:8080`:
-
-| Page | What it does |
+| Camada | O que foi adicionado |
 |---|---|
-| **Overview** | Unified dashboard with metrics from all agents |
-| **Systems** | Register and manage apps/services |
-| **Reports** | Browse HTML reports generated by routines |
-| **Agents** | View agent definitions and system prompts |
-| **Routines** | Metrics per routine + manual run |
-| **Tasks** | Schedule one-off actions at a specific date/time |
-| **Skills** | Browse all 190+ skills by category |
-| **Templates** | Preview HTML report templates |
-| **Services** | Start/stop scheduler, channels with live logs |
-| **Memory** | Browse agent and global memory files |
-| **Knowledge** | Semantic search via [MemPalace](https://github.com/milla-jovovich/mempalace) |
-| **Integrations** | Status of all connected services + OAuth setup |
-| **Chat** | Embedded Claude Code terminal (xterm.js + WebSocket) |
-| **Users** | User management with roles |
-| **Audit Log** | Full audit trail of all actions |
-| **Config** | View CLAUDE.md, routines config, workspace settings |
+| **OmniRoute na stack** | Gateway de IA self-hosted ([OmniRoute](https://github.com/diegosouzapw/OmniRoute), 237+ providers) como serviço do Swarm, com DNS interno, auth nativa e volume persistente |
+| **Seletor de providers** | Provider `omnirouter` no dashboard + roteamento OpenClaude no terminal/chat, Codex OAuth via device auth, NVIDIA NIM, resolução de chaves por provider |
+| **Telegram multi-provider** | Bot em modo `provider`: responde pelo provider ativo, troca de provider no chat com `/provider`, áudio (Whisper/Groq), imagens, leitura de URLs e memória por conversa — sem login claude.ai |
+| **Pipeline de deploy VPS** | GitHub Actions → imagens no seu Docker Hub → stack de exemplo para Portainer/Traefik com volumes persistentes e backups SQLite consistentes |
+| **Hardening** | Dezenas de correções de produção: precedência de chaves por provider, auto-updater do CLI travado, trust/permissions como root em container, recuperação de EIO no terminal, allowlist do Telegram re-seedada a cada boot |
+
+---
+
+## OmniRoute — o gateway de IA da stack
+
+O upgrade mais importante deste fork: o [OmniRoute](https://github.com/diegosouzapw/OmniRoute) (MIT, criado por [diegosouzapw](https://github.com/diegosouzapw)) roda **dentro da sua stack Swarm** como o serviço opcional `omniroute`, e o EvoNexus fala com ele pela rede interna.
+
+**Por que isso importa:**
+
+- **Fim da dependência externa** — se um gateway público cai (503), seu bot e seus heartbeats caem junto. Self-hosted, o único ponto de falha é a sua VPS.
+- **237+ providers com fallback automático** — configure OpenAI, Anthropic, Gemini, DeepSeek, Groq, NVIDIA e o que mais quiser no dashboard do OmniRoute; com `OPENAI_MODEL=auto` ele roteia pro melhor disponível e cai pro próximo se um falhar.
+- **Codex OAuth embutido** — conecte sua conta ChatGPT Plus/Pro no OmniRoute e use a cota do Codex como um provider comum.
+- **Compressão de tokens** (RTK/Caveman) — reduz o custo de contexto em 15–95% dependendo do conteúdo.
+- **Latência mínima** — o EvoNexus acessa `http://omniroute:20128/v1` via alias DNS do Swarm, sem sair pra internet e sem passar pelo Traefik.
+
+**Como fica a arquitetura:**
+
+```
+Telegram / Dashboard / Heartbeats / Rotinas
+        |
+        v
+EvoNexus (provider ativo: omnirouter)
+        |
+        v  http://omniroute:20128/v1  (rede interna do Swarm)
+OmniRoute (self-hosted)
+        |
+        +-- Codex OAuth (ChatGPT Plus)      [priority 1]
+        +-- NVIDIA NIM                       [fallback]
+        +-- OpenRouter / Gemini / DeepSeek…  [fallback]
+```
+
+**Segurança:** o dashboard do OmniRoute usa a **auth nativa** (login + sessão JWT). Não coloque basic-auth do Traefik na frente — as chamadas internas do dashboard (SSE/WS/API) usam header `Authorization` próprio e entram em loop de 401. O `REQUIRE_API_KEY=true` garante que a API `/v1` só responde com chave válida.
+
+---
+
+## Seletor de providers
+
+A página **Providers** do dashboard ganhou o provider **OMNIROUTER** (qualquer endpoint OpenAI-compatível com URL, chave e modelo customizados), somando-se aos existentes (Anthropic nativo, OpenRouter, OpenAI, Gemini, NVIDIA NIM, Codex Auth, Bedrock, Vertex).
+
+Regras de resolução de chave que este fork corrigiu e agora documenta (leia antes de debugar um 401):
+
+1. **A chave do próprio provider em `config/providers.json` sempre vence** — é ela que a página Providers grava.
+2. As chaves do `.env` são **fallback**, usadas só quando o provider não tem chave própria.
+3. `NVIDIA_API_KEY` do ambiente só é enviada para endpoints `*.nvidia.com` — nunca vaza para outros gateways.
+
+O terminal e o chat do dashboard usam o CLI [OpenClaude](https://www.npmjs.com/package/@gitlawb/openclaude) para providers não-Anthropic, com ambiente limpo por sessão, `--fallback-model` automático e auto-update do CLI desativado em produção (um self-update no meio da sessão matava o processo).
+
+---
+
+## Bot do Telegram multi-provider
+
+No EvoNexus original, o canal do Telegram usa o modo nativo do Claude Code (channels) — que **exige login claude.ai dentro do container** e não funciona com providers OpenAI-compatíveis. Este fork adiciona o **modo `provider`** (`TELEGRAM_MODE=provider`, padrão na stack): um runtime próprio que responde pelo provider ativo do dashboard.
+
+O que o bot faz:
+
+| Recurso | Como |
+|---|---|
+| Responder pelo provider ativo | Chat Completions no provider configurado (OmniRoute, NVIDIA, OpenRouter, Codex…) |
+| **Trocar de provider no chat** | `/provider omnirouter` · `/provider status` · `/provider default` (volta ao global) |
+| Sessão nova | `/new` (limpa a memória local da conversa) |
+| Áudio → texto | Transcrição via Whisper na API da Groq (`/groq set <key>` para configurar) |
+| Imagens | Descreve e responde sobre fotos enviadas |
+| URLs | Baixa e resume links colados na conversa |
+| Memória por chat | Histórico local por conversa, com identificação de quem falou |
+| Fallback | Se o provider primário falha, percorre a cadeia `fallback_providers` do providers.json |
+
+Benefício direto: o bot **sobrevive a redeploys sem re-login** (nada de sessão claude.ai pra expirar) e você escolhe o custo por conversa — manda o dia a dia pro modelo barato e troca pro modelo forte com um comando.
+
+---
+
+## Deploy completo na VPS (passo a passo)
+
+### Pré-requisitos
+
+- VPS com **Docker Swarm** inicializado (`docker swarm init`)
+- **Traefik** rodando e conectado à rede externa `network_public` (entrypoint TLS `websecure`, cert resolver `letsencryptresolver`)
+- **Portainer** (recomendado) ou acesso SSH para `docker stack deploy`
+- Dois subdomínios apontando pra VPS (A record): um pro EvoNexus (ex.: `nexus.seudominio.com.br`) e um pro dashboard do OmniRoute (ex.: `omni.seudominio.com.br`)
+
+### 1. Publique as imagens no seu Docker Hub
+
+O workflow [`.github/workflows/docker-publish-britto.yml`](.github/workflows/docker-publish-britto.yml) builda as duas imagens Swarm (`evo-nexus-runtime` e `evo-nexus-dashboard`) e publica **no seu namespace** do Docker Hub. Faça fork deste repositório e configure os secrets em *Settings → Secrets and variables → Actions*:
+
+| Secret | Valor |
+|---|---|
+| `DOCKERHUB_USERNAME` | seu usuário do Docker Hub (vira o namespace das imagens) |
+| `DOCKERHUB_TOKEN` | Access Token (Docker Hub → Account Settings → Security) |
+
+Qualquer push na branch de deploy (ou tag `vX.Y.Z`, ou disparo manual) publica `:latest` e `:sha-xxxx`. Build típico: ~2 min com cache.
+
+### 2. Suba a stack no Portainer
+
+Use a [`evonexus-vps.stack.example.yml`](evonexus-vps.stack.example.yml) como base (Portainer → Stacks → Add stack → Web editor). Ela sobe 4 serviços:
+
+| Serviço | O que é |
+|---|---|
+| `evonexus_dashboard` | Flask + React + terminal web + heartbeats (exposto via Traefik) |
+| `evonexus_scheduler` | Rotinas agendadas (ADWs) |
+| `evonexus_telegram` | Bot do Telegram em modo provider |
+| `omniroute` | Gateway de IA (opcional, mas recomendado) |
+
+Preencha as variáveis da stack (aba *Environment variables* do Portainer):
+
+| Variável | Como gerar |
+|---|---|
+| `EVONEXUS_DOMAIN` | seu domínio (ex.: `nexus.seudominio.com.br`) |
+| `DASHBOARD_API_TOKEN` | `openssl rand -base64 32` |
+| `OMNIROUTE_DOMAIN` | domínio do dashboard do OmniRoute (ex.: `omni.seudominio.com.br`) |
+| `OMNIROUTE_INITIAL_PASSWORD` | senha de login do dashboard do OmniRoute |
+| `OMNIROUTE_JWT_SECRET` | `openssl rand -base64 48` |
+| `OMNIROUTE_API_KEY_SECRET` | `openssl rand -hex 32` |
+| `OMNIROUTE_STORAGE_KEY` | `openssl rand -hex 32` — **guarde bem: cifra o SQLite do OmniRoute; perder = perder as configs** |
+| `SMTP_*` | opcionais (notificações por email) |
+
+A stack **não contém nenhuma credencial de propósito** — todos os tokens de integrações (Google, Stripe, Linear…) são configurados depois, pela UI.
+
+### 3. Configure o OmniRoute
+
+1. Acesse `https://omni.seudominio.com.br` e faça login com a `OMNIROUTE_INITIAL_PASSWORD`.
+2. Na aba de **providers**, conecte o que você usa: Codex OAuth (ChatGPT Plus), NVIDIA, Gemini, DeepSeek, etc. A **ordem de prioridade** define o roteamento do `auto`.
+3. Na aba **Endpoints**, gere uma **API key** (`sk-...`) para o EvoNexus.
+
+> ⚠️ As keys vivem no SQLite do volume `omniroute_data`. Se você zerar o volume, **todas as keys morrem** — gere uma nova e atualize no EvoNexus. E pra zerar o volume no Swarm: `docker volume rm` falha com "volume in use" enquanto containers parados de tasks antigas existirem; remova-os antes com `docker ps -a --filter volume=omniroute_data -q | xargs docker rm -f`.
+
+### 4. Plugue o OmniRoute como provider do EvoNexus
+
+Acesse `https://nexus.seudominio.com.br` → **Providers** → **OMNIROUTER**:
+
+| Campo | Valor |
+|---|---|
+| Base URL | `http://omniroute:20128/v1` (DNS interno do Swarm — não use a URL pública) |
+| API Key | a key gerada no passo 3 |
+| Model | `auto` (deixa o OmniRoute rotear e fazer fallback) |
+
+Marque como provider ativo. Pronto: dashboard, terminal, heartbeats, rotinas e Telegram passam a responder pelo OmniRoute.
+
+### 5. Telegram (opcional)
+
+1. Crie um bot no [@BotFather](https://t.me/BotFather) e pegue o token.
+2. No dashboard → **Integrations**, salve `TELEGRAM_BOT_TOKEN` e `TELEGRAM_CHAT_ID` (seu chat id).
+3. O serviço `evonexus_telegram` já sobe em `TELEGRAM_MODE=provider`. Mande um `ping` — deve responder pelo provider ativo.
+
+> ⚠️ Cada deploy precisa do **seu próprio bot/token** — dois pollers no mesmo token brigam (HTTP 409) e um rouba as mensagens do outro.
+
+### 6. Atualizações
+
+Push na branch de deploy → GitHub Actions publica as imagens novas → na VPS:
 
 ```bash
-make dashboard-app   # Start Flask + React on :8080
+docker service update --force --image SEU_USUARIO/evo-nexus-dashboard:latest evonexus_evonexus_dashboard
+docker service update --force --image SEU_USUARIO/evo-nexus-runtime:latest  evonexus_evonexus_telegram
+docker service update --force --image SEU_USUARIO/evo-nexus-runtime:latest  evonexus_evonexus_scheduler
 ```
 
----
+### Troubleshooting rápido
 
-## Architecture
-
-```
-User (human)
-    |
-    v
-Claude Code (orchestrator)
-    |
-    +-- Clawdia   — ops: agenda, emails, tasks, decisions, dashboard
-    +-- Flux      — finance: Stripe, ERP, MRR, cash flow, monthly close
-    +-- Atlas     — projects: Linear, GitHub, milestones, sprints
-    +-- Pulse     — community: Discord, WhatsApp, sentiment, FAQ
-    +-- Pixel     — social: content, calendar, cross-platform analytics
-    +-- Sage      — strategy: OKRs, roadmap, prioritization, scenarios
-    +-- Nex       — sales: pipeline, proposals, qualification
-    +-- Mentor    — courses: learning paths, modules
-    +-- Kai       — personal: health, habits, routine
-    +-- Oracle    — entry point: onboarding, business discovery
-    +-- Mako      — marketing: campaigns, content, SEO, brand
-    +-- Aria      — HR: recruiting, onboarding, performance
-    +-- Zara      — customer success: triage, escalation, health
-    +-- Lex       — legal: contracts, compliance, NDA, risk
-    +-- Nova      — product: specs, roadmaps, metrics, research
-    +-- Dex       — data/BI: analysis, SQL, dashboards
-```
-
-Each agent has:
-- System prompt in `.claude/agents/`
-- Slash command in `.claude/commands/`
-- Persistent memory in `.claude/agent-memory/`
-- Related skills in `.claude/skills/`
-
----
-
-## Documentation
-
-| Resource | Link |
+| Sintoma | Causa provável |
 |---|---|
-| Website | [evolutionfoundation.com.br](https://evolutionfoundation.com.br) |
-| Documentation | [docs.evolutionfoundation.com.br](https://docs.evolutionfoundation.com.br) |
-| Community | [evolutionfoundation.com.br/community](https://evolutionfoundation.com.br/community) |
-| Getting Started | [docs/getting-started.md](docs/getting-started.md) |
-| Architecture | [docs/architecture.md](docs/architecture.md) |
-| Routines | [ROUTINES.md](ROUTINES.md) |
-| Roadmap | [ROADMAP.md](ROADMAP.md) |
-| Changelog | [CHANGELOG.md](CHANGELOG.md) |
-| Contributing | [CONTRIBUTING.md](CONTRIBUTING.md) |
-| Security | [SECURITY.md](SECURITY.md) |
+| `401 Unauthorized: chave API inválida/expirada` | Key do provider errada **no providers.json** (a página Providers grava lá; o `.env` é só fallback) — ou key do OmniRoute morta por reset de volume |
+| Bot responde `All providers failed` | Provider ativo sem chave válida; teste `/provider status` no chat |
+| Terminal morre com exit 1 no meio da sessão | Auto-update do CLI (já travado com `DISABLE_AUTOUPDATER=1` nesta versão) |
+| `workspace has not been trusted` como root | Entrypoints desta versão re-seedam o trust e exportam `IS_SANDBOX=1` a cada boot — confira se está na imagem atualizada |
+| Dashboard do OmniRoute em loop de 401 | Basic-auth do Traefik na frente — remova; a auth é nativa |
 
 ---
 
-## Contributing
+## O que vem do upstream (e continua aqui)
 
-Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on how to submit issues, propose features, and open pull requests.
+Tudo do EvoNexus original está preservado: os 38 agentes, as 190+ skills, rotinas/scheduler, heartbeats (protocolo de 9 passos), goals (cascata Mission → Project → Goal → Task), tickets com checkout atômico, memória persistente em duas camadas, knowledge base semântica, dashboard completo com auditoria e gestão de usuários, e as 19+ integrações (Google, Linear, GitHub, Discord, Stripe, Omie, Bling, Asaas, Fathom, Todoist…).
 
-Join our [community](https://evolutionfoundation.com.br/community) to discuss ideas and collaborate.
-
----
-
-## Security
-
-For security issues, **do not open a public issue**. Email **suporte@evofoundation.com.br** or use GitHub's private vulnerability reporting. See [SECURITY.md](SECURITY.md) for details.
+Documentação da plataforma: [README original](https://github.com/evolution-foundation/evo-nexus#readme) · [docs.evolutionfoundation.com.br](https://docs.evolutionfoundation.com.br) · [docs/getting-started.md](docs/getting-started.md) · [docs/architecture.md](docs/architecture.md) · [ROUTINES.md](ROUTINES.md) · [CHANGELOG.md](CHANGELOG.md)
 
 ---
 
-## Credits & Acknowledgments
+## Créditos & Agradecimentos
 
-EvoNexus stands on the shoulders of great open source projects:
+Este fork existe porque outros construíram coisas excelentes antes:
 
-- **[oh-my-claudecode](https://github.com/yeachan-heo/oh-my-claudecode)** by **Yeachan Heo** (MIT) — 19 of the 21 engineering agents (including `apex-architect`, `bolt-executor`, `lens-reviewer`) and all `dev-*` skills are derived from OMC v4.11.4. The 2 native agents (`helm-conductor`, `mirror-retro`) and the 6-phase workflow (`.claude/rules/dev-phases.md`) are EvoNexus-native additions. See [NOTICE.md](NOTICE.md) for the full list of derived components and modifications.
+- **[EvoNexus](https://github.com/evolution-foundation/evo-nexus)** pela **[Evolution Foundation](https://evolutionfoundation.com.br)** — a plataforma inteira: agentes, skills, rotinas, heartbeats, goals, tickets, dashboard e integrações. Este repositório é um fork derivado; todo o mérito da base é deles. Site: [evolutionfoundation.com.br](https://evolutionfoundation.com.br) · Suporte: suporte@evofoundation.com.br
+- **[OmniRoute](https://github.com/diegosouzapw/OmniRoute)** por **[Diego Souza](https://github.com/diegosouzapw)** (MIT) — o gateway de IA self-hosted que esta distribuição embute na stack.
+- **[oh-my-claudecode](https://github.com/yeachan-heo/oh-my-claudecode)** por **Yeachan Heo** (MIT) — 19 dos 21 agentes de engenharia e as skills `dev-*` derivam do OMC (herdado do upstream). Detalhes em [NOTICE.md](NOTICE.md).
+- **[OpenClaude](https://www.npmjs.com/package/@gitlawb/openclaude)** — o CLI que permite rodar o protocolo do Claude Code em providers alternativos.
+
+A camada de upgrade (OmniRoute na stack, seletor de providers, Telegram multi-provider, pipeline VPS e hardening) é mantida por **[Sistema Britto](https://sistemabritto.com.br)**.
 
 ---
 
-## License
+## Licença
 
-EvoNexus is licensed under the Apache License 2.0, with additional brand-protection conditions (LOGO/copyright preservation and Usage Notification requirement). See [LICENSE](LICENSE) for full details.
+Este fork mantém integralmente a licença do EvoNexus original: **Apache License 2.0 com condições adicionais de proteção de marca** — preservação de LOGO/copyright nos componentes de frontend e requisito de notificação de uso. Veja [LICENSE](LICENSE) para o texto completo.
 
-For licensing inquiries, contact **suporte@evofoundation.com.br**.
+Em conformidade com essas condições, esta distribuição **não remove nem modifica** o LOGO e as informações de copyright do EvoNexus no console e nas aplicações. Para questões de licenciamento do EvoNexus, contate **suporte@evofoundation.com.br**.
 
-## Trademarks
+## Marcas
 
-"Evolution Foundation", "Evolution" and "EvoNexus" are trademarks of Evolution Foundation. See [TRADEMARKS.md](TRADEMARKS.md) for the brand assets policy.
-
-Third-party attributions are documented in [NOTICE](NOTICE) and [NOTICE.md](NOTICE.md).
+"Evolution Foundation", "Evolution" e "EvoNexus" são marcas da Evolution Foundation — veja [TRADEMARKS.md](TRADEMARKS.md). "Omni-Nexus" nomeia apenas esta distribuição derivada e não é afiliado à Evolution Foundation além da relação de fork. Atribuições de terceiros: [NOTICE](NOTICE) e [NOTICE.md](NOTICE.md).
 
 ---
 
 <p align="center">
-  An unofficial community toolkit for <a href="https://docs.anthropic.com/en/docs/claude-code">Claude Code</a>
+  Um toolkit comunitário não oficial para o <a href="https://docs.anthropic.com/en/docs/claude-code">Claude Code</a>
   <br/>
-  Made by <a href="https://evolutionfoundation.com.br">Evolution Foundation</a> · © 2026
+  Base por <a href="https://evolutionfoundation.com.br">Evolution Foundation</a> · Upgrade por <a href="https://sistemabritto.com.br">Sistema Britto</a> · © 2026
   <br/>
-  <sub>Not affiliated with Anthropic</sub>
+  <sub>Não afiliado à Anthropic</sub>
 </p>

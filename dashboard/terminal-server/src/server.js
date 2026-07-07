@@ -11,6 +11,11 @@ const SessionStore = require('./utils/session-store');
 const ChatLogger = require('./utils/chat-logger');
 const { loadProviderConfig, getProviderMode } = require('./provider-config');
 
+function isEioError(error) {
+  const message = typeof error === 'string' ? error : (error?.message || '');
+  return error?.code === 'EIO' || /\bEIO\b|read EIO|write EIO/i.test(message);
+}
+
 class TerminalServer {
   constructor(options = {}) {
     this.port = options.port || 32352;
@@ -275,10 +280,14 @@ class TerminalServer {
 
       // Scope reuse by (agentName, ticketId) when ticketId is provided.
       // Without ticketId the old behaviour is preserved (reuse by agentName alone).
+      // Never reuse a session that already has a live viewer attached — two
+      // concurrent terminals would share one PTY and mirror/duplicate every
+      // keystroke. The busy session keeps its viewer; the caller gets a fresh one.
       for (const [id, s] of this.claudeSessions.entries()) {
         const agentMatch = s.agentName === agentName;
         const ticketMatch = ticketId ? s.ticketId === ticketId : !s.ticketId;
-        if (agentMatch && ticketMatch) {
+        const busy = s.connections && s.connections.size > 0;
+        if (agentMatch && ticketMatch && !busy) {
           return res.json({
             success: true,
             sessionId: id,
@@ -618,8 +627,17 @@ class TerminalServer {
           const session = this.claudeSessions.get(wsInfo.claudeSessionId);
           if (session && session.connections.has(wsId) && session.active && session.agent === 'claude') {
             try {
-              await this.claudeBridge.sendInput(wsInfo.claudeSessionId, data.data);
+              const accepted = await this.claudeBridge.sendInput(wsInfo.claudeSessionId, data.data);
+              if (accepted === false) {
+                session.active = false;
+                this.broadcastToSession(wsInfo.claudeSessionId, { type: 'exit', code: 1, signal: null });
+              }
             } catch (error) {
+              if (isEioError(error)) {
+                session.active = false;
+                this.broadcastToSession(wsInfo.claudeSessionId, { type: 'exit', code: 1, signal: null });
+                break;
+              }
               if (this.dev) console.error(`Failed to send input to session ${wsInfo.claudeSessionId}:`, error.message);
               this.sendToWebSocket(wsInfo.ws, {
                 type: 'error',
@@ -991,7 +1009,14 @@ class TerminalServer {
         onError: (error) => {
           const currentSession = this.claudeSessions.get(sessionId);
           if (currentSession) currentSession.active = false;
-          this.broadcastToSession(sessionId, { type: 'error', message: error.message });
+          if (isEioError(error)) {
+            // EIO is a PTY artifact when the child exits — treat as normal
+            // exit with signal null so the frontend shows "Process exited"
+            // instead of the scary "read EIO" error toast.
+            this.broadcastToSession(sessionId, { type: 'exit', code: 1, signal: null });
+          } else {
+            this.broadcastToSession(sessionId, { type: 'error', message: error.message });
+          }
         },
       });
 
@@ -1003,6 +1028,11 @@ class TerminalServer {
 
       this.broadcastToSession(sessionId, { type: 'claude_started', sessionId });
     } catch (error) {
+      if (isEioError(error)) {
+        session.active = false;
+        this.broadcastToSession(sessionId, { type: 'exit', code: 1, signal: null });
+        return;
+      }
       if (this.dev) console.error(`Error starting Claude in session ${wsInfo.claudeSessionId}:`, error);
       this.sendToWebSocket(wsInfo.ws, { type: 'error', message: `Failed to start Claude Code: ${error.message}` });
     }

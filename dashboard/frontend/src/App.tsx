@@ -41,6 +41,7 @@ const HeartbeatsList = lazyDefault(() => import('./pages/Heartbeats'))
 const HeartbeatDetail = lazyNamed(() => import('./pages/Heartbeats'), 'HeartbeatDetail')
 const Activity = lazyDefault(() => import('./pages/Activity'))
 const Goals = lazyDefault(() => import('./pages/Goals'))
+const Kanban = lazyDefault(() => import('./pages/Kanban'))
 const Plugins = lazyDefault(() => import('./pages/Plugins'))
 const PluginDetail = lazyDefault(() => import('./pages/PluginDetail'))
 const McpServers = lazyDefault(() => import('./pages/McpServers'))
@@ -266,12 +267,14 @@ function AppContent() {
               {hasPermission('users', 'manage') && <Route path="/roles" element={<Roles />} />}
               {hasPermission('workspace', 'manage') && <Route path="/shares" element={<ShareLinks />} />}
               <Route path="/goals" element={<Goals />} />
+              <Route path="/projects" element={<Goals />} />
               <Route path="/plugins" element={<Plugins />} />
               <Route path="/plugins/:slug" element={<PluginDetail />} />
               <Route path="/mcp-servers" element={<McpServers />} />
               {/* Wave 2.1: full-screen plugin UI pages (catch-all, must come after /plugins/:slug) */}
               <Route path="/plugins-ui/:slug/*" element={<PluginPageHost />} />
               {hasPermission('tickets', 'view') && <Route path="/topics" element={<Topics />} />}
+              {hasPermission('tickets', 'view') && <Route path="/kanban" element={<Kanban />} />}
               {hasPermission('tickets', 'view') && <Route path="/issues" element={<Navigate to="/topics" replace />} />}
               {hasPermission('tickets', 'view') && <Route path="/tickets/:id" element={<TicketDetail />} />}
               {hasPermission('knowledge', 'view') && (

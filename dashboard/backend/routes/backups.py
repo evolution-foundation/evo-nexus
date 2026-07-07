@@ -114,6 +114,8 @@ def create_backup():
                 zip_path.unlink(missing_ok=True)
             _running_jobs["backup"] = {"status": "done"}
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             _running_jobs["backup"] = {"status": "error", "error": str(e)}
 
     _running_jobs["backup"] = {"status": "running"}
@@ -126,11 +128,14 @@ def create_backup():
 
 @bp.route("/api/backups/status")
 def backup_status():
-    """Check status of running backup job."""
+    """Check status of a running job. ?type=backup (default) or ?type=restore."""
     denied = _require("config", "view")
     if denied:
         return denied
-    job = _running_jobs.get("backup", {"status": "idle"})
+    job_type = request.args.get("type", "backup")
+    if job_type not in ("backup", "restore"):
+        return jsonify({"error": "Invalid type. Use 'backup' or 'restore'"}), 400
+    job = _running_jobs.get(job_type, {"status": "idle"})
     return jsonify(job)
 
 
@@ -150,6 +155,11 @@ def restore_backup(filename):
     if mode not in ("merge", "replace"):
         return jsonify({"error": "Invalid mode. Use 'merge' or 'replace'"}), 400
 
+    # Capture the app object here — the worker thread has no request/app
+    # context, and _post_restore_migrate needs one (current_app, db.create_all).
+    from flask import current_app
+    app = current_app._get_current_object()
+
     def _run():
         try:
             import sys
@@ -159,10 +169,13 @@ def restore_backup(filename):
 
             # After restore, run auto-migrate to fix schema differences
             # (old backups may have missing columns or corrupted data)
-            _post_restore_migrate()
+            with app.app_context():
+                _post_restore_migrate()
 
             _running_jobs["restore"] = {"status": "done", "mode": mode}
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             _running_jobs["restore"] = {"status": "error", "error": str(e)}
 
     _running_jobs["restore"] = {"status": "running"}

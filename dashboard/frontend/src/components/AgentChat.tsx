@@ -137,28 +137,34 @@ export default function AgentChat({ agent, sessionId, accentColor = '#00FFA7', e
     setStatus('connecting')
     setErrorMsg(null)
     let cancelled = false
-    let ws: WebSocket | null = null
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+    let reconnectAttempts = 0
 
-    ;(async () => {
-      // 1) HTTP preflight — fails fast on ECONNREFUSED so we can show a real error
-      //    instead of hanging in 'connecting' forever (same pattern as AgentTerminal).
-      try {
-        const res = await fetch(`${TS_HTTP}/api/health`)
-        if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      } catch {
-        if (cancelled) return
-        setStatus('error')
-        setErrorMsg(`Could not reach terminal-server at ${TS_HTTP}. Is it running?`)
-        return
-      }
+    // The server keeps the session alive when the socket drops — rejoining
+    // restores chat history, so a dead WS only needs a reconnect with
+    // capped exponential backoff instead of staying dead until remount.
+    function scheduleReconnect() {
+      if (cancelled || reconnectTimer) return
+      const delay = Math.min(1000 * 2 ** reconnectAttempts, 15000)
+      reconnectAttempts++
+      setStatus('connecting')
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null
+        connect()
+      }, delay)
+    }
+
+    function connect() {
       if (cancelled) return
 
-      // 2) Open WS
-      ws = new WebSocket(`${TS_WS}/ws`)
+      // Open WS
+      const ws = new WebSocket(`${TS_WS}/ws`)
       wsRef.current = ws
 
       ws.onopen = () => {
-        ws!.send(JSON.stringify({ type: 'join_session', sessionId }))
+        reconnectAttempts = 0
+        setErrorMsg(null)
+        ws.send(JSON.stringify({ type: 'join_session', sessionId }))
         setStatus('idle')
       }
 
@@ -273,26 +279,60 @@ export default function AgentChat({ agent, sessionId, accentColor = '#00FFA7', e
       }
 
       ws.onerror = () => {
-        if (cancelled) return
-        setStatus('error')
-        setErrorMsg('WebSocket error')
+        // onclose always follows onerror — reconnect is handled there.
       }
 
       ws.onclose = () => {
         if (pingRef.current) { clearInterval(pingRef.current); pingRef.current = null }
+        if (cancelled) return
+        scheduleReconnect()
       }
 
       pingRef.current = setInterval(() => {
-        if (ws!.readyState === WebSocket.OPEN) {
-          ws!.send(JSON.stringify({ type: 'ping' }))
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'ping' }))
         }
       }, 25000)
+    }
+
+    ;(async () => {
+      // HTTP preflight — fails fast on ECONNREFUSED so we can show a real error
+      // instead of hanging in 'connecting' forever (same pattern as AgentTerminal).
+      try {
+        const res = await fetch(`${TS_HTTP}/api/health`)
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      } catch {
+        if (cancelled) return
+        setStatus('error')
+        setErrorMsg(`Could not reach terminal-server at ${TS_HTTP}. Is it running?`)
+        return
+      }
+      if (cancelled) return
+      connect()
     })()
+
+    // Returning to the tab reconnects immediately instead of waiting out
+    // the backoff (browsers also throttle timers in hidden tabs, so the
+    // pending reconnect may not have fired while the tab was away).
+    const onVisible = () => {
+      if (document.hidden || cancelled) return
+      const ws = wsRef.current
+      if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer)
+        reconnectTimer = null
+      }
+      reconnectAttempts = 0
+      connect()
+    }
+    document.addEventListener('visibilitychange', onVisible)
 
     return () => {
       cancelled = true
+      document.removeEventListener('visibilitychange', onVisible)
+      if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null }
       if (pingRef.current) { clearInterval(pingRef.current); pingRef.current = null }
-      try { ws?.close() } catch {}
+      try { wsRef.current?.close() } catch {}
       wsRef.current = null
     }
   }, [sessionId])

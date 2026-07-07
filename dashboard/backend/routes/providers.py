@@ -17,7 +17,7 @@ import time
 import urllib.parse
 from pathlib import Path
 
-from flask import Blueprint, jsonify, redirect, request, session
+from flask import Blueprint, jsonify, request, session, url_for
 from flask_login import login_required
 
 from routes._helpers import WORKSPACE
@@ -25,11 +25,15 @@ from routes._helpers import WORKSPACE
 bp = Blueprint("providers", __name__)
 
 PROVIDERS_CONFIG = WORKSPACE / "config" / "providers.json"
+PROVIDERS_EXAMPLE_CONFIG = WORKSPACE / "config" / "providers.example.json"
 
 OPENAI_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 OPENAI_AUTH_URL = "https://auth.openai.com/oauth/authorize"
 OPENAI_TOKEN_URL = "https://auth.openai.com/oauth/token"
+OPENAI_BROWSER_REDIRECT_URI = "http://localhost:1455/auth/callback"
 CODEX_AUTH_FILE = Path.home() / ".codex" / "auth.json"
+_CODEX_DEVICE_PROCESS = None
+_CODEX_DEVICE_OUTPUT = ""
 
 # Allowlisted CLI commands — only these binaries can be spawned
 ALLOWED_CLI_COMMANDS = frozenset({"claude", "openclaude"})
@@ -49,6 +53,7 @@ ALLOWED_ENV_VARS = frozenset({
     "CODEX_API_KEY",
     "GEMINI_API_KEY",
     "GEMINI_MODEL",
+    "NVIDIA_API_KEY",
     "AWS_REGION",
     "AWS_BEARER_TOKEN_BEDROCK",
     "ANTHROPIC_VERTEX_PROJECT_ID",
@@ -56,16 +61,72 @@ ALLOWED_ENV_VARS = frozenset({
 })
 
 
+def _merge_provider_defaults(config: dict) -> tuple[dict, bool]:
+    """Merge providers.example.json into an existing config without overwriting secrets."""
+    if not PROVIDERS_EXAMPLE_CONFIG.is_file():
+        return config, False
+
+    try:
+        defaults = json.loads(PROVIDERS_EXAMPLE_CONFIG.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return config, False
+
+    changed = False
+    if not isinstance(config, dict):
+        config = {}
+        changed = True
+
+    for key, value in defaults.items():
+        if key == "providers":
+            continue
+        if key not in config:
+            config[key] = value
+            changed = True
+
+    providers = config.setdefault("providers", {})
+    if not isinstance(providers, dict):
+        config["providers"] = {}
+        providers = config["providers"]
+        changed = True
+
+    for provider_id, default_provider in (defaults.get("providers") or {}).items():
+        if provider_id not in providers or not isinstance(providers.get(provider_id), dict):
+            providers[provider_id] = default_provider
+            changed = True
+            continue
+
+        provider = providers[provider_id]
+        for key, value in default_provider.items():
+            if key == "env_vars":
+                env = provider.setdefault("env_vars", {})
+                if not isinstance(env, dict):
+                    provider["env_vars"] = {}
+                    env = provider["env_vars"]
+                    changed = True
+                for env_key, env_default in (value or {}).items():
+                    if env_key not in env:
+                        env[env_key] = env_default
+                        changed = True
+            elif key not in provider:
+                provider[key] = value
+                changed = True
+
+    return config, changed
+
+
 def _read_config() -> dict:
     """Read providers.json. If missing, copy from providers.example.json."""
     try:
         if not PROVIDERS_CONFIG.is_file():
-            example = PROVIDERS_CONFIG.parent / "providers.example.json"
-            if example.is_file():
+            if PROVIDERS_EXAMPLE_CONFIG.is_file():
                 import shutil as _shutil
-                _shutil.copy2(example, PROVIDERS_CONFIG)
+                _shutil.copy2(PROVIDERS_EXAMPLE_CONFIG, PROVIDERS_CONFIG)
         if PROVIDERS_CONFIG.is_file():
-            return json.loads(PROVIDERS_CONFIG.read_text(encoding="utf-8"))
+            config = json.loads(PROVIDERS_CONFIG.read_text(encoding="utf-8"))
+            config, changed = _merge_provider_defaults(config)
+            if changed:
+                _write_config(config)
+            return config
     except (json.JSONDecodeError, OSError):
         pass
     return {"active_provider": "anthropic", "providers": {}}
@@ -167,6 +228,64 @@ def _save_codex_auth(tokens: dict):
 
     CODEX_AUTH_FILE.parent.mkdir(parents=True, exist_ok=True)
     CODEX_AUTH_FILE.write_text(json.dumps(auth_data, indent=2), encoding="utf-8")
+
+
+def _external_url(endpoint: str) -> str:
+    """Build an externally visible URL behind Traefik/nginx when available."""
+    proto = request.headers.get("X-Forwarded-Proto", request.scheme)
+    host = request.headers.get("X-Forwarded-Host", request.host)
+    if host:
+        return urllib.parse.urlunparse((proto, host, url_for(endpoint), "", "", ""))
+    return url_for(endpoint, _external=True)
+
+
+def _exchange_openai_code(code: str, code_verifier: str, redirect_uri: str):
+    import requests as http_req
+
+    return http_req.post(OPENAI_TOKEN_URL, data={
+        "grant_type": "authorization_code",
+        "code": code,
+        "redirect_uri": redirect_uri,
+        "client_id": OPENAI_CLIENT_ID,
+        "code_verifier": code_verifier,
+    }, timeout=30)
+
+
+def _activate_codex_provider():
+    config = _read_config()
+    providers = config.get("providers", {})
+    config["active_provider"] = "codex_auth" if "codex_auth" in providers else "openai"
+    _write_config(config)
+
+
+def _strip_ansi(text: str) -> str:
+    return re.sub(r"\x1b\[[0-9;]*m", "", text or "")
+
+
+def _codex_auth_has_token() -> bool:
+    if not CODEX_AUTH_FILE.is_file():
+        return False
+    try:
+        auth = json.loads(CODEX_AUTH_FILE.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return False
+    tokens = auth.get("tokens", {})
+    return bool(
+        tokens.get("access_token")
+        or auth.get("openai-codex", {}).get("access")
+        or auth.get("access_token")
+    )
+
+
+def _terminate_codex_device_process():
+    global _CODEX_DEVICE_PROCESS
+    proc = _CODEX_DEVICE_PROCESS
+    if proc and proc.poll() is None:
+        try:
+            proc.terminate()
+        except OSError:
+            pass
+    _CODEX_DEVICE_PROCESS = None
 
 
 # ── Endpoints ──────────────────────────────────────────────
@@ -317,6 +436,15 @@ def update_provider_config(provider_id):
         # Reject values with shell metacharacters
         if not isinstance(value, str) or re.search(r'[;&|`$\n\r]', value):
             continue
+        # Never wipe a stored secret with an empty field — the UI submits
+        # blank password inputs when the user edits other fields (e.g. model),
+        # which would silently erase the saved key.
+        if (
+            value == ""
+            and existing.get(key)
+            and any(tag in key for tag in ("KEY", "SECRET", "TOKEN"))
+        ):
+            continue
         existing[key] = value
 
     provider["env_vars"] = existing
@@ -374,11 +502,16 @@ def openai_auth_start():
 
     session["openai_code_verifier"] = code_verifier
     session["openai_oauth_state"] = state
+    # This OAuth client is registered by OpenAI/Codex for the local CLI
+    # callback. Hydra rejects arbitrary public dashboard domains with
+    # authorize_hydra_invalid_request, so browser auth must keep the registered
+    # localhost redirect and let the user paste the final URL back into the UI.
+    session["openai_redirect_uri"] = OPENAI_BROWSER_REDIRECT_URI
 
     params = {
         "response_type": "code",
         "client_id": OPENAI_CLIENT_ID,
-        "redirect_uri": "http://localhost:1455/auth/callback",
+        "redirect_uri": OPENAI_BROWSER_REDIRECT_URI,
         "scope": "openid profile email offline_access api.connectors.read api.connectors.invoke",
         "code_challenge": code_challenge,
         "code_challenge_method": "S256",
@@ -387,15 +520,47 @@ def openai_auth_start():
         "codex_cli_simplified_flow": "true",
     }
     url = f"{OPENAI_AUTH_URL}?{urllib.parse.urlencode(params)}"
-    return jsonify({"authorize_url": url})
+    return jsonify({"authorize_url": url, "redirect_uri": OPENAI_BROWSER_REDIRECT_URI})
+
+
+@bp.route("/auth/callback")
+@login_required
+def openai_auth_callback():
+    """Complete Codex OAuth when OpenAI redirects back to the dashboard."""
+    code = request.args.get("code")
+    state = request.args.get("state")
+    expected_state = session.pop("openai_oauth_state", None)
+    code_verifier = session.pop("openai_code_verifier", None)
+    redirect_uri = session.pop("openai_redirect_uri", None) or OPENAI_BROWSER_REDIRECT_URI
+
+    if not code:
+        return "Codex OAuth falhou: callback sem codigo de autorizacao.", 400
+    if expected_state and state != expected_state:
+        return "Codex OAuth falhou: state invalido.", 400
+    if not code_verifier:
+        return "Codex OAuth falhou: sessao expirada. Volte ao dashboard e inicie o login novamente.", 400
+
+    resp = _exchange_openai_code(code, code_verifier, redirect_uri)
+    if resp.status_code != 200:
+        return f"Codex OAuth falhou na troca de token (HTTP {resp.status_code}).", 400
+
+    _save_codex_auth(resp.json())
+    _activate_codex_provider()
+    return (
+        "<!doctype html><meta charset='utf-8'>"
+        "<title>Codex OAuth conectado</title>"
+        "<body style='font-family:system-ui;background:#0b1018;color:#e2e8f0;padding:32px'>"
+        "<h1 style='font-size:18px'>Codex OAuth conectado</h1>"
+        "<p>Token salvo. Você já pode voltar ao EvoNexus.</p>"
+        "<script>setTimeout(() => window.close(), 1200)</script>"
+        "</body>"
+    )
 
 
 @bp.route("/api/providers/openai/auth-complete", methods=["POST"])
 @login_required
 def openai_auth_complete():
     """Receive callback URL pasted by user, extract code, exchange for tokens."""
-    import requests as http_req
-
     data = request.get_json(silent=True) or {}
     callback_url = data.get("callback_url", "")
 
@@ -411,26 +576,16 @@ def openai_auth_complete():
         return jsonify({"error": "Sessao expirada - inicie o login novamente"}), 400
 
     session.pop("openai_oauth_state", None)
+    redirect_uri = session.pop("openai_redirect_uri", None) or OPENAI_BROWSER_REDIRECT_URI
 
-    resp = http_req.post(OPENAI_TOKEN_URL, data={
-        "grant_type": "authorization_code",
-        "code": code,
-        "redirect_uri": "http://localhost:1455/auth/callback",
-        "client_id": OPENAI_CLIENT_ID,
-        "code_verifier": code_verifier,
-    }, timeout=30)
+    resp = _exchange_openai_code(code, code_verifier, redirect_uri)
 
     if resp.status_code != 200:
         return jsonify({"error": f"Falha na troca de token (HTTP {resp.status_code})"}), 400
 
     _save_codex_auth(resp.json())
 
-    config = _read_config()
-    # Use dedicated codex_auth provider key when OAuth is used (falls back to
-    # openai for backward compatibility if codex_auth is not configured).
-    providers = config.get("providers", {})
-    config["active_provider"] = "codex_auth" if "codex_auth" in providers else "openai"
-    _write_config(config)
+    _activate_codex_provider()
 
     return jsonify({"status": "ok", "message": "Autenticado com sucesso!"})
 
@@ -438,73 +593,122 @@ def openai_auth_complete():
 @bp.route("/api/providers/openai/device-start", methods=["POST"])
 @login_required
 def openai_device_start():
-    """Start device auth flow."""
-    import requests as http_req
+    """Start Codex device auth through the official Codex CLI.
 
-    resp = http_req.post("https://auth.openai.com/deviceauth/usercode", json={
-        "client_id": OPENAI_CLIENT_ID,
-    }, timeout=15)
+    Direct POSTs to auth.openai.com/deviceauth/usercode are Cloudflare-gated
+    for ordinary HTTP clients. The Codex CLI performs the supported device
+    flow and persists ~/.codex/auth.json after authorization.
+    """
+    global _CODEX_DEVICE_PROCESS, _CODEX_DEVICE_OUTPUT
 
-    if resp.status_code != 200:
-        return jsonify({"error": "Device auth nao disponivel para sua organizacao"}), 400
+    codex_bin = shutil.which("codex")
+    if not codex_bin:
+        return jsonify({
+            "error": "Codex CLI nao esta instalado no container",
+            "hint": "Atualize para uma imagem que inclua @openai/codex.",
+        }), 503
 
-    data = resp.json()
-    session["openai_device_auth_id"] = data["device_auth_id"]
-    session["openai_device_user_code"] = data["user_code"]
+    _terminate_codex_device_process()
+    _CODEX_DEVICE_OUTPUT = ""
+
+    try:
+        proc = subprocess.Popen(  # noqa: S603
+            [codex_bin, "login", "--device-auth"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            env={**os.environ, "HOME": str(Path.home())},
+        )
+    except OSError as exc:
+        return jsonify({"error": f"Falha ao iniciar Codex CLI: {exc}"}), 500
+
+    _CODEX_DEVICE_PROCESS = proc
+    deadline = time.time() + 20
+    output = ""
+    user_code = None
+    verification_url = "https://auth.openai.com/codex/device"
+
+    while time.time() < deadline:
+        line = proc.stdout.readline() if proc.stdout else ""
+        if line:
+            output += line
+            clean = _strip_ansi(output)
+            url_match = re.search(r"https://auth\.openai\.com/codex/device", clean)
+            code_match = re.search(r"\b([A-Z0-9]{4}-[A-Z0-9]{5})\b", clean)
+            if url_match:
+                verification_url = url_match.group(0)
+            if code_match:
+                user_code = code_match.group(1)
+                break
+        elif proc.poll() is not None:
+            break
+        else:
+            time.sleep(0.1)
+
+    _CODEX_DEVICE_OUTPUT = output
+    if not user_code:
+        rc = proc.poll()
+        _CODEX_DEVICE_PROCESS = None
+        return jsonify({
+            "error": "Codex CLI nao retornou um codigo de device auth",
+            "exit_code": rc,
+            "output": _strip_ansi(output)[-1000:],
+        }), 500
+
+    session["openai_device_auth_started_at"] = int(time.time())
 
     return jsonify({
-        "user_code": data["user_code"],
-        "verification_url": "https://auth.openai.com/codex/device",
-        "interval": data.get("interval", 5),
-        "expires_in": data.get("expires_in", 900),
+        "user_code": user_code,
+        "verification_url": verification_url,
+        "interval": 5,
+        "expires_in": 900,
+        "method": "codex_cli",
     })
 
 
 @bp.route("/api/providers/openai/device-poll", methods=["POST"])
 @login_required
 def openai_device_poll():
-    """Poll for device auth authorization."""
-    import requests as http_req
+    """Poll the Codex CLI device-auth subprocess."""
+    global _CODEX_DEVICE_PROCESS, _CODEX_DEVICE_OUTPUT
 
-    device_auth_id = session.get("openai_device_auth_id")
-    user_code = session.get("openai_device_user_code")
-    if not device_auth_id:
+    if not session.get("openai_device_auth_started_at"):
         return jsonify({"status": "error", "message": "Nenhum login pendente"}), 400
 
-    resp = http_req.post("https://auth.openai.com/deviceauth/token", json={
-        "device_auth_id": device_auth_id,
-        "user_code": user_code,
-    }, timeout=15)
+    if _codex_auth_has_token():
+        _terminate_codex_device_process()
+        _activate_codex_provider()
+        session.pop("openai_device_auth_started_at", None)
+        return jsonify({"status": "authorized"})
 
-    if resp.status_code in (403, 404):
+    proc = _CODEX_DEVICE_PROCESS
+    if not proc:
         return jsonify({"status": "pending"})
 
-    if resp.status_code != 200:
-        return jsonify({"status": "error", "message": "Polling falhou"}), 500
+    rc = proc.poll()
+    if rc is None:
+        return jsonify({"status": "pending"})
 
-    auth_data = resp.json()
+    try:
+        rest = proc.stdout.read() if proc.stdout else ""
+    except Exception:
+        rest = ""
+    _CODEX_DEVICE_OUTPUT += rest
+    _CODEX_DEVICE_PROCESS = None
 
-    token_resp = http_req.post(OPENAI_TOKEN_URL, data={
-        "grant_type": "authorization_code",
-        "code": auth_data["authorization_code"],
-        "code_verifier": auth_data["code_verifier"],
-        "client_id": OPENAI_CLIENT_ID,
-    }, timeout=15)
+    if _codex_auth_has_token():
+        _activate_codex_provider()
+        session.pop("openai_device_auth_started_at", None)
+        return jsonify({"status": "authorized"})
 
-    if token_resp.status_code != 200:
-        return jsonify({"status": "error", "message": "Token exchange falhou"}), 500
+    return jsonify({
+        "status": "error",
+        "message": "Codex device auth terminou sem salvar token",
+        "exit_code": rc,
+        "output": _strip_ansi(_CODEX_DEVICE_OUTPUT)[-1000:],
+    }), 500
 
-    _save_codex_auth(token_resp.json())
-
-    config = _read_config()
-    providers = config.get("providers", {})
-    config["active_provider"] = "codex_auth" if "codex_auth" in providers else "openai"
-    _write_config(config)
-
-    session.pop("openai_device_auth_id", None)
-    session.pop("openai_device_user_code", None)
-
-    return jsonify({"status": "authorized"})
 
 
 @bp.route("/api/providers/openai/status")

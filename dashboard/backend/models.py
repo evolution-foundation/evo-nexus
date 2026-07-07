@@ -1222,3 +1222,41 @@ class PluginAuditLog(db.Model):
             "detail": json.loads(self.detail_json or "{}"),
             "created_at": self.created_at.strftime("%Y-%m-%dT%H:%M:%S.%fZ") if self.created_at else None,
         }
+
+
+class SocialPost(db.Model):
+    """Queue of social media posts waiting to be published.
+
+    Status flow: pending → publishing → published | failed | cancelled
+    """
+
+    __tablename__ = "social_posts"
+
+    id = db.Column(db.Integer, primary_key=True)
+    platform = db.Column(db.String(20), nullable=False, default="twitter")  # twitter, linkedin, etc.
+    account_index = db.Column(db.Integer, nullable=False, default=1)  # SOCIAL_TWITTER_<N>
+    text = db.Column(db.Text, nullable=False)
+    media_path = db.Column(db.String(500), nullable=True)  # local file path for attached image
+    status = db.Column(db.String(20), nullable=False, default="pending")
+    scheduled_at = db.Column(db.DateTime, nullable=True)  # NULL = publish immediately
+    published_at = db.Column(db.DateTime, nullable=True)
+    error = db.Column(db.Text, nullable=True)
+    external_id = db.Column(db.String(100), nullable=True)  # tweet id, etc.
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+    retry_count = db.Column(db.Integer, nullable=False, default=0)
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "platform": self.platform,
+            "account_index": self.account_index,
+            "text": self.text,
+            "media_path": self.media_path,
+            "status": self.status,
+            "scheduled_at": self.scheduled_at.strftime("%Y-%m-%dT%H:%M:%S.%fZ") if self.scheduled_at else None,
+            "published_at": self.published_at.strftime("%Y-%m-%dT%H:%M:%S.%fZ") if self.published_at else None,
+            "error": self.error,
+            "external_id": self.external_id,
+            "created_at": self.created_at.strftime("%Y-%m-%dT%H:%M:%S.%fZ") if self.created_at else None,
+            "retry_count": self.retry_count,
+        }

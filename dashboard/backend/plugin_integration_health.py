@@ -18,7 +18,7 @@ log = logging.getLogger(__name__)
 
 WORKSPACE = Path(__file__).resolve().parent.parent.parent
 PLUGINS_DIR = WORKSPACE / "plugins"
-DB_PATH = WORKSPACE / "dashboard" / "data" / "dashboard.db"
+DB_PATH = WORKSPACE / "dashboard" / "data" / "evonexus.db"
 
 # Hard cap on HTTP timeout regardless of what the manifest declares (ADR decision 4)
 _MAX_TIMEOUT_SECONDS = 10

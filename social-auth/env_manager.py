@@ -100,8 +100,10 @@ PLATFORM_FIELDS = {
         "icon": "𝕏",
         "auth_type": "bearer_or_oauth",
         "fields": ["BEARER_TOKEN", "ACCESS_TOKEN", "REFRESH_TOKEN", "USER_ID", "TOKEN_CREATED_AT"],
-        "required": ["BEARER_TOKEN"],
-        "expires": False,
+        "required_any": ["ACCESS_TOKEN", "BEARER_TOKEN"],
+        "expires": True,
+        "ttl_days": 180,
+        "timestamp_field": "TOKEN_CREATED_AT",
     },
     "tiktok": {
         "name": "TikTok",
@@ -181,8 +183,11 @@ def get_accounts(platform: str) -> list[dict]:
             detail = label
             days_left = None
 
+            if platform == "twitter" and "BEARER_TOKEN" in fields and "ACCESS_TOKEN" not in fields:
+                detail = f"{label} (read-only app bearer; posting requires OAuth tweet.write)"
+
             # Check expiration
-            if cfg.get("expires") and cfg.get("timestamp_field"):
+            if cfg.get("expires") and cfg.get("timestamp_field") and cfg["timestamp_field"] in fields:
                 ts = fields.get(cfg["timestamp_field"])
                 if ts:
                     try:

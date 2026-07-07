@@ -89,7 +89,13 @@ def _build_routines(raw_metrics: dict) -> list[dict]:
     routines = []
     for name, v in sorted(raw_metrics.items(), key=lambda x: x[1].get("last_run", ""), reverse=True):
         rate = v.get("success_rate", 0)
-        status = "healthy" if rate >= 90 else ("warning" if rate >= 50 else "critical")
+        last_success = v.get("last_success")
+        if last_success is False:
+            status = "critical"
+        elif last_success is True and rate < 90:
+            status = "warning"
+        else:
+            status = "healthy" if rate >= 90 else ("warning" if rate >= 50 else "critical")
         routines.append({
             "name": name,
             "last_run": (v.get("last_run") or "")[:16],

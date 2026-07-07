@@ -60,6 +60,17 @@ if [ -d "$DEFAULTS_DIR" ]; then
     done
 fi
 
+# --- 2b. Seed/refresh /workspace/.claude from image defaults ---------------
+# /workspace/.claude may be a named volume (persists custom-* skills/agents/
+# commands and plugin-* artifacts across restarts). Built-ins are re-copied
+# from the image on every boot so upgrades propagate; anything not shipped
+# in the image (custom-*, plugin-*, settings.local.json) is left untouched.
+# agent-memory is not in the stash — it has its own volume.
+if [ -d "$DEFAULTS_DIR/claude" ]; then
+    mkdir -p /workspace/.claude
+    cp -a "$DEFAULTS_DIR/claude/." /workspace/.claude/ 2>/dev/null || true
+fi
+
 # --- 3. Ensure EVONEXUS_SECRET_KEY exists (Flask session signing) ----------
 # Without this, Flask invalidates every session on restart. We generate it
 # once on first boot and persist it in the same .env the UI edits.
@@ -148,6 +159,61 @@ if [ "${REQUIRE_ANTHROPIC_KEY:-0}" = "1" ]; then
     done
     echo "[$(date -Is)] ANTHROPIC_API_KEY detected — starting $*" >&2
 fi
+
+# --- 8b. Claude CLI headless bootstrap --------------------------------------
+# Heartbeats/routines invoke `claude --print --dangerously-skip-permissions`
+# as root. Two first-run gates block that in a fresh container:
+#   1) /root/.claude.json lives in the container layer (wiped on redeploy);
+#      without the trust flags for /workspace the CLI ignores the project's
+#      .claude/settings.json permissions and fails with "this workspace has
+#      not been trusted".
+#   2) Claude Code refuses --dangerously-skip-permissions as root unless
+#      IS_SANDBOX=1 signals a containerized environment.
+# Same fix as start-dashboard.sh / telegram_swarm_entry.sh.
+export IS_SANDBOX="${IS_SANDBOX:-1}"
+# Restore the latest backup BEFORE seeding/patching. The main config is a
+# sibling of /root/.claude/ (the volume) and is wiped on redeploy; blind
+# seeding here would shadow the backup restore downstream (telegram wrapper /
+# start-dashboard check "[ ! -f ]") and lose account state — e.g. the
+# channels feature gate — that only the backup carries.
+if [ ! -f /root/.claude.json ]; then
+    _latest_backup=$(ls -t /root/.claude/backups/.claude.json.backup.* 2>/dev/null | head -n1 || true)
+    if [ -n "${_latest_backup:-}" ] && [ -f "$_latest_backup" ]; then
+        echo "[$(date -Is)] restoring /root/.claude.json from $_latest_backup" >&2
+        cp "$_latest_backup" /root/.claude.json
+    fi
+fi
+unset _latest_backup
+_PYBIN="/workspace/.venv/bin/python3"
+[ -x "$_PYBIN" ] || _PYBIN="$(command -v python3 || true)"
+if [ -n "$_PYBIN" ]; then
+    "$_PYBIN" - <<'EOF' || echo "[$(date -Is)] WARNING: could not patch /root/.claude.json flags" >&2
+import json, os
+
+path = "/root/.claude.json"
+cfg = {}
+if os.path.exists(path):
+    try:
+        with open(path) as f:
+            cfg = json.load(f)
+    except Exception:
+        cfg = {}
+
+cfg.setdefault("theme", "dark")
+cfg["hasCompletedOnboarding"] = True
+cfg["hasSeenWelcome"] = True
+cfg["bypassPermissionsModeAccepted"] = True
+project = cfg.setdefault("projects", {}).setdefault("/workspace", {})
+project["hasTrustDialogAccepted"] = True
+project["hasCompletedProjectOnboarding"] = True
+
+with open(path, "w") as f:
+    json.dump(cfg, f, indent=2)
+EOF
+else
+    echo "[$(date -Is)] WARNING: no python3 — /root/.claude.json not patched" >&2
+fi
+unset _PYBIN
 
 # --- 9. Hand off to the actual process -------------------------------------
 exec "$@"

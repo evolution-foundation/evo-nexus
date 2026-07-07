@@ -1,11 +1,45 @@
 const { spawn } = require('node-pty');
 const path = require('path');
 const fs = require('fs');
+
+// Workspace root is three levels up from this file (dashboard/terminal-server/src/).
+const WORKSPACE_ROOT = path.resolve(__dirname, '..', '..', '..');
 const {
   loadProviderConfig,
   resolveProviderModel,
   getProviderMode,
 } = require('./provider-config');
+
+
+function readTerminalTrustMode() {
+  try {
+    const yaml = fs.readFileSync(path.join(WORKSPACE_ROOT, 'config', 'workspace.yaml'), 'utf8');
+    const m = yaml.match(/^chat:\s*\n(?:[ \t]+[^\n]*\n)*?[ \t]+trustMode:\s*(true|false)/m);
+    return m ? m[1] === 'true' : false;
+  } catch {
+    return false;
+  }
+}
+
+function terminalPromptAcceptInput(buffer) {
+  const clean = String(buffer || '').replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '');
+  if (/Do you trust the files in this folder\?/i.test(clean)) return '\r';
+  // First-run bypass-permissions confirmation dialog (Claude Code /
+  // OpenClaude v0.22+): "1. No, exit / 2. Yes, I accept" — accept is option 2.
+  if (/\b2\.\s*Yes, I accept/i.test(clean)) return '2\r';
+  if (/Do you want to proceed\?/i.test(clean)
+    || /Allow (this )?(command|tool|operation)/i.test(clean)
+    || /permission (request|required|to use|to run)/i.test(clean)
+    || /\b1\.\s*(Yes|Allow|Proceed)/i.test(clean)) {
+    return '1\r';
+  }
+  return null;
+}
+
+
+function isPtyEio(error) {
+  return error?.code === 'EIO' || /\bEIO\b|read EIO|write EIO/i.test(error?.message || '');
+}
 
 class ClaudeBridge {
   constructor() {
@@ -71,6 +105,30 @@ class ClaudeBridge {
     return cliCommand;
   }
 
+  /**
+   * True when the CLI has a persisted conversation file for this session id
+   * in this workingDir — i.e. a previous run got far enough to save state,
+   * so `--resume <id>` will succeed. Checks the config dirs used by both
+   * claude (~/.claude) and openclaude (~/.openclaude), plus
+   * CLAUDE_CONFIG_DIR when set.
+   */
+  _hasPersistedConversation(sessionId, workingDir) {
+    const home = process.env.HOME || '/';
+    const slug = String(workingDir).replace(/[^a-zA-Z0-9]/g, '-');
+    const configDirs = [
+      process.env.CLAUDE_CONFIG_DIR,
+      path.join(home, '.openclaude'),
+      path.join(home, '.claude'),
+    ].filter(Boolean);
+    return configDirs.some((dir) => {
+      try {
+        return fs.existsSync(path.join(dir, 'projects', slug, `${sessionId}.jsonl`));
+      } catch {
+        return false;
+      }
+    });
+  }
+
   async startSession(sessionId, options = {}) {
     if (this.sessions.has(sessionId)) {
       const existing = this.sessions.get(sessionId);
@@ -129,16 +187,27 @@ class ClaudeBridge {
       console.log(`Working directory: ${workingDir}`);
       console.log(`Agent: ${agent || 'none'}`);
       console.log(`Terminal size: ${cols}x${rows}`);
-      if (dangerouslySkipPermissions) {
-        console.log(`⚠️ WARNING: Skipping permissions with --dangerously-skip-permissions flag`);
+      const terminalTrustMode = dangerouslySkipPermissions || readTerminalTrustMode();
+      if (terminalTrustMode) {
+        console.log(`⚠️ WARNING: Terminal trust mode enabled`);
       }
 
-      // Don't use --dangerously-skip-permissions when running as root —
-      // Claude/OpenClaude block this flag for root users.
-      // The trust prompt is auto-accepted via PTY detection below instead.
+      // Claude Code and OpenClaude v0.22+ refuse --dangerously-skip-permissions
+      // as root unless IS_SANDBOX=1 marks a containerized environment — the
+      // --allow-dangerously-skip-permissions flag does NOT lift that check (it
+      // only makes bypass mode available as an option). So always pass the skip
+      // flag in trust mode and inject IS_SANDBOX=1 into the child env when
+      // running as root (the clean-env whitelist below would otherwise drop it).
       const isRoot = process.getuid && process.getuid() === 0;
-      const args = (dangerouslySkipPermissions && !isRoot) ? ['--dangerously-skip-permissions'] : [];
-      if (agent) {
+      const active = providerConfig.active || 'anthropic';
+      const args = [];
+      if (terminalTrustMode) {
+        args.push('--dangerously-skip-permissions');
+        if (isRoot) {
+          console.log('[permissions] Running as root in trust mode — injecting IS_SANDBOX=1 for the CLI root check');
+        }
+      }
+      if (agent && active === 'anthropic') {
         args.push('--agent', agent);
       }
 
@@ -146,16 +215,32 @@ class ClaudeBridge {
       // --append-system-prompt is too weak — GPT models ignore appended instructions.
       // --system-prompt REPLACES the default system prompt, ensuring the agent persona
       // takes priority over CLAUDE.md and other context that mentions "Claude".
-      const active = providerConfig.active || 'anthropic';
+      let agentTier = null;
       if (active !== 'anthropic' && agent) {
-        // Read the agent definition file to build a strong system prompt
-        const agentFile = path.join(workingDir, '.claude', 'agents', `${agent}.md`);
+        // Read the agent definition file to build a strong system prompt.
+        // Agent definitions live at the workspace root — workingDir varies per
+        // session (tickets, project folders), so prefer the root path.
+        const rootAgentFile = path.join(WORKSPACE_ROOT, '.claude', 'agents', `${agent}.md`);
+        const cwdAgentFile = path.join(workingDir, '.claude', 'agents', `${agent}.md`);
+        const agentFile = fs.existsSync(rootAgentFile) ? rootAgentFile : cwdAgentFile;
         let agentPrompt = '';
         try {
           const content = fs.readFileSync(agentFile, 'utf8');
           // Extract body (after YAML frontmatter ---)
           const match = content.match(/^---\n[\s\S]*?\n---\n([\s\S]*)$/);
           agentPrompt = match ? match[1].trim() : content;
+          for (const marker of ['\n# Persistent Agent Memory', '\n## MEMORY.md']) {
+            if (agentPrompt.includes(marker)) {
+              agentPrompt = agentPrompt.split(marker, 1)[0].trim();
+            }
+          }
+          // Extract the agent's model tier (opus|sonnet|haiku) from the
+          // frontmatter — used to pick a per-tier provider model below.
+          const fmMatch = content.match(/^---\n([\s\S]*?)\n---\n/);
+          if (fmMatch) {
+            const tierMatch = fmMatch[1].match(/^model:\s*["']?([a-z0-9.-]+)["']?\s*$/mi);
+            if (tierMatch) agentTier = tierMatch[1].toLowerCase();
+          }
         } catch {
           agentPrompt = `You are the ${agent} agent.`;
         }
@@ -168,7 +253,48 @@ class ClaudeBridge {
 
         args.push('--system-prompt', enforcePrompt);
       }
-      const providerEnv = providerConfig.env_vars || {};
+
+      // Pin the CLI conversation to the terminal-server session UUID so a
+      // crash, provider error, or terminal-server restart doesn't lose the
+      // conversation: the first start registers the id with --session-id,
+      // and any later start of the same session resumes it with --resume.
+      const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      if (UUID_RE.test(sessionId)) {
+        if (this._hasPersistedConversation(sessionId, workingDir)) {
+          console.log(`[bridge] Resuming persisted conversation for session ${sessionId}`);
+          args.push('--resume', sessionId);
+        } else {
+          args.push('--session-id', sessionId);
+        }
+      }
+
+      // Copy so per-session overrides don't leak into the shared config object.
+      const providerEnv = { ...(providerConfig.env_vars || {}) };
+
+      // Per-agent model tier: agents declare model: opus|sonnet|haiku in
+      // their frontmatter; providers.json maps each tier to a provider model
+      // via the provider's "model_tiers" field.
+      const tierModel = agentTier && providerConfig.model_tiers
+        ? providerConfig.model_tiers[agentTier]
+        : null;
+      if (active !== 'anthropic' && tierModel) {
+        providerEnv['OPENAI_MODEL'] = tierModel;
+        console.log(`[provider] Agent ${agent} tier "${agentTier}" → model ${tierModel}`);
+      }
+
+      // Automatic model fallback when the primary is overloaded. The CLI
+      // accepts a single fallback — pass the first configured entry that
+      // differs from the primary model.
+      const fallbackModels = Array.isArray(providerConfig.fallback_models)
+        ? providerConfig.fallback_models
+        : [];
+      if (active !== 'anthropic') {
+        const primary = providerEnv['OPENAI_MODEL'] || '';
+        const fallback = fallbackModels.find((m) => m && m !== primary);
+        if (fallback) {
+          args.push('--fallback-model', fallback);
+        }
+      }
 
       // Build a CLEAN environment for the spawned CLI process.
       // We DON'T spread process.env — it may contain stale/cached vars
@@ -181,6 +307,9 @@ class ClaudeBridge {
         'SSH_AUTH_SOCK', 'SSH_AGENT_PID',
         'NVM_DIR', 'NVM_BIN', 'NVM_INC',
         'CODEX_HOME', 'CLAUDE_CONFIG_DIR',
+        // Container marker exported by entrypoint.sh — required for
+        // --dangerously-skip-permissions to work as root.
+        'IS_SANDBOX',
       ];
       const cleanEnv = {};
       for (const key of SYSTEM_VARS) {
@@ -192,7 +321,7 @@ class ClaudeBridge {
       // to route to the Codex backend — a raw 'gpt-5.x' falls back to the
       // regular chat completions API, which bypasses Codex OAuth entirely.
       //
-      //   codexplan  → GPT-5.4 on Codex backend (high reasoning)
+      //   codexplan  → GPT-5.5 on Codex backend (high reasoning)
       //   codexspark → GPT-5.3 Codex Spark (faster)
       //
       // For the plain 'openai' provider (API key mode), default to gpt-4.1.
@@ -212,6 +341,13 @@ class ClaudeBridge {
         env: {
           ...cleanEnv,
           ...providerEnv,
+          // Lift the CLI's root/sudo guard for --dangerously-skip-permissions
+          // inside the container (see comment above spawn args).
+          ...(terminalTrustMode && isRoot ? { IS_SANDBOX: '1' } : {}),
+          // O auto-updater do CLI migra a instalação npm pro instalador
+          // nativo no meio da sessão e mata o processo com exit 1
+          // ("OpenClaude has switched from npm to the native installer").
+          DISABLE_AUTOUPDATER: '1',
           TERM: 'xterm-256color',
           FORCE_COLOR: '1',
           COLORTERM: 'truecolor'
@@ -226,35 +362,39 @@ class ClaudeBridge {
         workingDir,
         created: new Date(),
         active: true,
-        killTimeout: null
+        killTimeout: null,
+        // Tracks whether onExit has already fired so the late-arriving
+        // 'error' (EIO) event from node-pty doesn't double-fire onExit
+        // or surface a misleading "read EIO" toast to the user.
+        exited: false,
       };
 
       this.sessions.set(sessionId, session);
 
-      // Track if we've seen the trust prompt
-      let trustPromptHandled = false;
       let dataBuffer = '';
+      let lastAutoAcceptAt = 0;
 
       claudeProcess.onData((data) => {
         if (process.env.DEBUG) {
           console.log(`Session ${sessionId} output:`, data);
         }
 
-        // Buffer data to check for trust prompt
+        // Buffer data to check for interactive trust / permission prompts.
         dataBuffer += data;
-        
-        // Check for trust prompt and auto-accept it
-        if (!trustPromptHandled && dataBuffer.includes('Do you trust the files in this folder?')) {
-          trustPromptHandled = true;
-          console.log(`Auto-accepting trust prompt for session ${sessionId}`);
-          // The prompt shows "Enter to confirm" which means option 1 is already selected
-          // Just send Enter to confirm
-          setTimeout(() => {
-            claudeProcess.write('\r');
-            console.log(`Sent Enter to accept trust prompt for session ${sessionId}`);
-          }, 500);
+
+        const acceptInput = terminalTrustMode ? terminalPromptAcceptInput(dataBuffer) : null;
+        if (acceptInput) {
+          const now = Date.now();
+          if (now - lastAutoAcceptAt > 1200) {
+            lastAutoAcceptAt = now;
+            dataBuffer = '';
+            console.log(`Auto-accepting terminal permission prompt for session ${sessionId}`);
+            setTimeout(() => {
+              claudeProcess.write(acceptInput);
+            }, 250);
+          }
         }
-        
+
         // Clear buffer periodically to prevent memory issues
         if (dataBuffer.length > 10000) {
           dataBuffer = dataBuffer.slice(-5000);
@@ -264,7 +404,17 @@ class ClaudeBridge {
       });
 
       claudeProcess.onExit((exitCode, signal) => {
+        // node-pty 1.1.0+ passes exitCode as an object {exitCode, signal}
+        // in some code paths. Normalize so the rest of the pipeline always
+        // sees a number (or null).
+        if (exitCode && typeof exitCode === 'object') {
+          signal = exitCode.signal != null ? exitCode.signal : signal;
+          exitCode = exitCode.exitCode != null ? exitCode.exitCode : exitCode;
+        }
         console.log(`Claude session ${sessionId} exited with code ${exitCode}, signal ${signal}`);
+        // Mark as exited so the late-arriving 'error' (EIO) handler
+        // knows the exit has already been reported and stays silent.
+        session.exited = true;
         // Clear kill timeout if process exited naturally
         if (session.killTimeout) {
           clearTimeout(session.killTimeout);
@@ -276,15 +426,36 @@ class ClaudeBridge {
       });
 
       claudeProcess.on('error', (error) => {
-        console.error(`Claude session ${sessionId} error:`, error);
+        if (isPtyEio(error)) {
+          // EIO on the master side of the PTY is a known artifact when the
+          // child process has already exited — node-pty's read loop hits
+          // the closed slave FD and emits 'error' before (or alongside)
+          // the 'exit' event. If onExit already fired, we're done — don't
+          // double-report. If not, treat it as a normal exit (code 1,
+          // signal null) instead of an error so the frontend shows a
+          // clean "[Process exited]" rather than a scary "read EIO".
+          if (session.exited) {
+            console.warn(`Claude session ${sessionId} EIO after exit — suppressed`);
+            return;
+          }
+          console.warn(`Claude session ${sessionId} PTY closed with EIO; treating as exit`);
+        } else {
+          console.error(`Claude session ${sessionId} error:`, error);
+        }
         // Clear kill timeout if process errored
         if (session.killTimeout) {
           clearTimeout(session.killTimeout);
           session.killTimeout = null;
         }
+        session.exited = true;
         session.active = false;
         this.sessions.delete(sessionId);
-        onError(error);
+        if (isPtyEio(error)) {
+          // Signal null (not 'EIO') so the frontend doesn't restart-loop
+          onExit(1, null);
+        } else {
+          onError(error);
+        }
       });
 
       console.log(`Claude session ${sessionId} started successfully`);
@@ -304,7 +475,17 @@ class ClaudeBridge {
 
     try {
       session.process.write(data);
+      return true;
     } catch (error) {
+      if (isPtyEio(error)) {
+        // Process already exited — don't surface EIO; treat as silent exit
+        if (!session.exited) {
+          session.exited = true;
+        }
+        session.active = false;
+        this.sessions.delete(sessionId);
+        return false;
+      }
       throw new Error(`Failed to send input to session ${sessionId}: ${error.message}`);
     }
   }
@@ -318,6 +499,11 @@ class ClaudeBridge {
     try {
       session.process.resize(cols, rows);
     } catch (error) {
+      if (isPtyEio(error)) {
+        session.active = false;
+        this.sessions.delete(sessionId);
+        return;
+      }
       console.warn(`Failed to resize session ${sessionId}:`, error.message);
     }
   }
