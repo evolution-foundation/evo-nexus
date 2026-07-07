@@ -9,11 +9,13 @@
 ##                   omni.workflowapi.com.br  (OmniRoute)
 ##
 ## Segredos ficam FORA do repo: os valores reais (DASHBOARD_API_TOKEN,
-## OMNIROUTE_BASICAUTH, SMTP_*) são preenchidos como variáveis de ambiente
+## OMNIROUTE_*, SMTP_*) são preenchidos como variáveis de ambiente
 ## da stack no Portainer. Os placeholders abaixo marcam onde entram.
-##   DASHBOARD_API_TOKEN  → openssl rand -base64 32
-##   OMNIROUTE_BASICAUTH  → htpasswd -nb admin SENHA (ou openssl passwd -apr1)
-##                          e escape cada $ como $$ se colar direto no YAML.
+##   DASHBOARD_API_TOKEN        → openssl rand -base64 32
+##   OMNIROUTE_INITIAL_PASSWORD → openssl rand -base64 12 (senha de login)
+##   OMNIROUTE_JWT_SECRET       → openssl rand -base64 48
+##   OMNIROUTE_API_KEY_SECRET   → openssl rand -hex 32
+##   OMNIROUTE_STORAGE_KEY      → openssl rand -hex 32
 ## ============================================================================
 version: "3.7"
 
@@ -176,7 +178,7 @@ services:
   ## OmniRoute — gateway de IA (237+ providers, fallback automático,
   ## compressão de tokens). O provider "omnirouter" do EvoNexus aponta
   ## para http://omniroute:20128/v1 (DNS interno via alias).
-  ## Dashboard público em omni.workflowapi.com.br protegido por basic-auth.
+  ## Dashboard público em omni.workflowapi.com.br com auth nativa (login).
   omniroute:
     image: diegosouzapw/omniroute:latest
 
