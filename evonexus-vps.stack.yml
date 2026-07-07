@@ -1,14 +1,19 @@
 ## ============================================================================
-## EvoNexus — VPS / Docker Swarm stack
+## EvoNexus — VPS / Docker Swarm stack (pessoal — Sistema Britto)
 ##
 ## Target VPS:
 ##   * Traefik already attached to external network_public
 ##   * TLS entrypoint: websecure
 ##   * Cert resolver: letsencryptresolver
-##   * Public host: nexus.workflowapi.com.br
+##   * Public hosts: nexus.workflowapi.com.br (EvoNexus)
+##                   omni.workflowapi.com.br  (OmniRoute)
 ##
-## Runtime credentials are configured after first boot through the dashboard UI.
-## This stack intentionally contains no API keys, tokens, or database passwords.
+## Segredos ficam FORA do repo: os valores reais (DASHBOARD_API_TOKEN,
+## OMNIROUTE_BASICAUTH, SMTP_*) são preenchidos como variáveis de ambiente
+## da stack no Portainer. Os placeholders abaixo marcam onde entram.
+##   DASHBOARD_API_TOKEN  → openssl rand -base64 32
+##   OMNIROUTE_BASICAUTH  → htpasswd -nb admin SENHA (ou openssl passwd -apr1)
+##                          e escape cada $ como $$ se colar direto no YAML.
 ## ============================================================================
 version: "3.7"
 
@@ -20,9 +25,9 @@ services:
     volumes:
       - evonexus_config:/workspace/config
       - evonexus_workspace:/workspace/workspace
-      - evonexus_backups:/workspace/backups
       - evonexus_dashboard_data:/workspace/dashboard/data
       - evonexus_memory:/workspace/memory
+      - evonexus_backups:/workspace/backups
       - evonexus_adw_logs:/workspace/ADWs/logs
       - evonexus_claude_workspace:/workspace/.claude
       - evonexus_agent_memory:/workspace/.claude/agent-memory
@@ -30,9 +35,15 @@ services:
       - evonexus_codex_auth:/root/.codex
 
     networks:
-      - network_public
+      network_public:
+        aliases:
+          - evonexus-dashboard
 
     environment:
+      - DASHBOARD_API_TOKEN=${DASHBOARD_API_TOKEN}
+      - DASHBOARD_API_USER=${DASHBOARD_API_USER:-admin}
+      - EVONEXUS_API_URL=http://localhost:8080
+      - CORS_ALLOWED_ORIGINS=https://nexus.workflowapi.com.br
       - TZ=America/Sao_Paulo
       - EVONEXUS_PORT=8080
       - TERMINAL_SERVER_PORT=32352
@@ -79,17 +90,9 @@ services:
 
   evonexus_telegram:
     image: excarplex/evo-nexus-runtime:latest
-    # Wrapper com dois modos (TELEGRAM_MODE=channels|provider, default auto):
-    #   channels — claude --channels direto na Anthropic (requer claude /login
-    #              no volume de auth; channels NÃO funciona via proxy NVIDIA
-    #              nem via openclaude — o gate exige OAuth claude.ai + feature
-    #              flag server-side, independente do provider)
-    #   provider — telegram_provider_bot.py no provider ativo (NVIDIA,
-    #              OmniRouter, OpenRouter etc.), mesmo runtime do
-    #              `make telegram` local.
-    # Forçamos provider: um login claude.ai antigo no volume faria o modo
-    # auto escolher channels e o canal voltaria a morrer se o login/quota
-    # estiver inválido. See scripts/telegram_swarm_entry.sh.
+    # TELEGRAM_MODE=provider → telegram_provider_bot.py no provider ativo do
+    # dashboard (NVIDIA, OmniRoute, OpenRouter, Codex...). O modo channels
+    # exige login claude.ai e não funciona via providers OpenAI-compatíveis.
     command: ["bash", "scripts/telegram_swarm_entry.sh"]
 
     volumes:
@@ -106,8 +109,11 @@ services:
       - network_public
 
     environment:
-      - TZ=America/Sao_Paulo
+      - DASHBOARD_API_TOKEN=${DASHBOARD_API_TOKEN}
+      - DASHBOARD_API_USER=${DASHBOARD_API_USER:-admin}
+      - EVONEXUS_API_URL=http://evonexus-dashboard:8080
       - TELEGRAM_MODE=provider
+      - TZ=America/Sao_Paulo
       - SMTP_DOMAIN=${SMTP_DOMAIN}
       - SMTP_USERNAME=${SMTP_USERNAME}
       - SMTP_PASSWORD=${SMTP_PASSWORD}
@@ -145,6 +151,9 @@ services:
       - network_public
 
     environment:
+      - DASHBOARD_API_TOKEN=${DASHBOARD_API_TOKEN}
+      - DASHBOARD_API_USER=${DASHBOARD_API_USER:-admin}
+      - EVONEXUS_API_URL=http://evonexus-dashboard:8080
       - TZ=America/Sao_Paulo
       - REQUIRE_ANTHROPIC_KEY=1
       - SMTP_DOMAIN=${SMTP_DOMAIN}
@@ -164,17 +173,59 @@ services:
           cpus: "1"
           memory: 1024M
 
+  ## OmniRoute — gateway de IA (237+ providers, fallback automático,
+  ## compressão de tokens). O provider "omnirouter" do EvoNexus aponta
+  ## para http://omniroute:20128/v1 (DNS interno via alias).
+  ## Dashboard público em omni.workflowapi.com.br protegido por basic-auth.
+  omniroute:
+    image: diegosouzapw/omniroute:latest
+
+    volumes:
+      - omniroute_data:/app/data
+
+    networks:
+      network_public:
+        aliases:
+          - omniroute
+
+    environment:
+      - TZ=America/Sao_Paulo
+      - PORT=20128
+      - REQUIRE_API_KEY=true
+
+    deploy:
+      placement:
+        constraints:
+          - node.role == manager
+      resources:
+        limits:
+          cpus: "1"
+          memory: 1024M
+      labels:
+        - traefik.enable=true
+        - traefik.docker.network=network_public
+        - traefik.http.routers.omniroute.rule=Host(`omni.workflowapi.com.br`)
+        - traefik.http.routers.omniroute.entrypoints=websecure
+        - traefik.http.routers.omniroute.tls.certresolver=letsencryptresolver
+        - traefik.http.routers.omniroute.service=omniroute
+        - traefik.http.routers.omniroute.middlewares=omniroute_auth
+        ## Valor via env da stack no Portainer (hash htpasswd; NÃO commitar).
+        - traefik.http.middlewares.omniroute_auth.basicauth.users=${OMNIROUTE_BASICAUTH}
+        - traefik.http.services.omniroute.loadbalancer.server.port=20128
+        - traefik.http.services.omniroute.loadbalancer.passHostHeader=true
+
 volumes:
   evonexus_config:
   evonexus_workspace:
-  evonexus_backups:
   evonexus_dashboard_data:
   evonexus_memory:
+  evonexus_backups:
   evonexus_adw_logs:
   evonexus_claude_workspace:
   evonexus_agent_memory:
   evonexus_claude_auth:
   evonexus_codex_auth:
+  omniroute_data:
 
 networks:
   network_public:
