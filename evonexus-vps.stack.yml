@@ -188,10 +188,28 @@ services:
         aliases:
           - omniroute
 
+    ## Auth NATIVA do OmniRoute (login com INITIAL_PASSWORD, sessão JWT em
+    ## cookie). NÃO usar basic-auth do Traefik na frente: as chamadas
+    ## internas do dashboard (SSE/WS/API) usam Authorization próprio e
+    ## entram em loop de 401 com o basic-auth.
+    ## Segredos via env da stack no Portainer:
+    ##   OMNIROUTE_INITIAL_PASSWORD → senha de login do dashboard
+    ##   OMNIROUTE_JWT_SECRET       → openssl rand -base64 48
+    ##   OMNIROUTE_API_KEY_SECRET   → openssl rand -hex 32
+    ##   OMNIROUTE_STORAGE_KEY      → openssl rand -hex 32
     environment:
       - TZ=America/Sao_Paulo
       - PORT=20128
       - REQUIRE_API_KEY=true
+      - INITIAL_PASSWORD=${OMNIROUTE_INITIAL_PASSWORD}
+      - JWT_SECRET=${OMNIROUTE_JWT_SECRET}
+      - API_KEY_SECRET=${OMNIROUTE_API_KEY_SECRET}
+      - STORAGE_ENCRYPTION_KEY=${OMNIROUTE_STORAGE_KEY}
+      - AUTH_COOKIE_SECURE=true
+      - OMNIROUTE_TRUST_PROXY=true
+      - NEXT_PUBLIC_BASE_URL=https://omni.workflowapi.com.br
+      - OMNIROUTE_PUBLIC_BASE_URL=https://omni.workflowapi.com.br
+      - CORS_ALLOWED_ORIGINS=https://omni.workflowapi.com.br
 
     deploy:
       placement:
@@ -208,9 +226,6 @@ services:
         - traefik.http.routers.omniroute.entrypoints=websecure
         - traefik.http.routers.omniroute.tls.certresolver=letsencryptresolver
         - traefik.http.routers.omniroute.service=omniroute
-        - traefik.http.routers.omniroute.middlewares=omniroute_auth
-        ## Valor via env da stack no Portainer (hash htpasswd; NÃO commitar).
-        - traefik.http.middlewares.omniroute_auth.basicauth.users=${OMNIROUTE_BASICAUTH}
         - traefik.http.services.omniroute.loadbalancer.server.port=20128
         - traefik.http.services.omniroute.loadbalancer.passHostHeader=true
 
