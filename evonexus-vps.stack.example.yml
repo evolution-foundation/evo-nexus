@@ -194,6 +194,64 @@ services:
           cpus: "1"
           memory: 1024M
 
+  ## --------------------------------------------------------------------------
+  ## OPCIONAL — OmniRoute (https://github.com/diegosouzapw/OmniRoute, MIT)
+  ## Gateway de IA local: roteia 237+ providers (90+ com free tier) por um
+  ## único endpoint OpenAI-compatível, com fallback automático, compressão de
+  ## tokens e bridges de protocolo. Rodando DENTRO da stack, o provider
+  ## "omnirouter" do EvoNexus aponta para http://omniroute:20128/v1 e nunca
+  ## depende de um gateway externo fora do ar.
+  ##
+  ## Setup pós-deploy:
+  ##   1. Acesse o dashboard do OmniRoute (via túnel SSH, mais seguro:
+  ##        ssh -L 20128:127.0.0.1:20128 root@SUA_VPS
+  ##      + `docker service update --publish-add published=20128,target=20128,mode=host <stack>_omniroute`
+  ##      ou exponha via Traefik com autenticação — veja labels comentadas).
+  ##   2. Conecte providers (NVIDIA NIM, OpenRouter, Codex OAuth, ...).
+  ##   3. Gere uma API key em "Endpoints".
+  ##   4. No EvoNexus (dashboard → Providers → OMNIROUTER):
+  ##        OPENAI_BASE_URL = http://omniroute:20128/v1
+  ##        OPENAI_API_KEY  = a key gerada
+  ##        OPENAI_MODEL    = auto   (roteamento com fallback automático)
+  ## ATENÇÃO: o volume guarda keys de providers — não exponha o dashboard
+  ## publicamente sem autenticação (REQUIRE_API_KEY=true + auth no Traefik).
+  ## --------------------------------------------------------------------------
+  omniroute:
+    image: diegosouzapw/omniroute:latest
+
+    volumes:
+      - omniroute_data:/app/data
+
+    networks:
+      network_public:
+        aliases:
+          - omniroute
+
+    environment:
+      - TZ=${TZ:-America/Sao_Paulo}
+      - PORT=20128
+      - REQUIRE_API_KEY=true
+
+    deploy:
+      placement:
+        constraints:
+          - node.role == manager
+      resources:
+        limits:
+          cpus: "1"
+          memory: 1024M
+      ## Para expor o dashboard do OmniRoute via Traefik, descomente e proteja
+      ## com basic-auth (gere o hash: htpasswd -nb admin SUA_SENHA):
+      # labels:
+      #   - traefik.enable=true
+      #   - traefik.docker.network=network_public
+      #   - traefik.http.routers.omniroute.rule=Host(`omniroute.${EVONEXUS_DOMAIN}`)
+      #   - traefik.http.routers.omniroute.entrypoints=websecure
+      #   - traefik.http.routers.omniroute.tls.certresolver=letsencryptresolver
+      #   - traefik.http.routers.omniroute.middlewares=omniroute_auth
+      #   - traefik.http.middlewares.omniroute_auth.basicauth.users=${OMNIROUTE_BASICAUTH}
+      #   - traefik.http.services.omniroute.loadbalancer.server.port=20128
+
 volumes:
   evonexus_config:
   evonexus_workspace:
@@ -205,6 +263,7 @@ volumes:
   evonexus_agent_memory:
   evonexus_claude_auth:
   evonexus_codex_auth:
+  omniroute_data:
 
 networks:
   network_public:
