@@ -11,6 +11,11 @@ const SessionStore = require('./utils/session-store');
 const ChatLogger = require('./utils/chat-logger');
 const { loadProviderConfig, getProviderMode } = require('./provider-config');
 
+function isEioError(error) {
+  const message = typeof error === 'string' ? error : (error?.message || '');
+  return error?.code === 'EIO' || /\bEIO\b|read EIO|write EIO/i.test(message);
+}
+
 class TerminalServer {
   constructor(options = {}) {
     this.port = options.port || 32352;
@@ -624,6 +629,11 @@ class TerminalServer {
                 this.broadcastToSession(wsInfo.claudeSessionId, { type: 'exit', code: 1, signal: 'EIO' });
               }
             } catch (error) {
+              if (isEioError(error)) {
+                session.active = false;
+                this.broadcastToSession(wsInfo.claudeSessionId, { type: 'exit', code: 1, signal: 'EIO' });
+                break;
+              }
               if (this.dev) console.error(`Failed to send input to session ${wsInfo.claudeSessionId}:`, error.message);
               this.sendToWebSocket(wsInfo.ws, {
                 type: 'error',
@@ -995,7 +1005,11 @@ class TerminalServer {
         onError: (error) => {
           const currentSession = this.claudeSessions.get(sessionId);
           if (currentSession) currentSession.active = false;
-          this.broadcastToSession(sessionId, { type: 'error', message: error.message });
+          if (isEioError(error)) {
+            this.broadcastToSession(sessionId, { type: 'exit', code: 1, signal: 'EIO' });
+          } else {
+            this.broadcastToSession(sessionId, { type: 'error', message: error.message });
+          }
         },
       });
 
@@ -1007,6 +1021,11 @@ class TerminalServer {
 
       this.broadcastToSession(sessionId, { type: 'claude_started', sessionId });
     } catch (error) {
+      if (isEioError(error)) {
+        session.active = false;
+        this.broadcastToSession(sessionId, { type: 'exit', code: 1, signal: 'EIO' });
+        return;
+      }
       if (this.dev) console.error(`Error starting Claude in session ${wsInfo.claudeSessionId}:`, error);
       this.sendToWebSocket(wsInfo.ws, { type: 'error', message: `Failed to start Claude Code: ${error.message}` });
     }

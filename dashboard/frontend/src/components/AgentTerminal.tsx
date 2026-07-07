@@ -73,6 +73,10 @@ const CC_WEB_WS = override
 
 type Status = 'connecting' | 'ready' | 'starting' | 'running' | 'error' | 'exited'
 
+function isEioMessage(message: unknown) {
+  return /\bEIO\b|read EIO|write EIO/i.test(String(message || ''))
+}
+
 export default function AgentTerminal({ agent, sessionId: externalSessionId, workingDir, accentColor = '#00FFA7' }: AgentTerminalProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
@@ -336,9 +340,15 @@ export default function AgentTerminal({ agent, sessionId: externalSessionId, wor
             }
             break
           case 'error':
-            setStatus('error')
-            setErrorMsg(msg.message || 'Unknown error')
-            term!.write(`\r\n\x1b[31m[Error] ${msg.message || ''}\x1b[0m\r\n`)
+            if (isEioMessage(msg.message) && eioRestartAttempts < 2) {
+              eioRestartAttempts++
+              term!.write('\r\n\x1b[33m[PTY closed - restarting agent]\x1b[0m\r\n')
+              startClaude()
+            } else {
+              setStatus('error')
+              setErrorMsg(msg.message || 'Unknown error')
+              term!.write(`\r\n\x1b[31m[Error] ${msg.message || ''}\x1b[0m\r\n`)
+            }
             break
           case 'pong':
             break
