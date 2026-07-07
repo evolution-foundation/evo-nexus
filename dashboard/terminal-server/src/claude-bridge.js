@@ -24,6 +24,9 @@ function readTerminalTrustMode() {
 function terminalPromptAcceptInput(buffer) {
   const clean = String(buffer || '').replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '');
   if (/Do you trust the files in this folder\?/i.test(clean)) return '\r';
+  // First-run bypass-permissions confirmation dialog (Claude Code /
+  // OpenClaude v0.22+): "1. No, exit / 2. Yes, I accept" — accept is option 2.
+  if (/\b2\.\s*Yes, I accept/i.test(clean)) return '2\r';
   if (/Do you want to proceed\?/i.test(clean)
     || /Allow (this )?(command|tool|operation)/i.test(clean)
     || /permission (request|required|to use|to run)/i.test(clean)
@@ -189,26 +192,20 @@ class ClaudeBridge {
         console.log(`⚠️ WARNING: Terminal trust mode enabled`);
       }
 
-      // Claude Code refuses --dangerously-skip-permissions as root.
-      // OpenClaude v0.22+ also refuses it as root (introduced the
-      // --allow-dangerously-skip-permissions gate flag). For both,
-      // fall back to the PTY auto-approve mechanism that sends \r via
-      // the pseudo-terminal when a "Do you trust" / permission prompt
-      // is detected in the output stream.
+      // Claude Code and OpenClaude v0.22+ refuse --dangerously-skip-permissions
+      // as root unless IS_SANDBOX=1 marks a containerized environment — the
+      // --allow-dangerously-skip-permissions flag does NOT lift that check (it
+      // only makes bypass mode available as an option). So always pass the skip
+      // flag in trust mode and inject IS_SANDBOX=1 into the child env when
+      // running as root (the clean-env whitelist below would otherwise drop it).
       const isRoot = process.getuid && process.getuid() === 0;
       const active = providerConfig.active || 'anthropic';
-      const shouldPassSkipFlag = terminalTrustMode && !isRoot;
       const args = [];
-      if (shouldPassSkipFlag) {
+      if (terminalTrustMode) {
         args.push('--dangerously-skip-permissions');
-      } else if (terminalTrustMode && isRoot && cliCommand.includes('openclaude')) {
-        // OpenClaude v0.22+ as root: --dangerously-skip-permissions is
-        // blocked unless --allow-dangerously-skip-permissions precedes it.
-        // Pass both so the flag works even when running in a container as root.
-        args.push('--allow-dangerously-skip-permissions', '--dangerously-skip-permissions');
-      }
-      if (terminalTrustMode && !shouldPassSkipFlag && active === 'anthropic') {
-        console.log('[permissions] Running native Claude as root; using PTY auto-approve fallback instead of skip flag');
+        if (isRoot) {
+          console.log('[permissions] Running as root in trust mode — injecting IS_SANDBOX=1 for the CLI root check');
+        }
       }
       if (agent && active === 'anthropic') {
         args.push('--agent', agent);
@@ -310,6 +307,9 @@ class ClaudeBridge {
         'SSH_AUTH_SOCK', 'SSH_AGENT_PID',
         'NVM_DIR', 'NVM_BIN', 'NVM_INC',
         'CODEX_HOME', 'CLAUDE_CONFIG_DIR',
+        // Container marker exported by entrypoint.sh — required for
+        // --dangerously-skip-permissions to work as root.
+        'IS_SANDBOX',
       ];
       const cleanEnv = {};
       for (const key of SYSTEM_VARS) {
@@ -341,6 +341,9 @@ class ClaudeBridge {
         env: {
           ...cleanEnv,
           ...providerEnv,
+          // Lift the CLI's root/sudo guard for --dangerously-skip-permissions
+          // inside the container (see comment above spawn args).
+          ...(terminalTrustMode && isRoot ? { IS_SANDBOX: '1' } : {}),
           TERM: 'xterm-256color',
           FORCE_COLOR: '1',
           COLORTERM: 'truecolor'

@@ -226,6 +226,9 @@ const PROVIDER_SYSTEM_VARS = [
   'SSH_AUTH_SOCK', 'SSH_AGENT_PID',
   'NVM_DIR', 'NVM_BIN', 'NVM_INC',
   'CODEX_HOME', 'CLAUDE_CONFIG_DIR',
+  // Container marker exported by entrypoint.sh — required for the SDK CLI's
+  // --dangerously-skip-permissions/bypass mode to work as root.
+  'IS_SANDBOX',
 ];
 function buildProviderEnv(providerConfig) {
   const env = {};
