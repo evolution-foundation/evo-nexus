@@ -189,14 +189,25 @@ class ClaudeBridge {
         console.log(`⚠️ WARNING: Terminal trust mode enabled`);
       }
 
-      // Claude Code refuses --dangerously-skip-permissions as root. OpenClaude
-      // providers may still support it, and either way the PTY fallback below
-      // auto-accepts permission prompts when trust mode is enabled.
+      // Claude Code refuses --dangerously-skip-permissions as root.
+      // OpenClaude v0.22+ also refuses it as root (introduced the
+      // --allow-dangerously-skip-permissions gate flag). For both,
+      // fall back to the PTY auto-approve mechanism that sends \r via
+      // the pseudo-terminal when a "Do you trust" / permission prompt
+      // is detected in the output stream.
       const isRoot = process.getuid && process.getuid() === 0;
       const active = providerConfig.active || 'anthropic';
-      const shouldPassSkipFlag = terminalTrustMode && !(isRoot && active === 'anthropic');
-      const args = shouldPassSkipFlag ? ['--dangerously-skip-permissions'] : [];
-      if (terminalTrustMode && !shouldPassSkipFlag) {
+      const shouldPassSkipFlag = terminalTrustMode && !isRoot;
+      const args = [];
+      if (shouldPassSkipFlag) {
+        args.push('--dangerously-skip-permissions');
+      } else if (terminalTrustMode && isRoot && cliCommand.includes('openclaude')) {
+        // OpenClaude v0.22+ as root: --dangerously-skip-permissions is
+        // blocked unless --allow-dangerously-skip-permissions precedes it.
+        // Pass both so the flag works even when running in a container as root.
+        args.push('--allow-dangerously-skip-permissions', '--dangerously-skip-permissions');
+      }
+      if (terminalTrustMode && !shouldPassSkipFlag && active === 'anthropic') {
         console.log('[permissions] Running native Claude as root; using PTY auto-approve fallback instead of skip flag');
       }
       if (agent && active === 'anthropic') {
@@ -386,6 +397,13 @@ class ClaudeBridge {
       });
 
       claudeProcess.onExit((exitCode, signal) => {
+        // node-pty 1.1.0+ passes exitCode as an object {exitCode, signal}
+        // in some code paths. Normalize so the rest of the pipeline always
+        // sees a number (or null).
+        if (exitCode && typeof exitCode === 'object') {
+          signal = exitCode.signal != null ? exitCode.signal : signal;
+          exitCode = exitCode.exitCode != null ? exitCode.exitCode : exitCode;
+        }
         console.log(`Claude session ${sessionId} exited with code ${exitCode}, signal ${signal}`);
         // Mark as exited so the late-arriving 'error' (EIO) handler
         // knows the exit has already been reported and stays silent.
