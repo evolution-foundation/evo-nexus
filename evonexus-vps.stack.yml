@@ -81,10 +81,15 @@ services:
     image: excarplex/evo-nexus-runtime:latest
     # Wrapper com dois modos (TELEGRAM_MODE=channels|provider, default auto):
     #   channels — claude --channels direto na Anthropic (requer claude /login
-    #              no volume de auth; channels NÃO funciona via proxy NVIDIA)
-    #   provider — telegram_provider_bot.py no provider ativo (NVIDIA etc.),
-    #              mesmo runtime do `make telegram` local. Default sem login.
-    # See scripts/telegram_swarm_entry.sh.
+    #              no volume de auth; channels NÃO funciona via proxy NVIDIA
+    #              nem via openclaude — o gate exige OAuth claude.ai + feature
+    #              flag server-side, independente do provider)
+    #   provider — telegram_provider_bot.py no provider ativo (NVIDIA,
+    #              OmniRouter, OpenRouter etc.), mesmo runtime do
+    #              `make telegram` local.
+    # Forçamos provider: um login claude.ai antigo no volume faria o modo
+    # auto escolher channels e o canal voltaria a morrer se o login/quota
+    # estiver inválido. See scripts/telegram_swarm_entry.sh.
     command: ["bash", "scripts/telegram_swarm_entry.sh"]
 
     volumes:
@@ -102,6 +107,7 @@ services:
 
     environment:
       - TZ=America/Sao_Paulo
+      - TELEGRAM_MODE=provider
       - SMTP_DOMAIN=${SMTP_DOMAIN}
       - SMTP_USERNAME=${SMTP_USERNAME}
       - SMTP_PASSWORD=${SMTP_PASSWORD}
