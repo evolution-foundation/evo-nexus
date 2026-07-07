@@ -642,6 +642,10 @@ def invoke_openai_compatible(provider_id: str, provider: dict, model: str, promp
         ],
         "max_tokens": 900,
         "temperature": 0.4,
+        # Gateways como o OmniRoute streamam SSE por padrão; sem stream=false
+        # o corpo vem em chunks "data: {...}" e o json.loads explode
+        # ("Expecting value: line 1 column 1").
+        "stream": False,
     }
     req = urllib.request.Request(
         f"{base_url}/chat/completions",
@@ -650,12 +654,41 @@ def invoke_openai_compatible(provider_id: str, provider: dict, model: str, promp
     )
     try:
         with urllib.request.urlopen(req, timeout=90) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
+            raw = resp.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
         if exc.code == 401:
             raise RuntimeError(f"401 Unauthorized: chave API inválida/expirada para {provider_id}") from exc
         raise
-    content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+    return _parse_chat_completion(raw, provider_id, model)
+
+
+def _parse_chat_completion(raw: str, provider_id: str, model: str) -> str:
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        # Gateway ignorou stream=false e devolveu SSE mesmo assim — agrega os
+        # deltas de content dos chunks "data: {...}".
+        parts: list[str] = []
+        for line in raw.splitlines():
+            line = line.strip()
+            if not line.startswith("data:"):
+                continue
+            chunk = line[len("data:"):].strip()
+            if not chunk or chunk == "[DONE]":
+                continue
+            try:
+                choices = json.loads(chunk).get("choices") or [{}]
+                delta = choices[0].get("delta") or {}
+            except (json.JSONDecodeError, AttributeError, IndexError, TypeError):
+                continue
+            piece = delta.get("content")
+            if piece:
+                parts.append(piece)
+        content = "".join(parts).strip()
+        if not content:
+            raise RuntimeError(f"{provider_id}:{model} returned unparseable response")
+        return content
+    content = (data.get("choices") or [{}])[0].get("message", {}).get("content", "")
     if not content:
         raise RuntimeError(f"{provider_id}:{model} returned empty content")
     return content.strip()
