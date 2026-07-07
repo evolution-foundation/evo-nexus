@@ -344,6 +344,10 @@ class ClaudeBridge {
           // Lift the CLI's root/sudo guard for --dangerously-skip-permissions
           // inside the container (see comment above spawn args).
           ...(terminalTrustMode && isRoot ? { IS_SANDBOX: '1' } : {}),
+          // O auto-updater do CLI migra a instalação npm pro instalador
+          // nativo no meio da sessão e mata o processo com exit 1
+          // ("OpenClaude has switched from npm to the native installer").
+          DISABLE_AUTOUPDATER: '1',
           TERM: 'xterm-256color',
           FORCE_COLOR: '1',
           COLORTERM: 'truecolor'

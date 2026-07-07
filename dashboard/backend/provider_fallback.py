@@ -305,19 +305,27 @@ def _get_api_key(provider_id: str, config: dict) -> str:
     if provider_id in {"codex_auth", "anthropic"}:
         return ""
 
-    # Prefer real process env vars first. config/providers.json may contain
-    # [REDACTED] placeholders; never send those to the API.
-    for key_name in ("NVIDIA_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY"):
-        value = os.environ.get(key_name, "")
-        if _usable_secret(value):
-            return value
-
     prov = config.get("providers", {}).get(provider_id, {})
     env_vars = prov.get("env_vars", {})
-    for key_name in ("NVIDIA_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY"):
+    base_url = (env_vars.get("OPENAI_BASE_URL") or prov.get("default_base_url") or "").lower()
+
+    # A chave do próprio provider vence. config/providers.json pode conter
+    # placeholders [REDACTED] — _usable_secret filtra e caímos no env do
+    # processo. A NVIDIA_API_KEY do env só vale para endpoints da NVIDIA:
+    # antes ela tinha precedência global e sequestrava chamadas a outros
+    # gateways (omnirouter recebia a chave NVIDIA → 401).
+    for key_name in ("OPENAI_API_KEY", "NVIDIA_API_KEY", "GEMINI_API_KEY"):
         val = env_vars.get(key_name, "")
         if _usable_secret(val):
             return val
+
+    fallback_keys = ["OPENAI_API_KEY", "GEMINI_API_KEY"]
+    if "nvidia.com" in base_url:
+        fallback_keys.insert(0, "NVIDIA_API_KEY")
+    for key_name in fallback_keys:
+        value = os.environ.get(key_name, "")
+        if _usable_secret(value):
+            return value
 
     return ""
 
@@ -416,6 +424,9 @@ def _invoke_cli(
         for k, v in env_overrides.items():
             if v is not None:
                 run_env[k] = str(v)
+    # Impede o CLI de se auto-migrar pro instalador nativo no meio da run
+    # (mata o processo com exit 1).
+    run_env["DISABLE_AUTOUPDATER"] = "1"
 
     # Acquire a per-model inflight lock so concurrent calls cannot pick the same
     # model at the same instant (the canonical cause of burst 429s on shared

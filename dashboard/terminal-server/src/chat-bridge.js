@@ -242,7 +242,9 @@ function buildProviderEnv(providerConfig) {
     if (providerConfig.active === 'codex_auth') providerEnv.OPENAI_MODEL = 'codexplan';
     else if (providerConfig.active === 'openai') providerEnv.OPENAI_MODEL = 'gpt-4.1';
   }
-  return { ...env, ...providerEnv };
+  // O auto-updater do CLI migra a instalação npm pro instalador nativo no
+  // meio da sessão e mata o processo com exit 1.
+  return { ...env, ...providerEnv, DISABLE_AUTOUPDATER: '1' };
 }
 
 /**

@@ -615,13 +615,16 @@ def provider_models(provider_id: str, provider: dict) -> list[str | None]:
 def invoke_openai_compatible(provider_id: str, provider: dict, model: str, prompt: str) -> str:
     env = provider.get("env_vars", {})
     base_url = (env.get("OPENAI_BASE_URL") or provider.get("default_base_url") or "https://api.openai.com/v1").rstrip("/")
-    api_key = (
-        os.environ.get("NVIDIA_API_KEY")
-        or os.environ.get("OPENAI_API_KEY")
-        or env.get("NVIDIA_API_KEY")
-        or env.get("OPENAI_API_KEY")
-    )
-    if not _usable_secret(api_key):
+    # A chave do próprio provider vem primeiro — o env do processo carrega a
+    # chave do provider global (NVIDIA_API_KEY do .env) e sequestrava chamadas
+    # a outros gateways (omnirouter recebia a chave NVIDIA → 401). A chave
+    # NVIDIA do env só vale como fallback para endpoints da própria NVIDIA.
+    candidates = [env.get("OPENAI_API_KEY"), env.get("NVIDIA_API_KEY")]
+    if "nvidia.com" in base_url.lower():
+        candidates.append(os.environ.get("NVIDIA_API_KEY"))
+    candidates.append(os.environ.get("OPENAI_API_KEY"))
+    api_key = next((k for k in candidates if _usable_secret(k)), None)
+    if not api_key:
         raise RuntimeError(f"{provider_id} has no usable API key")
     payload = {
         "model": model,
@@ -669,8 +672,13 @@ def invoke_cli(provider_id: str, provider: dict, prompt: str, model: str | None 
         cli = "openclaude"
     env = os.environ.copy()
     for key, value in provider.get("env_vars", {}).items():
-        if value:
+        # Placeholders [REDACTED] do providers.json não podem vazar pro CLI —
+        # viram uma chave inválida e todo request 401a.
+        if value and _usable_secret(str(value)):
             env[key] = str(value)
+    # Impede o CLI de se auto-migrar pro instalador nativo no meio da sessão
+    # (mata o processo com exit 1).
+    env["DISABLE_AUTOUPDATER"] = "1"
     if model:
         env["OPENAI_MODEL"] = model
     max_turns = int(os.environ.get("TELEGRAM_CLI_MAX_TURNS") or provider.get("telegram_max_turns") or (5 if provider_id == "codex_auth" else 2))
