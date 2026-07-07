@@ -159,11 +159,6 @@ export default function AgentTerminal({ agent, sessionId: externalSessionId, wor
     // alternative.
     const AUTO_REPLY_RE = /^\x1b\[(\?|>)[0-9;]*[a-zA-Z]$|^\x1b\[[0-9;]*[nRct]$/
     term.onData((data) => {
-      // TEMP DEBUG: log every onData payload so we can see what's being
-      // sent to the pty on startup
-      const hex = Array.from(data).map((c) => (c as unknown as string).charCodeAt(0).toString(16).padStart(2, '0')).join('')
-      // eslint-disable-next-line no-console
-      console.log('[xterm onData]', data.length, 'B  hex:', hex, '  match:', AUTO_REPLY_RE.test(data))
       if (AUTO_REPLY_RE.test(data)) return
       if (wsRef.current?.readyState === WebSocket.OPEN) {
         wsRef.current.send(JSON.stringify({ type: 'input', data }))
@@ -186,6 +181,7 @@ export default function AgentTerminal({ agent, sessionId: externalSessionId, wor
 
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null
     let reconnectAttempts = 0
+    let eioRestartAttempts = 0
     let alreadyActive = false
 
     // The server keeps the pty alive when the socket drops, so a dead WS
@@ -250,6 +246,23 @@ export default function AgentTerminal({ agent, sessionId: externalSessionId, wor
       const ws = new WebSocket(`${CC_WEB_WS}/ws`)
       wsRef.current = ws
 
+      const startClaude = () => {
+        setStatus('starting')
+        const fit = fitRef.current
+        if (fit) {
+          try { fit.fit() } catch {}
+        }
+        ws.send(JSON.stringify({
+          type: 'start_claude',
+          options: {
+            dangerouslySkipPermissions: true,
+            agent,
+            cols: term!.cols,
+            rows: term!.rows,
+          },
+        }))
+      }
+
       ws.onopen = () => {
         setErrorMsg(null)
         ws.send(JSON.stringify({ type: 'join_session', sessionId }))
@@ -282,10 +295,11 @@ export default function AgentTerminal({ agent, sessionId: externalSessionId, wor
                 ws.send(JSON.stringify({ type: 'resize', cols: term!.cols, rows: term!.rows }))
               }
             } else if (isReconnect) {
-              // Process ended while we were disconnected — surface it
-              // instead of silently restarting the agent.
-              setStatus('exited')
-              term!.write('\r\n\x1b[33m[Reconnected — process is no longer running]\x1b[0m\r\n')
+              // Process ended while we were disconnected. Restart it in-place
+              // so a transient proxy/browser socket drop doesn't force a full
+              // page refresh to get the agent moving again.
+              term!.write('\r\n\x1b[33m[Reconnected - restarting agent]\x1b[0m\r\n')
+              startClaude()
             } else {
               // Start Claude with --agent <agent>
               // Pass cols/rows up-front so the pty is born at the right
@@ -293,20 +307,7 @@ export default function AgentTerminal({ agent, sessionId: externalSessionId, wor
               // queries during startup can echo back into the prompt as
               // literal text ("0?1;2c0?1;2c") before the first resize
               // message arrives.
-              setStatus('starting')
-              const fit = fitRef.current
-              if (fit) {
-                try { fit.fit() } catch {}
-              }
-              ws.send(JSON.stringify({
-                type: 'start_claude',
-                options: {
-                  dangerouslySkipPermissions: true,
-                  agent,
-                  cols: term!.cols,
-                  rows: term!.rows,
-                },
-              }))
+              startClaude()
             }
             break
           }
@@ -325,8 +326,14 @@ export default function AgentTerminal({ agent, sessionId: externalSessionId, wor
             }
             break
           case 'exit':
-            setStatus('exited')
-            term!.write(`\r\n\x1b[33m[Process exited${msg.code != null ? ` with code ${msg.code}` : ''}]\x1b[0m\r\n`)
+            if (msg.signal === 'EIO' && eioRestartAttempts < 2) {
+              eioRestartAttempts++
+              term!.write('\r\n\x1b[33m[PTY closed - restarting agent]\x1b[0m\r\n')
+              startClaude()
+            } else {
+              setStatus('exited')
+              term!.write(`\r\n\x1b[33m[Process exited${msg.code != null ? ` with code ${msg.code}` : ''}]\x1b[0m\r\n`)
+            }
             break
           case 'error':
             setStatus('error')

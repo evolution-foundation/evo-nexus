@@ -10,6 +10,34 @@ const {
   getProviderMode,
 } = require('./provider-config');
 
+
+function readTerminalTrustMode() {
+  try {
+    const yaml = fs.readFileSync(path.join(WORKSPACE_ROOT, 'config', 'workspace.yaml'), 'utf8');
+    const m = yaml.match(/^chat:\s*\n(?:[ \t]+[^\n]*\n)*?[ \t]+trustMode:\s*(true|false)/m);
+    return m ? m[1] === 'true' : false;
+  } catch {
+    return false;
+  }
+}
+
+function terminalPromptAcceptInput(buffer) {
+  const clean = String(buffer || '').replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '');
+  if (/Do you trust the files in this folder\?/i.test(clean)) return '\r';
+  if (/Do you want to proceed\?/i.test(clean)
+    || /Allow (this )?(command|tool|operation)/i.test(clean)
+    || /permission (request|required|to use|to run)/i.test(clean)
+    || /\b1\.\s*(Yes|Allow|Proceed)/i.test(clean)) {
+    return '1\r';
+  }
+  return null;
+}
+
+
+function isPtyEio(error) {
+  return error?.code === 'EIO' || /\bEIO\b|read EIO|write EIO/i.test(error?.message || '');
+}
+
 class ClaudeBridge {
   constructor() {
     this.sessions = new Map();
@@ -156,16 +184,22 @@ class ClaudeBridge {
       console.log(`Working directory: ${workingDir}`);
       console.log(`Agent: ${agent || 'none'}`);
       console.log(`Terminal size: ${cols}x${rows}`);
-      if (dangerouslySkipPermissions) {
-        console.log(`⚠️ WARNING: Skipping permissions with --dangerously-skip-permissions flag`);
+      const terminalTrustMode = dangerouslySkipPermissions || readTerminalTrustMode();
+      if (terminalTrustMode) {
+        console.log(`⚠️ WARNING: Terminal trust mode enabled`);
       }
 
-      // Don't use --dangerously-skip-permissions when running as root —
-      // Claude/OpenClaude block this flag for root users.
-      // The trust prompt is auto-accepted via PTY detection below instead.
+      // Claude Code refuses --dangerously-skip-permissions as root. OpenClaude
+      // providers may still support it, and either way the PTY fallback below
+      // auto-accepts permission prompts when trust mode is enabled.
       const isRoot = process.getuid && process.getuid() === 0;
-      const args = (dangerouslySkipPermissions && !isRoot) ? ['--dangerously-skip-permissions'] : [];
-      if (agent) {
+      const active = providerConfig.active || 'anthropic';
+      const shouldPassSkipFlag = terminalTrustMode && !(isRoot && active === 'anthropic');
+      const args = shouldPassSkipFlag ? ['--dangerously-skip-permissions'] : [];
+      if (terminalTrustMode && !shouldPassSkipFlag) {
+        console.log('[permissions] Running native Claude as root; using PTY auto-approve fallback instead of skip flag');
+      }
+      if (agent && active === 'anthropic') {
         args.push('--agent', agent);
       }
 
@@ -173,7 +207,6 @@ class ClaudeBridge {
       // --append-system-prompt is too weak — GPT models ignore appended instructions.
       // --system-prompt REPLACES the default system prompt, ensuring the agent persona
       // takes priority over CLAUDE.md and other context that mentions "Claude".
-      const active = providerConfig.active || 'anthropic';
       let agentTier = null;
       if (active !== 'anthropic' && agent) {
         // Read the agent definition file to build a strong system prompt.
@@ -188,6 +221,11 @@ class ClaudeBridge {
           // Extract body (after YAML frontmatter ---)
           const match = content.match(/^---\n[\s\S]*?\n---\n([\s\S]*)$/);
           agentPrompt = match ? match[1].trim() : content;
+          for (const marker of ['\n# Persistent Agent Memory', '\n## MEMORY.md']) {
+            if (agentPrompt.includes(marker)) {
+              agentPrompt = agentPrompt.split(marker, 1)[0].trim();
+            }
+          }
           // Extract the agent's model tier (opus|sonnet|haiku) from the
           // frontmatter — used to pick a per-tier provider model below.
           const fmMatch = content.match(/^---\n([\s\S]*?)\n---\n/);
@@ -311,30 +349,30 @@ class ClaudeBridge {
 
       this.sessions.set(sessionId, session);
 
-      // Track if we've seen the trust prompt
-      let trustPromptHandled = false;
       let dataBuffer = '';
+      let lastAutoAcceptAt = 0;
 
       claudeProcess.onData((data) => {
         if (process.env.DEBUG) {
           console.log(`Session ${sessionId} output:`, data);
         }
 
-        // Buffer data to check for trust prompt
+        // Buffer data to check for interactive trust / permission prompts.
         dataBuffer += data;
-        
-        // Check for trust prompt and auto-accept it
-        if (!trustPromptHandled && dataBuffer.includes('Do you trust the files in this folder?')) {
-          trustPromptHandled = true;
-          console.log(`Auto-accepting trust prompt for session ${sessionId}`);
-          // The prompt shows "Enter to confirm" which means option 1 is already selected
-          // Just send Enter to confirm
-          setTimeout(() => {
-            claudeProcess.write('\r');
-            console.log(`Sent Enter to accept trust prompt for session ${sessionId}`);
-          }, 500);
+
+        const acceptInput = terminalTrustMode ? terminalPromptAcceptInput(dataBuffer) : null;
+        if (acceptInput) {
+          const now = Date.now();
+          if (now - lastAutoAcceptAt > 1200) {
+            lastAutoAcceptAt = now;
+            dataBuffer = '';
+            console.log(`Auto-accepting terminal permission prompt for session ${sessionId}`);
+            setTimeout(() => {
+              claudeProcess.write(acceptInput);
+            }, 250);
+          }
         }
-        
+
         // Clear buffer periodically to prevent memory issues
         if (dataBuffer.length > 10000) {
           dataBuffer = dataBuffer.slice(-5000);
@@ -356,7 +394,11 @@ class ClaudeBridge {
       });
 
       claudeProcess.on('error', (error) => {
-        console.error(`Claude session ${sessionId} error:`, error);
+        if (isPtyEio(error)) {
+          console.warn(`Claude session ${sessionId} PTY closed with EIO; treating as exit`);
+        } else {
+          console.error(`Claude session ${sessionId} error:`, error);
+        }
         // Clear kill timeout if process errored
         if (session.killTimeout) {
           clearTimeout(session.killTimeout);
@@ -364,7 +406,11 @@ class ClaudeBridge {
         }
         session.active = false;
         this.sessions.delete(sessionId);
-        onError(error);
+        if (isPtyEio(error)) {
+          onExit(1, 'EIO');
+        } else {
+          onError(error);
+        }
       });
 
       console.log(`Claude session ${sessionId} started successfully`);
@@ -384,7 +430,13 @@ class ClaudeBridge {
 
     try {
       session.process.write(data);
+      return true;
     } catch (error) {
+      if (isPtyEio(error)) {
+        session.active = false;
+        this.sessions.delete(sessionId);
+        return false;
+      }
       throw new Error(`Failed to send input to session ${sessionId}: ${error.message}`);
     }
   }
@@ -398,6 +450,11 @@ class ClaudeBridge {
     try {
       session.process.resize(cols, rows);
     } catch (error) {
+      if (isPtyEio(error)) {
+        session.active = false;
+        this.sessions.delete(sessionId);
+        return;
+      }
       console.warn(`Failed to resize session ${sessionId}:`, error.message);
     }
   }

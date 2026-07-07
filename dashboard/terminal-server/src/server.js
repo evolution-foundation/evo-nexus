@@ -618,7 +618,11 @@ class TerminalServer {
           const session = this.claudeSessions.get(wsInfo.claudeSessionId);
           if (session && session.connections.has(wsId) && session.active && session.agent === 'claude') {
             try {
-              await this.claudeBridge.sendInput(wsInfo.claudeSessionId, data.data);
+              const accepted = await this.claudeBridge.sendInput(wsInfo.claudeSessionId, data.data);
+              if (accepted === false) {
+                session.active = false;
+                this.broadcastToSession(wsInfo.claudeSessionId, { type: 'exit', code: 1, signal: 'EIO' });
+              }
             } catch (error) {
               if (this.dev) console.error(`Failed to send input to session ${wsInfo.claudeSessionId}:`, error.message);
               this.sendToWebSocket(wsInfo.ws, {
