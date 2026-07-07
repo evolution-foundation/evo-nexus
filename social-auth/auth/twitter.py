@@ -55,7 +55,7 @@ def connect():
         "response_type": "code",
         "client_id": client_id,
         "redirect_uri": _redirect_uri(),
-        "scope": "tweet.read tweet.write users.read follows.read offline.access",
+        "scope": "tweet.read tweet.write users.read follows.read media.write offline.access",
         "state": state,
         "code_challenge": code_challenge,
         "code_challenge_method": "S256",

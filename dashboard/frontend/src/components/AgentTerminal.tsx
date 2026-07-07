@@ -185,7 +185,6 @@ export default function AgentTerminal({ agent, sessionId: externalSessionId, wor
 
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null
     let reconnectAttempts = 0
-    let eioRestartAttempts = 0
     let alreadyActive = false
 
     // The server keeps the pty alive when the socket drops, so a dead WS
@@ -330,20 +329,25 @@ export default function AgentTerminal({ agent, sessionId: externalSessionId, wor
             }
             break
           case 'exit':
-            if (msg.signal === 'EIO' && eioRestartAttempts < 2) {
-              eioRestartAttempts++
-              term!.write('\r\n\x1b[33m[PTY closed - restarting agent]\x1b[0m\r\n')
-              startClaude()
+            // EIO is no longer sent as a signal from the server — the
+            // server now forwards signal: null for PTY EIO events. But
+            // keep backward-compat: if an old server still sends 'EIO',
+            // treat it as a normal exit (not an error that restarts).
+            if (msg.signal === 'EIO') {
+              setStatus('exited')
+              term!.write(`\r\n\x1b[33m[Process exited${msg.code != null ? ` with code ${msg.code}` : ''}]\x1b[0m\r\n`)
             } else {
               setStatus('exited')
               term!.write(`\r\n\x1b[33m[Process exited${msg.code != null ? ` with code ${msg.code}` : ''}]\x1b[0m\r\n`)
             }
             break
           case 'error':
-            if (isEioMessage(msg.message) && eioRestartAttempts < 2) {
-              eioRestartAttempts++
-              term!.write('\r\n\x1b[33m[PTY closed - restarting agent]\x1b[0m\r\n')
-              startClaude()
+            // EIO no longer reaches here — the server converts it to a
+            // normal 'exit' event. If it somehow still arrives, treat it
+            // as an exit, not a retryable error.
+            if (isEioMessage(msg.message)) {
+              setStatus('exited')
+              term!.write('\r\n\x1b[33m[Process exited]\x1b[0m\r\n')
             } else {
               setStatus('error')
               setErrorMsg(msg.message || 'Unknown error')

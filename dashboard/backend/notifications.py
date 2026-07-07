@@ -95,6 +95,34 @@ def send_telegram_alert(text: str) -> bool:
     return _send_telegram(text)
 
 
+def send_whatsapp(text: str, phone: str) -> bool:
+    """Send a WhatsApp message via Evolution Go API.
+
+    Reads EVOLUTION_GO_URL and EVOLUTION_GO_KEY from environment (.env).
+    Returns True if sent, False on any failure.
+    """
+    import json
+    import urllib.request
+    import urllib.error
+
+    url = os.environ.get("EVOLUTION_GO_URL", "").rstrip("/")
+    key = os.environ.get("EVOLUTION_GO_KEY", "")
+    if not url or not key:
+        return False
+    try:
+        payload = json.dumps({"number": phone, "text": text}).encode("utf-8")
+        req = urllib.request.Request(
+            f"{url}/message/sendText/nature",
+            data=payload,
+            method="POST",
+            headers={"apikey": key, "Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return resp.status in (200, 201)
+    except Exception:
+        return False
+
+
 def _esc(s: str) -> str:
     """Escape HTML special chars for Telegram parse_mode=HTML."""
     return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")

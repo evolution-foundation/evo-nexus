@@ -781,7 +781,7 @@ login_manager.init_app(app)
 
 @login_manager.user_loader
 def load_user(user_id):
-    return User.query.get(int(user_id))
+    return db.session.get(User, int(user_id))
 
 @login_manager.unauthorized_handler
 def unauthorized():
@@ -845,6 +845,7 @@ def auth_middleware():
         path in PUBLIC_PATHS
         or path.startswith("/api/docs")
         or path.startswith("/api/triggers/webhook/")
+        or path.startswith("/api/instagram/webhook")
         or (path.startswith("/api/shares/") and "/view" in path)
         or path.startswith("/api/knowledge/v1/")
     ):
@@ -900,6 +901,7 @@ from routes.databases import bp as databases_bp
 from routes.plugins import bp as plugins_bp
 from routes.mcp_servers import bp as mcp_servers_bp
 from routes.plugin_public_pages import bp as plugin_public_pages_bp
+from routes.instagram import bp as instagram_api_bp
 
 # Brain Repo + Onboarding blueprints (loaded after routes are created)
 try:
@@ -939,6 +941,9 @@ app.register_blueprint(mempalace_bp)
 app.register_blueprint(tasks_bp)
 app.register_blueprint(triggers_bp)
 app.register_blueprint(terminal_proxy_bp)
+
+# Instagram API routes (webhooks, publish, comments, DMs)
+app.register_blueprint(instagram_api_bp)
 
 # Mount the terminal-server WebSocket proxy on the same Sock instance the
 # rest of the app uses. Done after the blueprint is registered so route

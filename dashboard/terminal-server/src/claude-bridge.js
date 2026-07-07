@@ -344,7 +344,11 @@ class ClaudeBridge {
         workingDir,
         created: new Date(),
         active: true,
-        killTimeout: null
+        killTimeout: null,
+        // Tracks whether onExit has already fired so the late-arriving
+        // 'error' (EIO) event from node-pty doesn't double-fire onExit
+        // or surface a misleading "read EIO" toast to the user.
+        exited: false,
       };
 
       this.sessions.set(sessionId, session);
@@ -383,6 +387,9 @@ class ClaudeBridge {
 
       claudeProcess.onExit((exitCode, signal) => {
         console.log(`Claude session ${sessionId} exited with code ${exitCode}, signal ${signal}`);
+        // Mark as exited so the late-arriving 'error' (EIO) handler
+        // knows the exit has already been reported and stays silent.
+        session.exited = true;
         // Clear kill timeout if process exited naturally
         if (session.killTimeout) {
           clearTimeout(session.killTimeout);
@@ -395,6 +402,17 @@ class ClaudeBridge {
 
       claudeProcess.on('error', (error) => {
         if (isPtyEio(error)) {
+          // EIO on the master side of the PTY is a known artifact when the
+          // child process has already exited — node-pty's read loop hits
+          // the closed slave FD and emits 'error' before (or alongside)
+          // the 'exit' event. If onExit already fired, we're done — don't
+          // double-report. If not, treat it as a normal exit (code 1,
+          // signal null) instead of an error so the frontend shows a
+          // clean "[Process exited]" rather than a scary "read EIO".
+          if (session.exited) {
+            console.warn(`Claude session ${sessionId} EIO after exit — suppressed`);
+            return;
+          }
           console.warn(`Claude session ${sessionId} PTY closed with EIO; treating as exit`);
         } else {
           console.error(`Claude session ${sessionId} error:`, error);
@@ -404,10 +422,12 @@ class ClaudeBridge {
           clearTimeout(session.killTimeout);
           session.killTimeout = null;
         }
+        session.exited = true;
         session.active = false;
         this.sessions.delete(sessionId);
         if (isPtyEio(error)) {
-          onExit(1, 'EIO');
+          // Signal null (not 'EIO') so the frontend doesn't restart-loop
+          onExit(1, null);
         } else {
           onError(error);
         }
@@ -433,6 +453,10 @@ class ClaudeBridge {
       return true;
     } catch (error) {
       if (isPtyEio(error)) {
+        // Process already exited — don't surface EIO; treat as silent exit
+        if (!session.exited) {
+          session.exited = true;
+        }
         session.active = false;
         this.sessions.delete(sessionId);
         return false;

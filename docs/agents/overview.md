@@ -120,6 +120,8 @@ Memory is organized by type:
 
 Each memory file uses frontmatter (`name`, `description`, `type`) and a `MEMORY.md` index file tracks all entries. Agents read memory at the start of each session and update it as they learn.
 
+For semantic search over large volumes of content (code, docs, transcripts), use **MemPalace** — the local vector memory system. See [MemPalace Guide](mempalace-guide.md) for the complete reference on when and how to use it.
+
 ## Custom Agents
 
 You can create your own agents with the `custom-` prefix. Custom agents are gitignored (personal to your workspace) and appear in the dashboard with a gray "custom" badge.

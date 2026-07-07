@@ -155,3 +155,4 @@ config/.reload
 
 # ── One-off integration test scaffolding (may contain hardcoded creds) ──
 scripts/ghost_integration_test.py
+.git-rewrite

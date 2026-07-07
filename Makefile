@@ -13,11 +13,9 @@
 PYTHON := $(shell command -v uv >/dev/null 2>&1 && echo "uv run python" || echo "python3")
 ADW_DIR := ADWs/routines
 
-# Load .env if it exists
-ifneq (,$(wildcard .env))
-include .env
-export
-endif
+# Do not include .env here. GNU make does not parse shell-style .env files
+# safely when values contain spaces or slashes. Long-running services load .env
+# through start-services.sh; Python routines read provider config/env at runtime.
 
 # ── Setup ──────────────────────────────────
 

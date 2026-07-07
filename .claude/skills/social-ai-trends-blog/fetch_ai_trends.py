@@ -64,6 +64,8 @@ TOPICS = {
     "Negócios / startups / investimento": r"startup|funding|investimen|raise|bilh|billion|valuation|ipo",
 }
 
+API_ERRORS = []
+
 def classify(text):
     t = text.lower()
     hits = [label for label, pat in TOPICS.items() if re.search(pat, t)]
@@ -95,10 +97,12 @@ def fetch(query, bearer, start_time, max_results=100):
         with urllib.request.urlopen(req, timeout=30) as r:
             return json.loads(r.read().decode())
     except urllib.error.HTTPError as e:
-        body = e.read().decode()[:300]
+        body = e.read().decode()[:1000]
+        API_ERRORS.append({"query": query, "status": e.code, "body": body})
         print(f"[warn] HTTP {e.code} em query '{query[:40]}...': {body}", file=sys.stderr)
         return {"data": [], "includes": {}}
     except Exception as e:
+        API_ERRORS.append({"query": query, "error": str(e)})
         print(f"[warn] erro em query '{query[:40]}...': {e}", file=sys.stderr)
         return {"data": [], "includes": {}}
 
@@ -160,6 +164,7 @@ def main():
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "window_days": args.days,
         "queries": QUERIES,
+        "api_errors": API_ERRORS,
         "total_tweets_collected": len(tweets),
         "topics_ranked": topics_ranked,
         "top_tweets_overall": [

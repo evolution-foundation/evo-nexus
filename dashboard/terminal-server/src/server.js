@@ -626,12 +626,12 @@ class TerminalServer {
               const accepted = await this.claudeBridge.sendInput(wsInfo.claudeSessionId, data.data);
               if (accepted === false) {
                 session.active = false;
-                this.broadcastToSession(wsInfo.claudeSessionId, { type: 'exit', code: 1, signal: 'EIO' });
+                this.broadcastToSession(wsInfo.claudeSessionId, { type: 'exit', code: 1, signal: null });
               }
             } catch (error) {
               if (isEioError(error)) {
                 session.active = false;
-                this.broadcastToSession(wsInfo.claudeSessionId, { type: 'exit', code: 1, signal: 'EIO' });
+                this.broadcastToSession(wsInfo.claudeSessionId, { type: 'exit', code: 1, signal: null });
                 break;
               }
               if (this.dev) console.error(`Failed to send input to session ${wsInfo.claudeSessionId}:`, error.message);
@@ -1006,7 +1006,10 @@ class TerminalServer {
           const currentSession = this.claudeSessions.get(sessionId);
           if (currentSession) currentSession.active = false;
           if (isEioError(error)) {
-            this.broadcastToSession(sessionId, { type: 'exit', code: 1, signal: 'EIO' });
+            // EIO is a PTY artifact when the child exits — treat as normal
+            // exit with signal null so the frontend shows "Process exited"
+            // instead of the scary "read EIO" error toast.
+            this.broadcastToSession(sessionId, { type: 'exit', code: 1, signal: null });
           } else {
             this.broadcastToSession(sessionId, { type: 'error', message: error.message });
           }
@@ -1023,7 +1026,7 @@ class TerminalServer {
     } catch (error) {
       if (isEioError(error)) {
         session.active = false;
-        this.broadcastToSession(sessionId, { type: 'exit', code: 1, signal: 'EIO' });
+        this.broadcastToSession(sessionId, { type: 'exit', code: 1, signal: null });
         return;
       }
       if (this.dev) console.error(`Error starting Claude in session ${wsInfo.claudeSessionId}:`, error);
