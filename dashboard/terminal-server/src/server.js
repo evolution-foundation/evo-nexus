@@ -280,10 +280,14 @@ class TerminalServer {
 
       // Scope reuse by (agentName, ticketId) when ticketId is provided.
       // Without ticketId the old behaviour is preserved (reuse by agentName alone).
+      // Never reuse a session that already has a live viewer attached — two
+      // concurrent terminals would share one PTY and mirror/duplicate every
+      // keystroke. The busy session keeps its viewer; the caller gets a fresh one.
       for (const [id, s] of this.claudeSessions.entries()) {
         const agentMatch = s.agentName === agentName;
         const ticketMatch = ticketId ? s.ticketId === ticketId : !s.ticketId;
-        if (agentMatch && ticketMatch) {
+        const busy = s.connections && s.connections.size > 0;
+        if (agentMatch && ticketMatch && !busy) {
           return res.json({
             success: true,
             sessionId: id,
