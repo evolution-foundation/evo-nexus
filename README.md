@@ -89,6 +89,8 @@ OmniRoute (self-hosted)
 
 **Segurança:** o dashboard do OmniRoute usa a **auth nativa** (login + sessão JWT). Não coloque basic-auth do Traefik na frente — as chamadas internas do dashboard (SSE/WS/API) usam header `Authorization` próprio e entram em loop de 401. O `REQUIRE_API_KEY=true` garante que a API `/v1` só responde com chave válida.
 
+**Configuração assistida por agente:** [PROMPT-OMNIROUTE-CONFIG.md](PROMPT-OMNIROUTE-CONFIG.md) — prompt pronto pra colar num Claude Code (ou agente similar) que audita e otimiza o seu OmniRoute pela management API: keys nomeadas com telemetria de custo, compressão com auto-trigger, refresh de quota e reativação de modelos `:free`. Extraído de uma configuração real em produção.
+
 ---
 
 ## Seletor de providers
