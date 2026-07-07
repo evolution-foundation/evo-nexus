@@ -1,23 +1,25 @@
 #!/usr/bin/env bash
 # Swarm entrypoint for the Telegram bot service.
 #
-# Mirrors the local `make telegram` setup inside a single container:
-#   1. waits for NVIDIA_API_KEY (configured via dashboard → Providers, lands
-#      in /workspace/config/.env on the shared config volume)
-#   2. seeds ~/.claude/channels/telegram/{.env,access.json} on first boot so
-#      the channel has its bot token and the owner's DM allowlist
-#   3. starts the LiteLLM proxy (Anthropic /v1/messages → NVIDIA NIM)
-#   4. execs `claude --channels` pointed at the local proxy
+# Two runtime modes (TELEGRAM_MODE=channels|provider, default: auto):
+#   * channels — `claude --channels` direto na Anthropic. Requer login
+#     claude.ai no volume de auth (rode `claude /login` uma vez via docker
+#     exec; persiste em /root/.claude/.credentials.json). A disponibilidade
+#     de channels é verificada server-side pela Anthropic e NÃO funciona
+#     através de proxies OpenAI-compatíveis (NVIDIA NIM etc.).
+#   * provider — scripts/telegram_provider_bot.py: bot de polling que
+#     responde pelo provider ativo em config/providers.json (NVIDIA NIM,
+#     OpenAI, ...). Não depende de channels nem de login Anthropic. É o
+#     mesmo runtime do `make telegram` local.
 #
-# The real `claude` binary only speaks the Anthropic API; LiteLLM translates
-# to NVIDIA NIM (OpenAI-compatible). See config/litellm-telegram.yaml.
+# Auto: se existir login claude.ai → channels; senão → provider. O antigo
+# caminho LiteLLM-proxy foi removido: channels atrás do proxy nunca passa
+# na verificação server-side, então o canal ficava morto ("desconectado").
 set -euo pipefail
 cd /workspace
 
 CONFIG_DIR=/workspace/config
 CHANNEL_DIR="$HOME/.claude/channels/telegram"
-PROXY_PORT="${LITELLM_PORT:-4000}"
-PROXY_KEY="sk-evonexus-telegram-local"
 
 reload_env() {
     set -a
@@ -26,36 +28,31 @@ reload_env() {
     set +a
 }
 
-# --- 1. Decide auth mode -----------------------------------------------------
-# Channels availability is verified server-side by Anthropic at startup and
-# CANNOT be verified through the LiteLLM/NVIDIA proxy — claude prints
-# "Channels are not currently available" and ignores --channels. If a
-# claude.ai login exists on the auth volume (run `claude /login` once via
-# docker exec; persisted in /root/.claude/.credentials.json), run the channel
-# directly on Anthropic. TELEGRAM_FORCE_PROXY=1 keeps the NVIDIA proxy
-# regardless (channel stays dead until Anthropic supports proxied channels).
+# --- 1. Decide runtime mode --------------------------------------------------
 reload_env
-DIRECT_MODE=0
-if [ "${TELEGRAM_FORCE_PROXY:-0}" != "1" ] \
-   && grep -q '"claudeAiOauth"' /root/.claude/.credentials.json 2>/dev/null; then
-    DIRECT_MODE=1
-    echo "[$(date -Is)] claude.ai login found — running channel directly on Anthropic" >&2
+MODE="${TELEGRAM_MODE:-auto}"
+if [ "$MODE" = "auto" ]; then
+    if grep -q '"claudeAiOauth"' /root/.claude/.credentials.json 2>/dev/null; then
+        MODE=channels
+    else
+        MODE=provider
+    fi
 fi
+echo "[$(date -Is)] telegram mode: $MODE" >&2
 
-# --- 1b. Wait for NVIDIA_API_KEY (proxy mode only) ---------------------------
-if [ "$DIRECT_MODE" = "0" ]; then
-    while [ -z "${NVIDIA_API_KEY:-}" ]; do
-        echo "[$(date -Is)] waiting for NVIDIA_API_KEY — configure via dashboard → Providers" >&2
-        sleep 30
-        reload_env
-    done
-fi
+# --- 2. Wait for the bot token (both modes need it) --------------------------
+# Lands in config/.env via dashboard → Integrations, or comes pre-set in the
+# channel dir from a previous boot. No crash-loop while onboarding.
+has_channel_token() {
+    grep -q '^TELEGRAM_BOT_TOKEN=..*' "$CHANNEL_DIR/.env" 2>/dev/null
+}
+while [ -z "${TELEGRAM_BOT_TOKEN:-}" ] && ! has_channel_token; do
+    echo "[$(date -Is)] waiting for TELEGRAM_BOT_TOKEN — configure via dashboard → Integrations" >&2
+    sleep 30
+    reload_env
+done
 
-if [ -z "${TELEGRAM_BOT_TOKEN:-}" ]; then
-    echo "[$(date -Is)] WARNING: TELEGRAM_BOT_TOKEN not set — the channel will not authenticate" >&2
-fi
-
-# --- 2. Seed channel config on the auth volume (first boot only) -----------
+# --- 3. Seed channel config on the auth volume -------------------------------
 mkdir -p "$CHANNEL_DIR"
 if [ ! -f "$CHANNEL_DIR/.env" ] && [ -n "${TELEGRAM_BOT_TOKEN:-}" ]; then
     printf 'TELEGRAM_BOT_TOKEN=%s\n' "$TELEGRAM_BOT_TOKEN" > "$CHANNEL_DIR/.env"
@@ -87,30 +84,6 @@ if [ -n "${TELEGRAM_CHAT_ID:-}" ]; then
             echo "[$(date -Is)] WARNING: could not patch access.json allowlist" >&2
         fi
     fi
-fi
-
-# --- 3. Start the LiteLLM proxy (proxy mode only) ----------------------------
-# Prefer a user-customized copy on the config volume; fall back to the image
-# default stashed by the Dockerfile (the volume shadows the image's config/).
-if [ "$DIRECT_MODE" = "0" ]; then
-    LITELLM_CONFIG="$CONFIG_DIR/litellm-telegram.yaml"
-    [ -f "$LITELLM_CONFIG" ] || LITELLM_CONFIG=/workspace/_defaults/config/litellm-telegram.yaml
-
-    .venv/bin/litellm --config "$LITELLM_CONFIG" --host 127.0.0.1 --port "$PROXY_PORT" &
-    PROXY_PID=$!
-    trap 'kill "$PROXY_PID" 2>/dev/null || true' EXIT
-
-    for _ in $(seq 1 60); do
-        if curl -fsS "http://127.0.0.1:$PROXY_PORT/health/readiness" >/dev/null 2>&1; then
-            break
-        fi
-        if ! kill -0 "$PROXY_PID" 2>/dev/null; then
-            echo "[$(date -Is)] LiteLLM proxy died during startup" >&2
-            exit 1
-        fi
-        sleep 2
-    done
-    echo "[$(date -Is)] LiteLLM proxy ready on 127.0.0.1:$PROXY_PORT" >&2
 fi
 
 # --- 4. Restore /root/.claude.json (same rationale as start-dashboard.sh) --
@@ -155,22 +128,24 @@ else
     echo "[$(date -Is)] WARNING: could not patch /root/.claude.json flags" >&2
 fi
 
-# --- 5. Run the channel --------------------------------------------------------
-if [ "$DIRECT_MODE" = "1" ]; then
-    # The claude.ai OAuth login must win — any Anthropic env credential
-    # (possibly sourced from config/.env) would shadow it and fail the
-    # server-side channels entitlement check.
-    unset ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN ANTHROPIC_MODEL ANTHROPIC_API_KEY 2>/dev/null || true
-else
-    export ANTHROPIC_BASE_URL="http://127.0.0.1:$PROXY_PORT"
-    export ANTHROPIC_AUTH_TOKEN="$PROXY_KEY"
-    export ANTHROPIC_MODEL="telegram-nvidia"
-    unset ANTHROPIC_API_KEY 2>/dev/null || true
-fi
-
 # The container runs as root; Claude Code refuses --dangerously-skip-
 # permissions as root unless it knows it's inside a sandboxed container.
 export IS_SANDBOX=1
+
+# --- 5. Run the bot -----------------------------------------------------------
+if [ "$MODE" = "provider" ]; then
+    echo "[$(date -Is)] starting telegram_provider_bot.py on the active provider" >&2
+    exec /workspace/.venv/bin/python scripts/telegram_provider_bot.py
+fi
+
+# channels mode — the claude.ai OAuth login must win: any Anthropic env
+# credential (possibly sourced from config/.env) would shadow it and fail
+# the server-side channels entitlement check.
+unset ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN ANTHROPIC_MODEL ANTHROPIC_API_KEY 2>/dev/null || true
+
+if [ "$MODE" = "channels" ] && ! grep -q '"claudeAiOauth"' /root/.claude/.credentials.json 2>/dev/null; then
+    echo "[$(date -Is)] WARNING: TELEGRAM_MODE=channels but no claude.ai login on the auth volume — run 'claude /login' via docker exec or the channel will stay dead" >&2
+fi
 
 # First boot: the plugin cache lives on the /root/.claude volume and starts
 # empty — install the telegram channel plugin before starting the channel.

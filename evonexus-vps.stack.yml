@@ -79,9 +79,12 @@ services:
 
   evonexus_telegram:
     image: excarplex/evo-nexus-runtime:latest
-    # Wrapper: LiteLLM proxy (Anthropic -> NVIDIA NIM) + claude --channels.
-    # Waits for NVIDIA_API_KEY instead of ANTHROPIC_API_KEY — the bot runs on
-    # an NVIDIA model through the proxy. See scripts/telegram_swarm_entry.sh.
+    # Wrapper com dois modos (TELEGRAM_MODE=channels|provider, default auto):
+    #   channels — claude --channels direto na Anthropic (requer claude /login
+    #              no volume de auth; channels NÃO funciona via proxy NVIDIA)
+    #   provider — telegram_provider_bot.py no provider ativo (NVIDIA etc.),
+    #              mesmo runtime do `make telegram` local. Default sem login.
+    # See scripts/telegram_swarm_entry.sh.
     command: ["bash", "scripts/telegram_swarm_entry.sh"]
 
     volumes:
