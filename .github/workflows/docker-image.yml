@@ -16,7 +16,7 @@ jobs:
           - image: evo-nexus-dashboard
             dockerfile: ./Dockerfile.swarm.dashboard
           - image: evo-nexus-runtime
-            dockerfile: ./Dockerfile
+            dockerfile: ./Dockerfile.swarm
     steps:
       - name: Checkout do código
         uses: actions/checkout@v4
