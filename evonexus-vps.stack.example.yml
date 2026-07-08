@@ -64,6 +64,10 @@ services:
       - EVONEXUS_PORT=8080
       - TERMINAL_SERVER_PORT=32352
       - FORWARDED_ALLOW_IPS=*
+      ## Guard-rails do terminal: teto de PTYs claude simultâneos (cada aba
+      ## de agente consome 200-400MB) e TTL pra recolher sessões sem viewer.
+      - TERMINAL_MAX_ACTIVE_SESSIONS=${TERMINAL_MAX_ACTIVE_SESSIONS:-4}
+      - TERMINAL_DETACHED_TTL_MINUTES=${TERMINAL_DETACHED_TTL_MINUTES:-30}
       - SMTP_DOMAIN=${SMTP_DOMAIN}
       - SMTP_USERNAME=${SMTP_USERNAME}
       - SMTP_PASSWORD=${SMTP_PASSWORD}
@@ -78,8 +82,11 @@ services:
           - node.role == manager
       resources:
         limits:
-          cpus: "1"
-          memory: 1024M
+          ## O dashboard hospeda Flask + terminal-server + os processos
+          ## claude/openclaude das abas de agente — 1GB cai com 2-3 abas.
+          ## Suba EVONEXUS_DASHBOARD_MEMORY conforme a RAM da sua VPS.
+          cpus: "${EVONEXUS_DASHBOARD_CPUS:-2}"
+          memory: ${EVONEXUS_DASHBOARD_MEMORY:-2048M}
       labels:
         - traefik.enable=true
         - traefik.docker.network=network_public
@@ -149,8 +156,10 @@ services:
           - node.role == manager
       resources:
         limits:
+          ## O bot roda com RAG do MemPalace (busca semântica no prompt).
+          ## 1024M derrubava com memória recente + contexto injetado.
           cpus: "1"
-          memory: 1024M
+          memory: 1536M
 
   evonexus_scheduler:
     image: excarplex/evo-nexus-runtime:latest

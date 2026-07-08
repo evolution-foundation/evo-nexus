@@ -140,7 +140,7 @@ services:
       resources:
         limits:
           cpus: "1"
-          memory: 1536M
+          memory: "1536M"
 
   evonexus_scheduler:
     image: excarplex/evo-nexus-runtime:latest
@@ -179,7 +179,7 @@ services:
       resources:
         limits:
           cpus: "1"
-          memory: 1024M
+          memory: "1024M"
 
   ## OmniRoute — gateway de IA (237+ providers, fallback automático,
   ## compressão de tokens). O provider "omnirouter" do EvoNexus aponta
@@ -226,7 +226,7 @@ services:
       resources:
         limits:
           cpus: "1"
-          memory: 1024M
+          memory: "1024M"
       labels:
         - traefik.enable=true
         - traefik.docker.network=network_public
