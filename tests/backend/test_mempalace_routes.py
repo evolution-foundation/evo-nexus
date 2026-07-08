@@ -164,7 +164,9 @@ class TestStatusEndpoint:
         assert data["installed"] is True
         assert data["version"] == "3.4.0"
         assert data["stats"]["total_drawers"] == 0
-        assert data["sources_count"] == 0
+        # Primeiro acesso seeda as fontes padrão (memory/, agent-memory,
+        # workspace/development) — count reflete os diretórios existentes.
+        assert data["sources_count"] == len(mp._load_sources())
         assert data["mining"] is None
 
     def test_status_not_installed_returns_error_shape(self, app, admin_user):
@@ -843,13 +845,22 @@ class TestRBACEnforcement:
 class TestHelperEdgeCases:
     """Verify edge cases in helper functions."""
 
-    def test_load_sources_missing_file_returns_empty_list(self, app, admin_user, tmp_palace_dir):
-        """When sources.json doesn't exist, _load_sources returns []."""
+    def test_load_sources_missing_file_seeds_defaults(self, app, admin_user, tmp_palace_dir):
+        """When sources.json doesn't exist, _load_sources seeds the default
+        workspace sources (memory/, agent-memory, workspace/development) for
+        the directories that exist, and persists them."""
         import routes.mempalace as mp
 
         mp.SOURCES_FILE = tmp_palace_dir / "nonexistent_sources.json"
         result = mp._load_sources()
-        assert result == []
+
+        expected = [rel for rel, _, _ in mp.DEFAULT_SOURCES if (mp.WORKSPACE / rel).is_dir()]
+        assert len(result) == len(expected)
+        for src in result:
+            assert src["wing"] in {w for _, _, w in mp.DEFAULT_SOURCES}
+            assert src["last_indexed"] is None
+        if expected:
+            assert mp.SOURCES_FILE.exists()
 
     def test_load_sources_corrupt_json_returns_empty_list(self, app, admin_user, tmp_palace_dir):
         """When sources.json is corrupt, _load_sources returns []."""

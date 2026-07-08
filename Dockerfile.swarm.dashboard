@@ -73,6 +73,12 @@ WORKDIR /workspace
 COPY pyproject.toml uv.lock ./
 RUN uv venv .venv && uv sync --no-dev
 
+# MemPalace (Base de Conhecimento — busca semântica local, chromadb).
+# Pré-instalado na imagem: o install via botão do dashboard cai na layer do
+# container e some a cada redeploy; os dados (chroma/sources) persistem no
+# volume dashboard/data.
+RUN uv pip install --python .venv/bin/python mempalace
+
 # Application code
 COPY dashboard/       dashboard/
 COPY social-auth/     social-auth/
