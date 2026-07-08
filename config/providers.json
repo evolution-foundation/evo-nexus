@@ -1,6 +1,21 @@
 {
   "active_provider": "nvidia",
   "providers": {
+    "omnirouter": {
+      "name": "OmniRoute (gateway local 237+ providers)",
+      "description": "Gateway de IA auto-hospedado na VPS — roteia 237+ providers com fallback automático e compressão de tokens.",
+      "cli_command": "openclaude",
+      "mode": "code",
+      "env_vars": {
+        "CLAUDE_CODE_USE_OPENAI": "1",
+        "OPENAI_BASE_URL": "http://omniroute:20128/v1",
+        "OPENAI_API_KEY": "[REDACTED]",
+        "OPENAI_MODEL": "auto"
+      },
+      "default_base_url": "http://omniroute:20128/v1",
+      "default_model": "auto",
+      "requires_logout": true
+    },
     "anthropic": {
       "name": "Anthropic (Claude nativo)",
       "cli_command": "claude",
@@ -133,5 +148,5 @@
       ]
     }
   },
-  "telegram_provider": "nvidia"
+  "telegram_provider": "omnirouter"
 }
