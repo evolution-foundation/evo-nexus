@@ -50,6 +50,10 @@ services:
       - EVONEXUS_PORT=8080
       - TERMINAL_SERVER_PORT=32352
       - FORWARDED_ALLOW_IPS=*
+      ## Guard-rails do terminal: teto de PTYs claude simultâneos (cada um
+      ## consome 200-400MB) e TTL pra recolher sessões sem aba aberta.
+      - TERMINAL_MAX_ACTIVE_SESSIONS=${TERMINAL_MAX_ACTIVE_SESSIONS:-4}
+      - TERMINAL_DETACHED_TTL_MINUTES=${TERMINAL_DETACHED_TTL_MINUTES:-30}
       - SMTP_DOMAIN=${SMTP_DOMAIN}
       - SMTP_USERNAME=${SMTP_USERNAME}
       - SMTP_PASSWORD=${SMTP_PASSWORD}
@@ -64,8 +68,10 @@ services:
           - node.role == manager
       resources:
         limits:
-          cpus: "1"
-          memory: 1024M
+          ## O dashboard hospeda Flask + terminal-server + os processos
+          ## claude/openclaude das abas — 1GB derrubava com 2-3 agentes.
+          cpus: "${EVONEXUS_DASHBOARD_CPUS:-2}"
+          memory: ${EVONEXUS_DASHBOARD_MEMORY:-2048M}
       labels:
         - traefik.enable=true
         - traefik.docker.network=network_public
@@ -134,7 +140,7 @@ services:
       resources:
         limits:
           cpus: "1"
-          memory: 1024M
+          memory: 1536M
 
   evonexus_scheduler:
     image: excarplex/evo-nexus-runtime:latest

@@ -16,6 +16,7 @@ import sys
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -541,6 +542,43 @@ def fetch_url_context(text: str, max_urls: int = 3, max_chars: int = 6000) -> st
     return "\n\n".join(blocks)
 
 
+def fetch_mempalace_context(text: str, max_results: int = 3) -> str:
+    """Search MemPalace for context relevant to the user's question.
+
+    Uses EVONEXUS_API_URL + DASHBOARD_API_TOKEN from env (set inside the Docker
+    container on the VPS). Falls back silently if unreachable/unconfigured.
+    """
+    if not text or len(text.strip()) < 5:
+        return ""
+    base_url = os.environ.get("EVONEXUS_API_URL", "").strip().rstrip("/")
+    token = os.environ.get("DASHBOARD_API_TOKEN", "").strip()
+    if not base_url or not token:
+        return ""
+    params = urllib.parse.urlencode({"q": text.strip()[:200], "n": max_results})
+    url = f"{base_url}/api/mempalace/search?{params}"
+    req = urllib.request.Request(
+        url,
+        headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return ""
+    results = data.get("results") or data.get("data", {}).get("results") or []
+    if not results:
+        return ""
+    blocks = []
+    for r in results[:max_results]:
+        sim = r.get("similarity", r.get("score", 0))
+        source = r.get("source_file", r.get("source", "?"))
+        content = r.get("content", r.get("text", "")).strip()[:600]
+        if content:
+            blocks.append(f"[MemPalace {sim:.2f} — {source}]\n{content}")
+    ctx = "\n\n".join(blocks)
+    return ctx[:2500]
+
+
 def build_prompt(chat_id: str, prompt_text: str, *, speaker: str | None = None) -> str:
     memory = format_chat_memory(load_chat_memory(chat_id), current_speaker=speaker)
     clean_prompt = redact_secrets(prompt_text.strip())
@@ -564,6 +602,13 @@ def build_prompt(chat_id: str, prompt_text: str, *, speaker: str | None = None) 
         parts.extend([
             "Memoria recente da conversa:",
             memory,
+            "",
+        ])
+    mem_ctx = fetch_mempalace_context(clean_prompt)
+    if mem_ctx:
+        parts.extend([
+            "Contexto do MemPalace (memoria persistente do workspace):",
+            mem_ctx,
             "",
         ])
     parts.extend([
