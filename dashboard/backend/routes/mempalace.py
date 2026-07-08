@@ -76,8 +76,18 @@ def _save_sources(sources):
 def _get_mining_status():
     try:
         status = json.loads(MINING_STATUS_FILE.read_text(encoding="utf-8"))
-        # Check if process is still alive
         pid = status.get("pid")
+        # O worker publica phase="done" antes de sair — o check de PID sozinho
+        # não basta: o child exitado vira zumbi (ninguém dá wait()) e
+        # os.kill(pid, 0) segue passando, prendendo a UI em "in progress".
+        if status.get("phase") in ("done", "error"):
+            if pid:
+                try:
+                    os.waitpid(pid, os.WNOHANG)  # reap do zumbi (best-effort)
+                except (OSError, ChildProcessError):
+                    pass
+            MINING_STATUS_FILE.unlink(missing_ok=True)
+            return None
         if pid:
             try:
                 os.kill(pid, 0)
