@@ -29,6 +29,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 ENV_PATH = ROOT / ".env"
+# Token store persistente. X rotaciona o refresh_token a cada refresh, então os
+# tokens precisam viver num arquivo gravável e persistente. Na VPS o .env da
+# raiz não existe dentro do container e env vars de stack são estáticas —
+# config/ é volume (evonexus_config), então config/social.env sobrevive a
+# redeploys. Override via SOCIAL_ENV_PATH.
+SOCIAL_ENV_PATH = Path(os.environ.get("SOCIAL_ENV_PATH") or (ROOT / "config" / "social.env"))
 TWEET_URL = "https://api.x.com/2/tweets"
 MEDIA_UPLOAD_URL = "https://api.x.com/2/media/upload"
 TOKEN_REFRESH_URL = "https://api.x.com/2/oauth2/token"
@@ -39,36 +45,73 @@ BASE_BACKOFF_SECONDS = 15
 RATE_LIMIT_BACKOFF_SECONDS = 900  # 15 min — X free tier resets every 15 min
 
 
-def read_env() -> dict[str, str]:
-    env: dict[str, str] = dict(os.environ)
-    if not ENV_PATH.exists():
-        return env
-    for line in ENV_PATH.read_text(encoding="utf-8").splitlines():
+def _parse_env_file(path: Path) -> dict[str, str]:
+    if not path.exists():
+        return {}
+    parsed: dict[str, str] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, value = line.split("=", 1)
-        env.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+        parsed[key.strip()] = value.strip().strip('"').strip("'")
+    return parsed
+
+
+def read_env() -> dict[str, str]:
+    """Merged env: processo < .env da raiz < social.env.
+
+    social.env vence porque é onde o auto-refresh grava os tokens novos — o
+    .env da raiz e as env vars de stack ficam desatualizados após o primeiro
+    refresh (X invalida o refresh_token antigo a cada rotação). Exceção: uma
+    reconexão manual via social-auth grava no .env; se o TOKEN_CREATED_AT de
+    um prefixo for mais recente lá, as chaves desse prefixo no .env vencem.
+    """
+    root = _parse_env_file(ENV_PATH)
+    social = _parse_env_file(SOCIAL_ENV_PATH)
+
+    merged = dict(root)
+    merged.update(social)
+    for key, root_created in root.items():
+        if not key.endswith("_TOKEN_CREATED_AT"):
+            continue
+        prefix = key[: -len("_TOKEN_CREATED_AT")]
+        social_created = social.get(key, "")
+        if root_created > social_created:
+            for k, v in root.items():
+                if k.startswith(prefix + "_"):
+                    merged[k] = v
+
+    env: dict[str, str] = dict(os.environ)
+    for key, value in merged.items():
+        # Tokens sociais rotacionam: o arquivo (social.env) é o source of
+        # truth e vence env vars estáticas de stack. Demais chaves mantêm a
+        # precedência clássica (env var do processo vence arquivo).
+        if key.startswith("SOCIAL_"):
+            env[key] = value
+        else:
+            env.setdefault(key, value)
     return env
 
 
 def write_env(key: str, value: str):
-    """Update a key in .env file."""
+    """Update a key in the persistent social token store (social.env)."""
     lines = []
     found = False
-    if ENV_PATH.exists():
-        for line in ENV_PATH.read_text(encoding="utf-8").splitlines():
+    if SOCIAL_ENV_PATH.exists():
+        for line in SOCIAL_ENV_PATH.read_text(encoding="utf-8").splitlines():
             stripped = line.strip()
             if stripped and not stripped.startswith("#") and "=" in stripped:
                 k = stripped.split("=", 1)[0].strip()
                 if k == key:
-                    lines.append(f"{key}={value}")
+                    lines.append(f"{key}={value}\n")
                     found = True
                     continue
             lines.append(line if line.endswith("\n") else line + "\n")
     if not found:
         lines.append(f"{key}={value}\n")
-    with open(ENV_PATH, "w") as f:
+    SOCIAL_ENV_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(SOCIAL_ENV_PATH, "w") as f:
         f.writelines(lines)
 
 
@@ -99,7 +142,7 @@ def refresh_access_token(env: dict[str, str], prefix: str) -> str | None:
     """Refresh an expired X access token using the refresh token.
 
     Returns the new access token on success, None on failure.
-    Updates .env with the new tokens.
+    Persists the new tokens in social.env (see SOCIAL_ENV_PATH).
     """
     refresh_token = env.get(f"{prefix}_REFRESH_TOKEN", "")
     client_id = env.get("TWITTER_CLIENT_ID", "")
@@ -144,6 +187,8 @@ def refresh_access_token(env: dict[str, str], prefix: str) -> str | None:
     write_env(f"{prefix}_ACCESS_TOKEN", new_access)
     if new_refresh:
         write_env(f"{prefix}_REFRESH_TOKEN", new_refresh)
+    from datetime import datetime, timezone
+    write_env(f"{prefix}_TOKEN_CREATED_AT", datetime.now(timezone.utc).isoformat())
 
     print(f"  [info] Token refreshed for {prefix}", file=sys.stderr)
     return new_access
