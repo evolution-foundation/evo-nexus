@@ -480,10 +480,25 @@ def skill_context(name: str) -> str:
 
 
 def workspace_context() -> str:
+    nexus_api_url = os.environ.get("EVONEXUS_API_URL", "")
+    has_api = bool(nexus_api_url and os.environ.get("DASHBOARD_API_TOKEN", "").strip())
+    nexus_line = (
+        f"Nexus REST API: {nexus_api_url}" if nexus_api_url
+        else "Nexus REST API: (environ EVONEXUS_API_URL nao definida)"
+    )
+    if has_api:
+        nexus_line += (
+            " — disponivel com DASHBOARD_API_TOKEN. "
+            "Endpoints: GET/POST /api/goals, /api/missions, /api/projects, "
+            "/api/tickets, /api/mempalace/search?q=&n="
+        )
+    else:
+        nexus_line += " — sem token, modo leitura URL apenas."
     return "\n".join([
         skill_context("custom-int-ghost"),
         f"Env Ghost: {env_presence(('GHOST_URL', 'GHOST_CONTENT_API_KEY', 'GHOST_ADMIN_API_KEY'))}.",
-        "Ghost Admin API usa JWT HS256 gerado de GHOST_ADMIN_API_KEY no formato id:secret; header Authorization: Ghost <JWT>.",
+        "Ghost Admin API usa JWT HS256 gerado de GHOST_ADMIN_API_KEY no formato id:secret; header Authorization: Ghost ***",
+        nexus_line,
     ])
 
 
@@ -588,6 +603,9 @@ def build_prompt(chat_id: str, prompt_text: str, *, speaker: str | None = None) 
         "Nao diga que nao tem acesso a ferramentas de forma generica.",
         "Quando a mensagem contiver URLs, o conteudo delas ja foi buscado e esta abaixo em 'Conteudo das URLs' — USE esse conteudo; nunca diga que nao consegue navegar.",
         "Quando o usuario pedir uma acao, tente executar pelo workspace/integracoes disponiveis.",
+        "Para ler ou escrever no Nexus (goals, kanban/tickets, mempalace), use a URL da API REST + token listados em 'Contexto de integracoes locais'. "
+        "EXEMPLO de chamada HTTP GET: urlopen(Request(f'{API_URL}/api/goals', headers={'Authorization': f'Bearer {TOKEN}'})). "
+        "NUNCA diga 'nao tenho acesso a API' sem antes tentar uma chamada HTTP real — o token ja esta disponivel no environment do container.",
         "Se houver bloqueio real, responda somente o bloqueio concreto: credencial, arquivo, permissao, endpoint ou erro.",
         "Se a mensagem veio de audio transcrito, use a transcricao apenas como entrada interna; nao repita a transcricao ao usuario.",
         "Use a memoria recente abaixo apenas quando for relevante; ignore respostas antigas que negaram acesso genericamente.",
