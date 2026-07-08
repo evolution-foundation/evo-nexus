@@ -1,4 +1,11 @@
-"""Manage .env — multi-account support for social platforms."""
+"""Manage social credentials — multi-account support for social platforms.
+
+Tokens SOCIAL_* vivem em config/social.env (na VPS: volume evonexus_config,
+compartilhado entre dashboard e scheduler e persistente entre redeploys —
+o .env da raiz não existe/persiste dentro dos containers). Demais chaves
+(TWITTER_CLIENT_ID etc.) continuam no .env da raiz, com os.environ como
+camada base para env vars de stack.
+"""
 
 import os
 import re
@@ -6,15 +13,18 @@ from pathlib import Path
 from datetime import datetime, timezone
 
 ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
+SOCIAL_ENV_PATH = Path(
+    os.environ.get("SOCIAL_ENV_PATH")
+    or (Path(__file__).resolve().parent.parent / "config" / "social.env")
+)
 
-# ── Low-level .env read/write ────────────────────────
+# ── Low-level read/write ────────────────────────
 
-def read_env() -> dict:
-    """Read all vars from .env."""
+def _parse_file(path: Path) -> dict:
     env = {}
-    if not ENV_PATH.exists():
+    if not path.exists():
         return env
-    with open(ENV_PATH) as f:
+    with open(path) as f:
         for line in f:
             line = line.strip()
             if not line or line.startswith("#") or "=" not in line:
@@ -24,12 +34,25 @@ def read_env() -> dict:
     return env
 
 
+def read_env() -> dict:
+    """Merged vars: os.environ < .env < social.env."""
+    env = dict(os.environ)
+    env.update(_parse_file(ENV_PATH))
+    env.update(_parse_file(SOCIAL_ENV_PATH))
+    return env
+
+
+def _target_path(key: str) -> Path:
+    return SOCIAL_ENV_PATH if key.startswith("SOCIAL_") else ENV_PATH
+
+
 def set_env(key: str, value: str):
-    """Set or update a key in .env."""
+    """Set or update a key in its store (SOCIAL_* → social.env; resto → .env)."""
+    path = _target_path(key)
     lines = []
     found = False
-    if ENV_PATH.exists():
-        with open(ENV_PATH) as f:
+    if path.exists():
+        with open(path) as f:
             for line in f:
                 stripped = line.strip()
                 if stripped and not stripped.startswith("#") and "=" in stripped:
@@ -41,25 +64,31 @@ def set_env(key: str, value: str):
                 lines.append(line if line.endswith("\n") else line + "\n")
     if not found:
         lines.append(f"{key}={value}\n")
-    with open(ENV_PATH, "w") as f:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w") as f:
         f.writelines(lines)
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
 
 
 def delete_env(key: str):
-    """Remove a key from .env."""
-    if not ENV_PATH.exists():
-        return
-    lines = []
-    with open(ENV_PATH) as f:
-        for line in f:
-            stripped = line.strip()
-            if stripped and not stripped.startswith("#") and "=" in stripped:
-                k = stripped.split("=", 1)[0].strip()
-                if k == key:
-                    continue
-            lines.append(line if line.endswith("\n") else line + "\n")
-    with open(ENV_PATH, "w") as f:
-        f.writelines(lines)
+    """Remove a key from both stores."""
+    for path in (ENV_PATH, SOCIAL_ENV_PATH):
+        if not path.exists():
+            continue
+        lines = []
+        with open(path) as f:
+            for line in f:
+                stripped = line.strip()
+                if stripped and not stripped.startswith("#") and "=" in stripped:
+                    k = stripped.split("=", 1)[0].strip()
+                    if k == key:
+                        continue
+                lines.append(line if line.endswith("\n") else line + "\n")
+        with open(path, "w") as f:
+            f.writelines(lines)
 
 
 # ── Multi-account management ─────────────────────────
