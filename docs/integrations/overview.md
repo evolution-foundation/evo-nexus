@@ -51,6 +51,7 @@ Direct HTTP calls to service APIs, executed by skills and routines via Python sc
 | YouTube | @pixel | `int-youtube`, `social-youtube-report` |
 | Instagram | @pixel | `int-instagram`, `social-instagram-report` |
 | LinkedIn | @pixel | `int-linkedin`, `social-linkedin-report` |
+| X / Twitter | @pixel | `post_to_x.py`, `publish_scheduled.py` (posting via editorial calendar) |
 | Evolution API | @pulse | `int-evolution-api`, `pulse-daily` |
 | Evolution Go | @pulse | `int-evolution-go`, `pulse-daily` |
 | Evo CRM | @nex | `int-evo-crm` |
@@ -59,12 +60,12 @@ API clients read credentials from `.env` at runtime.
 
 ### OAuth Flows
 
-Social media accounts (YouTube, Instagram, LinkedIn) use OAuth for authentication. The dashboard provides a built-in OAuth flow:
+Social media accounts (YouTube, Instagram, LinkedIn, X/Twitter) use OAuth for authentication. The dashboard provides a built-in OAuth flow:
 
 1. Go to **Integrations** in the dashboard
 2. Click **Connect** on the platform you want
 3. Complete the OAuth consent screen
-4. Tokens are saved to `.env` automatically
+4. Tokens are saved automatically — `SOCIAL_*` keys go to the persistent store `config/social.env` (see [X / Twitter](x-twitter.md#how-tokens-are-stored)); other keys go to `.env`
 
 OAuth requires client credentials configured in `.env`:
 
@@ -129,6 +130,7 @@ See individual integration guides for setup steps:
 - [YouTube](youtube.md) -- Channel stats, videos, engagement (OAuth)
 - [Instagram](instagram.md) -- Profile, posts, engagement (Graph API + OAuth)
 - [LinkedIn](linkedin.md) -- Profile and org stats (OAuth)
+- [X / Twitter](x-twitter.md) -- Automated posting with token rotation (OAuth PKCE)
 
 **Development:**
 - [GitHub](github.md) -- PRs, issues, releases via MCP + CLI
