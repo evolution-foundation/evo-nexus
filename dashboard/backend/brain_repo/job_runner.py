@@ -134,6 +134,38 @@ def _check_cancel(flask_app, user_id: int) -> None:
             raise JobCancelled()
 
 
+def resolve_local_path(stored: str | None, repo_name: str | None, workspace: Path) -> Path | None:
+    """Resolve o working dir do brain repo de forma portátil entre máquinas.
+
+    local_path é persistido como string absoluta no DB; quando o dashboard.db
+    migra de máquina (backup/restore local ↔ VPS) ele aponta para o filesystem
+    antigo e o sync falhava com "missing or corrupt" mesmo com o clone
+    presente no caminho canônico. Tenta o path gravado e, se não existir,
+    re-deriva {workspace}/dashboard/data/brain-repos/{repo_name}.
+    Retorna None quando nenhum candidato tem um clone válido.
+    """
+    candidates: list[Path] = []
+    if stored:
+        candidates.append(Path(stored))
+    if repo_name:
+        candidates.append(workspace / "dashboard" / "data" / "brain-repos" / repo_name)
+    for candidate in candidates:
+        if candidate.is_dir() and (candidate / ".git").is_dir():
+            return candidate
+    return None
+
+
+def _persist_local_path(flask_app, user_id: int, new_path: str) -> None:
+    """Regrava config.local_path após uma re-derivação bem-sucedida."""
+    from models import BrainRepoConfig, db  # type: ignore[import]
+
+    with flask_app.app_context():
+        config = BrainRepoConfig.query.filter_by(user_id=user_id).first()
+        if config is not None and config.local_path != new_path:
+            config.local_path = new_path
+            db.session.commit()
+
+
 def _load_config_snapshot(flask_app, user_id: int) -> dict | None:
     """Copy the fields the pipeline needs out of the session.
 
@@ -370,17 +402,32 @@ def run_sync_pipeline(
                 error = "local_path not configured — repo not yet cloned"
                 return
 
-            repo_dir = Path(local_path)
-            if not repo_dir.is_dir() or not (repo_dir / ".git").is_dir():
-                error = f"Local brain repo at {local_path} is missing or corrupt — re-connect"
-                return
-
             token = _decrypt_snapshot_token(snap["encrypted_token"])
             if not token:
                 error = "Could not decrypt stored token — re-connect the brain repo"
                 return
 
             from brain_repo import git_ops  # type: ignore[import]
+
+            repo_dir = resolve_local_path(local_path, snap["repo_name"], workspace)
+            if repo_dir is None:
+                # Working tree ausente (volume novo / DB restaurado de outra
+                # máquina) mas credencial e URL estão no config — re-clona no
+                # caminho canônico em vez de exigir re-connect manual.
+                if not snap["repo_url"] or not snap["repo_name"]:
+                    error = f"Local brain repo at {local_path} is missing or corrupt — re-connect"
+                    return
+                repo_dir = (
+                    workspace / "dashboard" / "data" / "brain-repos" / snap["repo_name"]
+                )
+                if repo_dir.exists():
+                    shutil.rmtree(repo_dir, ignore_errors=True)
+                repo_dir.parent.mkdir(parents=True, exist_ok=True)
+                _check_cancel(flask_app, user_id)
+                git_ops.clone(snap["repo_url"], token, repo_dir)
+                log.info("job_runner %s: re-cloned brain repo into %s", kind, repo_dir)
+            if str(repo_dir) != local_path:
+                _persist_local_path(flask_app, user_id, str(repo_dir))
 
             _check_cancel(flask_app, user_id)
             copied, dropped = _mirror_workspace(flask_app, user_id, workspace, repo_dir)
