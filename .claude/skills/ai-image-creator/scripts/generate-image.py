@@ -169,6 +169,10 @@ ENV_OPENROUTER_KEY = "AI_IMG_CREATOR_OPENROUTER_KEY"
 ENV_GEMINI_KEY = "AI_IMG_CREATOR_GEMINI_KEY"
 ENV_NVIDIA_KEY = "NVIDIA_API_KEY"
 ENV_OPENAI_KEY = "AI_IMG_CREATOR_OPENAI_KEY"  # falls back to OPENAI_API_KEY
+# Base URL OpenAI-compatível para o provider 'openai' — permite rotear o
+# gpt-image-2 por um gateway próprio (ex.: OmniRoute http://omniroute:20128/v1)
+# em vez de api.openai.com. Deve terminar em /v1 (com ou sem barra final).
+ENV_OPENAI_BASE_URL = "AI_IMG_CREATOR_OPENAI_BASE_URL"
 
 def _load_dotenv() -> None:
     """Load .env files into os.environ (stdlib only, no pip deps).
@@ -591,7 +595,8 @@ def build_direct_url(provider: str, model: str) -> str:
     elif provider == "nvidia":
         url = build_nvidia_url(model)
     elif provider == "openai":
-        url = "https://api.openai.com/v1/images/generations"
+        base = os.environ.get(ENV_OPENAI_BASE_URL, "").strip().rstrip("/") or "https://api.openai.com/v1"
+        url = f"{base}/images/generations"
     else:
         raise RuntimeError(f"Unknown provider for URL: {provider}")
     log.debug(f"Built direct URL: {url}")

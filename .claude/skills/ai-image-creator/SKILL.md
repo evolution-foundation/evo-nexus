@@ -30,6 +30,7 @@ When the user mentions a model keyword in their image request, use the correspon
 **OpenAI Images API notes (`image2`):**
 - Requires a **platform API key** (`AI_IMG_CREATOR_OPENAI_KEY` or `OPENAI_API_KEY`, billing on platform.openai.com).
 - **ChatGPT Plus / Codex OAuth tokens CANNOT generate images** — they lack the `api.model.images.request` scope (verified: API returns 401). Do not suggest the Codex login as an image path.
+- `AI_IMG_CREATOR_OPENAI_BASE_URL` (optional) reroutes the provider through any OpenAI-compatible gateway — e.g. OmniRoute (`http://omniroute:20128/v1` on the VPS stack). Must end in `/v1`; when set, `AI_IMG_CREATOR_OPENAI_KEY` holds the gateway's key instead. The gateway must proxy `POST /v1/images/generations`.
 - `-a` maps to the supported sizes (1024x1024, 1536x1024, 1024x1536). `--image-size`, `-r` (reference images) and `--analyze` are not supported on this provider.
 - Excellent text rendering (including Portuguese accents) — good choice for text-critical art.
 
@@ -117,6 +118,7 @@ The script auto-loads env vars from the workspace `.env`. Choose provider based 
 - If only `AI_IMG_CREATOR_OPENROUTER_KEY` is set → use default (`--provider openrouter`, implicit)
 - If only `AI_IMG_CREATOR_GEMINI_KEY` is set → use `--provider google`
 - If `NVIDIA_API_KEY` is set → `--provider nvidia` is available (FLUX models, free tier). Auto-selected when the model keyword starts with `nvidia-`
+- If `AI_IMG_CREATOR_OPENAI_KEY` (or `OPENAI_API_KEY`) is set → `--provider openai` is available (gpt-image-2 via Images API). Set `AI_IMG_CREATOR_OPENAI_BASE_URL` to route it through an OpenAI-compatible gateway like OmniRoute instead of api.openai.com.
 - **Do NOT use `source .env`** — the Python script loads it internally. Just run the command directly.
 
 ### Step 2: Run Generation Script

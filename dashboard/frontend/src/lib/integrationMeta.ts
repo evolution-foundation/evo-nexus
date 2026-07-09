@@ -185,7 +185,7 @@ const INTEGRATION_META: IntegrationMeta[] = [
   },
   {
     id: 'ai image creator',
-    description: 'Geração de imagens AI — Gemini, FLUX.2, Riverflow, SeedDream, GPT-5',
+    description: 'Geração de imagens AI — Gemini, FLUX.2, Riverflow, SeedDream, GPT-5, gpt-image-2',
     docsUrl: '/docs/skills/ai-image-creator',
     fields: [
       { envKey: 'AI_IMG_CREATOR_CF_ACCOUNT_ID', label: 'Cloudflare Account ID', hint: 'Account ID do Cloudflare (Dashboard → Overview)', required: false },
@@ -193,6 +193,8 @@ const INTEGRATION_META: IntegrationMeta[] = [
       { envKey: 'AI_IMG_CREATOR_CF_TOKEN', label: 'Cloudflare API Token', hint: 'Token com permissão AI Gateway', required: false },
       { envKey: 'AI_IMG_CREATOR_OPENROUTER_KEY', label: 'OpenRouter API Key', hint: 'Chave sk-or-... do OpenRouter (alternativa ao CF Gateway)', required: false },
       { envKey: 'AI_IMG_CREATOR_GEMINI_KEY', label: 'Google AI Studio Key', hint: 'Chave AI... do Google AI Studio (alternativa)', required: false },
+      { envKey: 'AI_IMG_CREATOR_OPENAI_KEY', label: 'OpenAI API Key', hint: 'Chave sk-... de plataforma (billing em platform.openai.com) para gpt-image-2 via Images API — token ChatGPT Plus/Codex NÃO gera imagens', required: false },
+      { envKey: 'AI_IMG_CREATOR_OPENAI_BASE_URL', label: 'OpenAI Base URL (gateway)', hint: 'Opcional: URL OpenAI-compatível terminada em /v1 para rotear por gateway próprio, ex. OmniRoute http://omniroute:20128/v1 (a API Key acima passa a ser a do gateway)', required: false },
     ],
   },
   // LLM providers (OpenAI, Anthropic, Gemini) are intentionally NOT listed.
