@@ -169,10 +169,14 @@ ENV_OPENROUTER_KEY = "AI_IMG_CREATOR_OPENROUTER_KEY"
 ENV_GEMINI_KEY = "AI_IMG_CREATOR_GEMINI_KEY"
 ENV_NVIDIA_KEY = "NVIDIA_API_KEY"
 ENV_OPENAI_KEY = "AI_IMG_CREATOR_OPENAI_KEY"  # falls back to OPENAI_API_KEY
-# Base URL OpenAI-compatível para o provider 'openai' — permite rotear o
-# gpt-image-2 por um gateway próprio (ex.: OmniRoute http://omniroute:20128/v1)
-# em vez de api.openai.com. Deve terminar em /v1 (com ou sem barra final).
+# Override avançado da base do provider 'openai' (deve terminar em /v1).
 ENV_OPENAI_BASE_URL = "AI_IMG_CREATOR_OPENAI_BASE_URL"
+# OmniRoute — gateway OpenAI-compatível auto-hospedado (--provider omniroute).
+# Só a key precisa ser configurada; a base default abaixo cobre a stack VPS
+# (alias interno do Swarm) e pode ser sobrescrita para uso fora dela.
+ENV_OMNIROUTE_KEY = "AI_IMG_CREATOR_OMNIROUTE_KEY"
+ENV_OMNIROUTE_BASE_URL = "AI_IMG_CREATOR_OMNIROUTE_BASE_URL"
+DEFAULT_OMNIROUTE_BASE_URL = "http://omniroute:20128/v1"
 
 def _load_dotenv() -> None:
     """Load .env files into os.environ (stdlib only, no pip deps).
@@ -314,9 +318,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--provider",
-        choices=["openrouter", "google", "nvidia", "openai"],
+        choices=["openrouter", "google", "nvidia", "openai", "omniroute"],
         default="openrouter",
-        help="API provider (default: openrouter). Use 'nvidia' for NVIDIA NIM Flux models, 'openai' for GPT Image via Images API.",
+        help="API provider (default: openrouter). Use 'nvidia' for NVIDIA NIM Flux models, 'openai' for GPT Image via Images API, 'omniroute' for the self-hosted OmniRoute gateway.",
     )
     parser.add_argument(
         "-a", "--aspect-ratio",
@@ -1434,6 +1438,25 @@ def main() -> None:
         if _entry and _entry.get("provider"):
             provider = _entry["provider"]
             log.debug(f"Auto-detected provider '{provider}' from model '{args.model}'")
+
+    # OmniRoute é o flavor 'openai' apontado para o gateway auto-hospedado:
+    # injeta base URL + key nas envs que o caminho openai já lê e todas as
+    # ramificações (URL, headers, payload, extract) seguem valendo. Um
+    # keyword nvidia-* ainda vence e sai do gateway (condição abaixo).
+    if args.provider == "omniroute" and provider in ("omniroute", "openai"):
+        omni_key = os.environ.get(ENV_OMNIROUTE_KEY, "").strip()
+        if not omni_key:
+            print(
+                f"ERROR: {ENV_OMNIROUTE_KEY} not set — configure a key do OmniRoute "
+                "no card AI Image Creator (Integrações) ou no .env.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        omni_base = os.environ.get(ENV_OMNIROUTE_BASE_URL, "").strip() or DEFAULT_OMNIROUTE_BASE_URL
+        os.environ[ENV_OPENAI_BASE_URL] = omni_base
+        os.environ[ENV_OPENAI_KEY] = omni_key
+        provider = "openai"
+        log.info(f"OmniRoute mode: Images API via {omni_base}")
 
     # Resolve model and modalities
     model, modalities = resolve_model(args.model, provider)

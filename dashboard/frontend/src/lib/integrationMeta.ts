@@ -193,8 +193,8 @@ const INTEGRATION_META: IntegrationMeta[] = [
       { envKey: 'AI_IMG_CREATOR_CF_TOKEN', label: 'Cloudflare API Token', hint: 'Token com permissão AI Gateway', required: false },
       { envKey: 'AI_IMG_CREATOR_OPENROUTER_KEY', label: 'OpenRouter API Key', hint: 'Chave sk-or-... do OpenRouter (alternativa ao CF Gateway)', required: false },
       { envKey: 'AI_IMG_CREATOR_GEMINI_KEY', label: 'Google AI Studio Key', hint: 'Chave AI... do Google AI Studio (alternativa)', required: false },
-      { envKey: 'AI_IMG_CREATOR_OPENAI_KEY', label: 'OpenAI API Key', hint: 'Chave sk-... de plataforma (billing em platform.openai.com) para gpt-image-2 via Images API — token ChatGPT Plus/Codex NÃO gera imagens', required: false },
-      { envKey: 'AI_IMG_CREATOR_OPENAI_BASE_URL', label: 'OpenAI Base URL (gateway)', hint: 'Opcional: URL OpenAI-compatível terminada em /v1 para rotear por gateway próprio, ex. OmniRoute http://omniroute:20128/v1 (a API Key acima passa a ser a do gateway)', required: false },
+      { envKey: 'AI_IMG_CREATOR_OPENAI_KEY', label: 'OpenAI API Key', hint: 'Chave sk-... de plataforma para gpt-image-2 (api.openai.com) — token ChatGPT Plus/Codex NÃO gera imagens', required: false },
+      { envKey: 'AI_IMG_CREATOR_OMNIROUTE_KEY', label: 'OmniRoute API Key', hint: 'Key do gateway OmniRoute — base http://omniroute:20128/v1 já embutida (override via AI_IMG_CREATOR_OMNIROUTE_BASE_URL se rodar fora da stack)', required: false },
     ],
   },
   // LLM providers (OpenAI, Anthropic, Gemini) are intentionally NOT listed.
