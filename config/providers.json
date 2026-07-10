@@ -14,7 +14,11 @@
       },
       "default_base_url": "http://omniroute:20128/v1",
       "default_model": "auto",
-      "requires_logout": true
+      "requires_logout": true,
+      "fallback_providers": [
+        "nvidia",
+        "anthropic"
+      ]
     },
     "anthropic": {
       "name": "Anthropic (Claude nativo)",

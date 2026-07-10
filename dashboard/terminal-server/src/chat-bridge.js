@@ -64,7 +64,10 @@ function buildProviderFallbackChain(providerConfig) {
 
     const fpModel = resolveProviderModel(fp);
     const fpCliCommand = fp.cli_command || 'openclaude';
-    const fpEnvVars = { ...(fp.env_vars || {}), ...(providerConfig.env_vars || {}) };
+    // Somente o env do próprio provider de fallback — misturar o env do
+    // provider ativo faria o attempt reutilizar a base URL/key erradas
+    // (ex.: fallback "omnirouter" chamando a NVIDIA de novo).
+    const fpEnvVars = { ...(fp.env_vars || {}) };
     const fpBaseUrl = fpEnvVars.OPENAI_BASE_URL || fp.default_base_url;
 
     if (fpModel) {
@@ -953,13 +956,20 @@ class ChatBridge {
           const attempt = fallbackChain[currentFallbackIndex];
           console.log(`[chat-bridge] Attempt ${currentFallbackIndex + 1}/${fallbackChain.length}: ${attempt.providerId}:${attempt.model || 'native'}`);
 
-          // Update env vars for this attempt
-          queryOptions.env = {
-            ...buildProviderEnv(providerConfig), // base provider env
-            ...attempt.envVars, // override with attempt-specific model/baseUrl
-          };
-          if (attempt.baseUrl) {
-            queryOptions.env.OPENAI_BASE_URL = attempt.baseUrl;
+          // Env do attempt montado do zero (vars de sistema + env do provider
+          // do attempt). NUNCA herdar o env do provider que falhou — uma
+          // OPENAI_BASE_URL/NVIDIA_API_KEY antiga sequestraria a chamada.
+          if (attempt.providerId === 'anthropic' && attempt.cliCommand === 'claude') {
+            // Claude nativo: env limpo, credenciais vêm de ~/.claude via HOME.
+            delete queryOptions.env;
+          } else {
+            queryOptions.env = buildProviderEnv({
+              active: attempt.providerId,
+              env_vars: { ...attempt.envVars },
+            });
+            if (attempt.baseUrl) {
+              queryOptions.env.OPENAI_BASE_URL = attempt.baseUrl;
+            }
           }
 
           // Update CLI path if provider changed
@@ -969,8 +979,13 @@ class ChatBridge {
               queryOptions.pathToClaudeCodeExecutable = cliPath;
             }
           }
+
+          // Cada attempt começa uma run nova — não deixar o session_id da
+          // tentativa que falhou grudar no cliente.
+          session.sdkSessionId = sdkSessionId || null;
         }
 
+        let advanceAfterErrorResult = false;
         try {
           console.log(`[chat-bridge] Starting query for session ${sessionId}, agent: ${agentName}, resume: ${sdkSessionId || 'new'}`);
           console.log(`[chat-bridge] Query options:`, JSON.stringify({ cwd: queryOptions.cwd, agent: queryOptions.agent, resume: queryOptions.resume, allowedTools: queryOptions.allowedTools?.length }, null, 2));
@@ -985,6 +1000,27 @@ class ChatBridge {
               console.log(`[chat-bridge] System message: subtype=${message.subtype}, agent=${message.agent || 'none'}, data=${JSON.stringify(message).slice(0, 200)}`);
             } else {
               console.log(`[chat-bridge] Message received: type=${message.type}${eventDetail}`);
+            }
+
+            // Erro de provider (503/429 do OmniRoute, "Maximum combo retry
+            // limit reached", etc.) NÃO vira exceção no Agent SDK — a query
+            // termina "normal" com um result de erro. Detectar aqui e avançar
+            // a cadeia de fallback em vez de entregar o erro pro chat.
+            if (message.type === 'result') {
+              const isErrorResult = message.is_error === true ||
+                (message.subtype && message.subtype !== 'success');
+              if (isErrorResult) {
+                const errText = [message.result, ...(Array.isArray(message.errors) ? message.errors : [])]
+                  .filter((x) => typeof x === 'string' && x)
+                  .join(' ') || JSON.stringify(message).slice(0, 500);
+                const hasMoreFallbacks = isExternalProvider &&
+                  currentFallbackIndex < fallbackChain.length - 1;
+                if (hasMoreFallbacks && session.active && !isFatalProviderError(errText)) {
+                  console.warn(`[chat-bridge] Error result (subtype=${message.subtype}) on attempt ${currentFallbackIndex + 1}: ${errText.slice(0, 300)} — advancing fallback chain`);
+                  advanceAfterErrorResult = true;
+                  break; // sai do for-await; o while tenta o próximo provider/modelo
+                }
+              }
             }
 
             // Capture SDK session ID from any message that has it
@@ -1021,6 +1057,15 @@ class ChatBridge {
           }
           console.log(`[chat-bridge] Query iteration finished for session ${sessionId}`);
 
+          // Result de erro detectado no meio da iteração — tenta o próximo
+          // provider/modelo da cadeia em vez de encerrar a sessão.
+          if (advanceAfterErrorResult && session.active) {
+            currentFallbackIndex++;
+            const next = fallbackChain[currentFallbackIndex];
+            console.warn(`[chat-bridge] Advancing to fallback ${currentFallbackIndex + 1}/${fallbackChain.length}: ${next.providerId}:${next.model || 'native'}`);
+            continue;
+          }
+
           session.active = false;
           this.sessions.delete(sessionId);
           if (onComplete) onComplete({ sdkSessionId: session.sdkSessionId });
@@ -1029,13 +1074,18 @@ class ChatBridge {
         } catch (err) {
           console.error(`[chat-bridge] Error in session ${sessionId} (attempt ${currentFallbackIndex + 1}):`, err.message || err);
 
-          // Check if error is retryable and we have more fallbacks
+          // Avança a cadeia em qualquer erro não-fatal enquanto houver
+          // fallback — erros do CLI chegam como "process exited with code N"
+          // sem o texto 503/429, então filtrar só por padrão retryable
+          // deixaria a sessão morrer exatamente no caso que queremos cobrir.
           const isRetryable = isExternalProvider && isRetryableProviderError(err);
           const isFatal = isExternalProvider && isFatalProviderError(err);
+          const isAbort = err.name === 'AbortError';
 
-          if (isRetryable && currentFallbackIndex < fallbackChain.length - 1) {
+          if (!isFatal && !isAbort && isExternalProvider && session.active &&
+              currentFallbackIndex < fallbackChain.length - 1) {
             currentFallbackIndex++;
-            console.warn(`[chat-bridge] Retryable error detected, advancing to fallback ${currentFallbackIndex + 1}/${fallbackChain.length}: ${fallbackChain[currentFallbackIndex].providerId}:${fallbackChain[currentFallbackIndex].model || 'native'}`);
+            console.warn(`[chat-bridge] ${isRetryable ? 'Retryable' : 'Non-fatal'} error, advancing to fallback ${currentFallbackIndex + 1}/${fallbackChain.length}: ${fallbackChain[currentFallbackIndex].providerId}:${fallbackChain[currentFallbackIndex].model || 'native'}`);
             // Continue loop to try next fallback
             continue;
           }
@@ -1270,4 +1320,10 @@ class ChatBridge {
   }
 }
 
-module.exports = { ChatBridge };
+module.exports = {
+  ChatBridge,
+  // Exportados para testes
+  buildProviderFallbackChain,
+  isRetryableProviderError,
+  isFatalProviderError,
+};
