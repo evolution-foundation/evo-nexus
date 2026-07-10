@@ -80,5 +80,11 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # CACHEBUST muda a cada run e invalida a camada `npm install -g
+          # @anthropic-ai/claude-code / @gitlawb/openclaude@latest / ...` —
+          # sem isso, cache-from/cache-to type=gha reaproveitaria a camada
+          # antiga entre builds e "@latest" nunca puxaria versão nova.
+          build-args: |
+            CACHEBUST=${{ github.run_id }}
           cache-from: type=gha,scope=${{ matrix.image }}
           cache-to: type=gha,scope=${{ matrix.image }},mode=max
