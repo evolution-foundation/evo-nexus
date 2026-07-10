@@ -371,7 +371,15 @@ function buildProviderEnv(providerConfig) {
   }
   // O auto-updater do CLI migra a instalação npm pro instalador nativo no
   // meio da sessão e mata o processo com exit 1.
-  return { ...env, ...providerEnv, DISABLE_AUTOUPDATER: '1' };
+  // OPENCLAUDE_MAX_RETRIES: o default do CLI são 10 retries com backoff
+  // exponencial (até ~35s cada ≈ 2,5min por modelo) — quem rotaciona é a
+  // nossa fallback chain, então o retry interno fica curto.
+  return {
+    OPENCLAUDE_MAX_RETRIES: '3',
+    ...env,
+    ...providerEnv,
+    DISABLE_AUTOUPDATER: '1',
+  };
 }
 
 /**
@@ -955,10 +963,20 @@ class ChatBridge {
     // Run query with provider fallback
     const runQueryWithFallback = async () => {
       while (currentFallbackIndex < (fallbackChain.length || 1)) {
+        if (!session.active) return;
+
         // Apply current fallback config if using external provider
         if (isExternalProvider && fallbackChain.length > 0) {
           const attempt = fallbackChain[currentFallbackIndex];
           console.log(`[chat-bridge] Attempt ${currentFallbackIndex + 1}/${fallbackChain.length}: ${attempt.providerId}:${attempt.model || 'native'}`);
+
+          // AbortController novo por attempt — abortar o anterior mata um
+          // child preso no backoff de retry sem derrubar a sessão nova.
+          if (currentFallbackIndex > 0) {
+            const freshAbort = new AbortController();
+            queryOptions.abortController = freshAbort;
+            session.abortController = freshAbort;
+          }
 
           // Env do attempt montado do zero (vars de sistema + env do provider
           // do attempt). NUNCA herdar o env do provider que falhou — uma
@@ -1004,6 +1022,26 @@ class ChatBridge {
               console.log(`[chat-bridge] System message: subtype=${message.subtype}, agent=${message.agent || 'none'}, data=${JSON.stringify(message).slice(0, 200)}`);
             } else {
               console.log(`[chat-bridge] Message received: type=${message.type}${eventDetail}`);
+            }
+
+            // O CLI faz retry interno com backoff exponencial e anuncia cada
+            // tentativa como system/api_retry. Em erro de capacidade (5xx/429)
+            // com fallback disponível, não vale esperar o backoff — corta e
+            // rotaciona o provider imediatamente.
+            if (message.type === 'system' && message.subtype === 'api_retry') {
+              const status = Number(message.error_status) || 0;
+              const attemptNum = Number(message.attempt) || 0;
+              const retryableStatus = status === 429 || (status >= 500 && status <= 599);
+              const hasMoreFallbacks = isExternalProvider &&
+                currentFallbackIndex < fallbackChain.length - 1;
+              if (hasMoreFallbacks && retryableStatus && attemptNum >= 2) {
+                console.warn(`[chat-bridge] api_retry ${attemptNum}x status=${status} on attempt ${currentFallbackIndex + 1} — advancing fallback chain early`);
+                advanceAfterErrorResult = true;
+                // Aborta ANTES do break: o child pode estar dormindo dezenas
+                // de segundos no backoff e o cleanup do iterator esperaria ele.
+                try { queryOptions.abortController.abort(); } catch {}
+                break;
+              }
             }
 
             // Erro de provider (503/429 do OmniRoute, "Maximum combo retry
@@ -1064,6 +1102,9 @@ class ChatBridge {
           // Result de erro detectado no meio da iteração — tenta o próximo
           // provider/modelo da cadeia em vez de encerrar a sessão.
           if (advanceAfterErrorResult && session.active) {
+            // Mata o child da tentativa que falhou (pode estar dormindo no
+            // backoff de retry) — a próxima iteração cria um controller novo.
+            try { queryOptions.abortController.abort(); } catch {}
             currentFallbackIndex++;
             const next = fallbackChain[currentFallbackIndex];
             console.warn(`[chat-bridge] Advancing to fallback ${currentFallbackIndex + 1}/${fallbackChain.length}: ${next.providerId}:${next.model || 'native'}`);
@@ -1076,6 +1117,15 @@ class ChatBridge {
           return; // Success - exit fallback loop
 
         } catch (err) {
+          // Abort interno disparado pelo avanço da cadeia (api_retry) — não é
+          // cancelamento do usuário; segue pro próximo provider/modelo.
+          if (advanceAfterErrorResult && session.active) {
+            currentFallbackIndex++;
+            const next = fallbackChain[currentFallbackIndex];
+            console.warn(`[chat-bridge] Advancing to fallback ${currentFallbackIndex + 1}/${fallbackChain.length} after internal abort: ${next.providerId}:${next.model || 'native'}`);
+            continue;
+          }
+
           console.error(`[chat-bridge] Error in session ${sessionId} (attempt ${currentFallbackIndex + 1}):`, err.message || err);
 
           // Avança a cadeia em qualquer erro não-fatal enquanto houver
