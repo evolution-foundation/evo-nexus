@@ -43,6 +43,11 @@ RUN npm install -g @anthropic-ai/claude-code
 # so Swarm and VPS behavior stay aligned.
 RUN npm install -g @gitlawb/openclaude@latest
 
+# sharp — optional peer dep the CLI's own Read tool needs to process image
+# files (photos, reference images, screenshots). Without it, Read on any
+# image fails every time with "image support is not installed".
+RUN npm install -g sharp
+
 # GitHub CLI
 RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
         | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \

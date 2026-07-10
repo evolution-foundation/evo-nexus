@@ -65,10 +65,14 @@ ARG CACHEBUST=1
 # current fix is ≥0.3.0 (first version with the Codex shortcut endpoint).
 # @openai/codex is used only to run the supported Codex device-auth flow and
 # persist ~/.codex/auth.json for OpenClaude's codex_auth provider.
+# sharp is an optional peer dep the CLI's own Read tool needs to process
+# image files (photos, reference images, screenshots) — without it, Read
+# on any image fails with "image support is not installed" every time.
 RUN npm install -g \
         @anthropic-ai/claude-code \
         @gitlawb/openclaude@latest \
-        @openai/codex
+        @openai/codex \
+        sharp
 
 # Timezone
 ENV TZ=America/Sao_Paulo
