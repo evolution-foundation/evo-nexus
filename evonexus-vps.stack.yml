@@ -35,6 +35,7 @@ services:
       - evonexus_agent_memory:/workspace/.claude/agent-memory
       - evonexus_claude_auth:/root/.claude
       - evonexus_codex_auth:/root/.codex
+      - evonexus_openclaude_auth:/root/.openclaude
 
     networks:
       network_public:
@@ -112,6 +113,7 @@ services:
       - evonexus_agent_memory:/workspace/.claude/agent-memory
       - evonexus_claude_auth:/root/.claude
       - evonexus_codex_auth:/root/.codex
+      - evonexus_openclaude_auth:/root/.openclaude
 
     networks:
       - network_public
@@ -248,6 +250,7 @@ volumes:
   evonexus_agent_memory:
   evonexus_claude_auth:
   evonexus_codex_auth:
+  evonexus_openclaude_auth:
   omniroute_data:
 
 networks:

@@ -53,6 +53,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 ENV PATH="/root/.local/bin:${PATH}"
 
+# Cache-buster: docker-publish-britto.yml builds with cache-from/cache-to
+# type=gha, so without this the block below stays cached forever across CI
+# runs and "@latest" silently freezes at whatever version first built the
+# layer. Passing a build-arg that changes every run (e.g. github.run_id)
+# invalidates this layer, forcing a fresh npm install on every stack deploy.
+ARG CACHEBUST=1
+
 # CLIs — the Providers page in the UI switches between them at runtime.
 # @gitlawb/openclaude@latest is pinned to the npm dist-tag which as of the
 # current fix is ≥0.3.0 (first version with the Codex shortcut endpoint).
@@ -100,6 +107,17 @@ COPY --from=frontend-build /frontend/dist dashboard/frontend/dist
 
 # SQLite data dir (matches upstream Dockerfile.dashboard)
 RUN mkdir -p dashboard/data
+
+# .claude/settings.json ships CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1, which
+# isolates background sub-agents in a git worktree. COPY only brings tracked
+# files, never .git, so /workspace has no repo and every background-agent
+# launch inside the container fails with "not in a git repository and no
+# WorktreeCreate hooks are configured". An empty repo is enough for worktree
+# creation to succeed.
+RUN cd /workspace && git init -q \
+    && git config user.email "bot@evonexus.local" \
+    && git config user.name "EvoNexus" \
+    && git commit -q --allow-empty -m "baseline (image build)"
 
 # First-boot defaults for the bootstrap entrypoint (writable config volume)
 RUN mkdir -p /workspace/_defaults/config \

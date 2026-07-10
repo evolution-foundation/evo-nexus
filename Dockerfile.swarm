@@ -26,6 +26,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 ENV PATH="/root/.local/bin:${PATH}"
 
+# Cache-buster: docker-publish-britto.yml builds with cache-from/cache-to
+# type=gha, so without this the block below stays cached forever across CI
+# runs and "@latest" silently freezes at whatever version first built the
+# layer. Passing a build-arg that changes every run (e.g. github.run_id)
+# invalidates this layer and everything after it, forcing a fresh npm/apt
+# install on every stack deploy.
+ARG CACHEBUST=1
+
 # Install Claude Code CLI (default provider)
 RUN npm install -g @anthropic-ai/claude-code
 
@@ -67,6 +75,17 @@ RUN uv pip install --python .venv/bin/python 'litellm[proxy]'
 
 # Application code — everything else
 COPY . .
+
+# .claude/settings.json ships CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1, which
+# isolates background sub-agents in a git worktree. COPY only brings tracked
+# files, never .git, so /workspace has no repo and every background-agent
+# launch inside the container fails with "not in a git repository and no
+# WorktreeCreate hooks are configured". An empty repo is enough for worktree
+# creation to succeed.
+RUN cd /workspace && git init -q \
+    && git config user.email "bot@evonexus.local" \
+    && git config user.name "EvoNexus" \
+    && git commit -q --allow-empty -m "baseline (image build)"
 
 # Stash first-boot defaults somewhere the bootstrap entrypoint can find them.
 # /workspace/config is a writable volume in Swarm; on first boot entrypoint.sh

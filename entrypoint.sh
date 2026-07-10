@@ -71,6 +71,23 @@ if [ -d "$DEFAULTS_DIR/claude" ]; then
     cp -a "$DEFAULTS_DIR/claude/." /workspace/.claude/ 2>/dev/null || true
 fi
 
+# --- 2c. Ensure per-agent memory dirs exist ---------------------------------
+# agent-memory is its own volume and starts completely empty on first deploy
+# (or if it was created before an agent existed) — no per-agent subfolder
+# exists until something writes there. Agents are instructed to read/write
+# files like .claude/agent-memory/{slug}/_improvements.md at the start of
+# every session; a missing directory turns that into repeated tool failures
+# and trips the harness's "Stopped: repeated tool failures detected" gate.
+# Re-run on every boot (idempotent) so it also heals volumes already broken
+# by this gap, not just fresh ones.
+if [ -d /workspace/.claude/agents ]; then
+    for agent_file in /workspace/.claude/agents/*.md; do
+        [ -f "$agent_file" ] || continue
+        slug="$(basename "$agent_file" .md)"
+        mkdir -p "/workspace/.claude/agent-memory/$slug"
+    done
+fi
+
 # --- 3. Ensure EVONEXUS_SECRET_KEY exists (Flask session signing) ----------
 # Without this, Flask invalidates every session on restart. We generate it
 # once on first boot and persist it in the same .env the UI edits.
