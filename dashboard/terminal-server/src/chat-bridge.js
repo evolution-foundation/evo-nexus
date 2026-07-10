@@ -524,11 +524,15 @@ class ChatBridge {
       // to next model/provider in chain.
       if (resp.status === 503) {
         const bodyText = await resp.text().catch(() => '');
+        // resp.text() consumiu o body — qualquer retorno daqui pra frente
+        // precisa de um Response reconstruído pra o caller ler o erro.
+        const remake = () => new Response(bodyText, { status: resp.status, statusText: resp.statusText, headers: resp.headers });
         if (bodyText.includes('Maximum combo retry limit reached')) {
           console.warn(`[chat-bridge] Provider combo exhausted (503): ${bodyText.slice(0, 200)}`);
-          // Return response so caller sees 503 and advances fallback chain
-          return resp;
+          // Não faz retry interno — deixa o loop externo rotacionar o provider.
+          return remake();
         }
+        if (attempt === this._maxRetries) return remake();
       }
 
       const isRetryable = resp.status === 429 || resp.status === 503;
