@@ -31,6 +31,15 @@ class TerminalServer {
     );
     this.autoSaveIntervalMs = options.autoSaveIntervalMs ?? 30000;
 
+    // Guard-rails de memória: cada PTY claude/openclaude consome 200-400MB.
+    // Sem teto, abas demais derrubam o container por OOM (limite da stack).
+    const maxActive = parseInt(process.env.TERMINAL_MAX_ACTIVE_SESSIONS || '', 10);
+    this.maxActiveSessions = options.maxActiveSessions
+      ?? (Number.isFinite(maxActive) && maxActive > 0 ? maxActive : 4);
+    const detachedMin = parseFloat(process.env.TERMINAL_DETACHED_TTL_MINUTES || '');
+    this.detachedTtlMs = options.detachedTtlMs
+      ?? (Number.isFinite(detachedMin) && detachedMin >= 0 ? detachedMin * 60 * 1000 : 30 * 60 * 1000);
+
     this.app = express();
     this.claudeSessions = new Map();
     this.webSocketConnections = new Map();
@@ -88,7 +97,44 @@ class TerminalServer {
 
     this.sessionGcInterval = setInterval(() => {
       void this.purgeStaleSessions();
+      void this.reapDetachedSessions();
     }, this.sessionGcIntervalMs);
+  }
+
+  /**
+   * Recolhe PTYs ativos que estão sem nenhum viewer conectado E sem produzir
+   * output há mais de detachedTtlMs. Fechar a aba do navegador não mata o
+   * processo (de propósito, permite reconectar) — sem este reaper cada aba
+   * aberta/fechada deixa um claude de 200-400MB vivo até o OOM do container.
+   * A sessão continua no store (buffer preservado) e pode ser reiniciada.
+   */
+  async reapDetachedSessions() {
+    if (this.detachedTtlMs <= 0) return { reaped: 0 };
+    const now = Date.now();
+    let reaped = 0;
+    for (const [sessionId, session] of this.claudeSessions.entries()) {
+      if (!session.active) continue;
+      const viewers = session.connections instanceof Set
+        ? session.connections.size
+        : (Array.isArray(session.connections) ? session.connections.length : 0);
+      if (viewers > 0) continue;
+      // Só recolhe PTYs de terminal — sessões de chat não seguram processo.
+      const pty = this.claudeBridge.getSession(sessionId);
+      if (!pty || !pty.active) continue;
+      const lastTouch = new Date(session.lastActivity || session.created || 0).getTime();
+      if (!Number.isFinite(lastTouch) || (now - lastTouch) <= this.detachedTtlMs) continue;
+
+      reaped += 1;
+      console.log(`[session-gc] Reaping detached idle session ${sessionId} (sem viewer há ${Math.round((now - lastTouch) / 60000)}min)`);
+      try {
+        await this.claudeBridge.stopSession(sessionId);
+      } catch (error) {
+        if (this.dev) console.warn(`Failed to reap session ${sessionId}:`, error.message);
+      }
+      session.active = false;
+    }
+    if (reaped > 0) await this.saveSessionsToDisk();
+    return { reaped };
   }
 
   async saveSessionsToDisk() {
@@ -982,6 +1028,16 @@ class TerminalServer {
 
     const sessionId = wsInfo.claudeSessionId;
 
+    // Teto de PTYs simultâneos — proteção contra OOM do container.
+    const activePtys = Array.from(this.claudeSessions.values()).filter((s) => s.active).length;
+    if (activePtys >= this.maxActiveSessions) {
+      this.sendToWebSocket(wsInfo.ws, {
+        type: 'error',
+        message: `Limite de ${this.maxActiveSessions} sessões ativas atingido — encerre uma sessão/aba antes de iniciar outra. (Ajustável via TERMINAL_MAX_ACTIVE_SESSIONS; sessões ociosas sem aba aberta são recolhidas automaticamente.)`,
+      });
+      return;
+    }
+
     try {
       // Ensure agent name from session is passed even if options don't include it
       const agentForSession = (options && options.agent) || session.agentName || null;
@@ -995,6 +1051,9 @@ class TerminalServer {
         onOutput: (data) => {
           const currentSession = this.claudeSessions.get(sessionId);
           if (!currentSession) return;
+          // Output conta como atividade — o reaper de sessões destacadas só
+          // recolhe PTYs parados E sem viewer.
+          currentSession.lastActivity = new Date();
           currentSession.outputBuffer.push(data);
           if (currentSession.outputBuffer.length > currentSession.maxBufferSize) {
             currentSession.outputBuffer.shift();

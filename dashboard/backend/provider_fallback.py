@@ -94,6 +94,7 @@ _429_PATTERNS = [
     re.compile(r"insufficient_quota", re.IGNORECASE),
     re.compile(r"billing.?limit", re.IGNORECASE),
     re.compile(r"plan.?limit", re.IGNORECASE),
+    re.compile(r"maximum combo retry limit reached", re.IGNORECASE),
 ]
 
 # Fatal errors that should NOT trigger fallback (auth / config issues)

@@ -20,7 +20,8 @@
       "name": "Anthropic (Claude nativo)",
       "cli_command": "claude",
       "env_vars": {},
-      "requires_logout": false
+      "requires_logout": false,
+      "description": "Claude Code oficial via Anthropic API"
     },
     "openrouter": {
       "name": "OpenRouter",
@@ -38,7 +39,8 @@
       "fallback_models": [
         "openrouter/owl-alpha",
         "nex-agi/nex-n2-pro:free"
-      ]
+      ],
+      "description": "200+ modelos via OpenRouter (Claude, GPT, Gemini, Llama, etc.)"
     },
     "nvidia": {
       "name": "NVIDIA NIM",
@@ -100,7 +102,8 @@
       },
       "default_model": "gemini-2.5-pro",
       "requires_logout": true,
-      "coming_soon": true
+      "coming_soon": true,
+      "description": "Gemini 2.5 Pro/Flash via Google AI"
     },
     "bedrock": {
       "name": "AWS Bedrock (em breve)",
@@ -111,7 +114,8 @@
         "AWS_BEARER_TOKEN_BEDROCK": "[REDACTED]"
       },
       "requires_logout": true,
-      "coming_soon": true
+      "coming_soon": true,
+      "description": "Claude via AWS Bedrock"
     },
     "vertex": {
       "name": "Google Vertex AI (em breve)",
@@ -123,7 +127,8 @@
       },
       "default_region": "us-east5",
       "requires_logout": true,
-      "coming_soon": true
+      "coming_soon": true,
+      "description": "Claude via Google Cloud Vertex AI"
     },
     "codex_auth": {
       "name": "OpenAI Codex (OAuth)",

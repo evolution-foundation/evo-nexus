@@ -17,6 +17,130 @@ let sdkModule = null;
 const WORKSPACE_ROOT = path.resolve(__dirname, '..', '..', '..');
 
 /**
+ * Build provider fallback chain from config.
+ * Returns array of { providerId, model, cliCommand, envVars, baseUrl } attempts.
+ * Order: active provider's primary model → fallback_models → fallback_providers (with their chains).
+ */
+function buildProviderFallbackChain(providerConfig) {
+  const providers = providerConfig.providers || {};
+  const activeId = providerConfig.active;
+  const activeProvider = providers[activeId] || providerConfig;
+
+  const chain = [];
+
+  // Primary model from active provider
+  const primaryModel = resolveProviderModel(activeProvider);
+  const activeCliCommand = activeProvider.cli_command || providerConfig.cli_command || 'openclaude';
+  const activeEnvVars = { ...(activeProvider.env_vars || {}), ...(providerConfig.env_vars || {}) };
+  const activeBaseUrl = activeEnvVars.OPENAI_BASE_URL || activeProvider.default_base_url;
+
+  if (primaryModel) {
+    chain.push({
+      providerId: activeId,
+      model: primaryModel,
+      cliCommand: activeCliCommand,
+      envVars: { ...activeEnvVars, OPENAI_MODEL: primaryModel },
+      baseUrl: activeBaseUrl,
+    });
+  }
+
+  // Fallback models within same provider
+  for (const fallbackModel of (activeProvider.fallback_models || [])) {
+    if (fallbackModel && fallbackModel !== primaryModel) {
+      chain.push({
+        providerId: activeId,
+        model: fallbackModel,
+        cliCommand: activeCliCommand,
+        envVars: { ...activeEnvVars, OPENAI_MODEL: fallbackModel },
+        baseUrl: activeBaseUrl,
+      });
+    }
+  }
+
+  // Fallback providers
+  for (const fallbackProviderId of (activeProvider.fallback_providers || [])) {
+    const fp = providers[fallbackProviderId];
+    if (!fp) continue;
+
+    const fpModel = resolveProviderModel(fp);
+    const fpCliCommand = fp.cli_command || 'openclaude';
+    const fpEnvVars = { ...(fp.env_vars || {}), ...(providerConfig.env_vars || {}) };
+    const fpBaseUrl = fpEnvVars.OPENAI_BASE_URL || fp.default_base_url;
+
+    if (fpModel) {
+      chain.push({
+        providerId: fallbackProviderId,
+        model: fpModel,
+        cliCommand: fpCliCommand,
+        envVars: { ...fpEnvVars, OPENAI_MODEL: fpModel },
+        baseUrl: fpBaseUrl,
+      });
+    }
+    for (const fbModel of (fp.fallback_models || [])) {
+      if (fbModel && fbModel !== fpModel) {
+        chain.push({
+          providerId: fallbackProviderId,
+          model: fbModel,
+          cliCommand: fpCliCommand,
+          envVars: { ...fpEnvVars, OPENAI_MODEL: fbModel },
+          baseUrl: fpBaseUrl,
+        });
+      }
+    }
+  }
+
+  // Final fallback: anthropic (native claude)
+  if (activeId !== 'anthropic') {
+    chain.push({
+      providerId: 'anthropic',
+      model: null,
+      cliCommand: 'claude',
+      envVars: {},
+      baseUrl: null,
+    });
+  }
+
+  return chain;
+}
+
+/**
+ * Check if an error is a retryable provider error (429, 503, quota, capacity).
+ * Includes detection for "Maximum combo retry limit reached".
+ */
+function isRetryableProviderError(error) {
+  if (!error) return false;
+  const msg = String(error.message || error).toLowerCase();
+
+  // "Maximum combo retry limit reached" — provider exhausted internal retries
+  if (msg.includes('maximum combo retry limit reached')) return true;
+
+  // Standard retryable patterns
+  const retryablePatterns = [
+    '429', 'rate limit', 'rate-limit', 'quota', 'too many requests',
+    'resource exhausted', 'capacity', 'overloaded',
+    'service unavailable', 'temporarily unavailable',
+    'insufficient quota', 'billing limit', 'plan limit'
+  ];
+
+  return retryablePatterns.some(p => msg.includes(p));
+}
+
+/**
+ * Check if an error is fatal (auth/config) and should NOT trigger fallback.
+ */
+function isFatalProviderError(error) {
+  if (!error) return false;
+  const msg = String(error.message || error).toLowerCase();
+
+  const fatalPatterns = [
+    '401', '403', 'invalid api key', 'authentication',
+    'unauthorized', 'forbidden', 'no usable api key'
+  ];
+
+  return fatalPatterns.some(p => msg.includes(p));
+}
+
+/**
  * Read chat.trustMode from config/workspace.yaml.
  * Uses a targeted regex — no YAML dep needed.
  * Returns false if the key is absent or parsing fails.
@@ -372,6 +496,8 @@ class ChatBridge {
   /**
    * Enforce minimum interval between requests, then fetch with retry/backoff.
    * Retries on 429 (rate limited) and 503 (upstream unavailable).
+   * Does NOT retry internally on "Maximum combo retry limit reached" — lets
+   * outer fallback loop advance to next model/provider instead.
    */
   async _rateLimitedFetch(url, options) {
     // Enforce minimum interval between requests
@@ -383,13 +509,24 @@ class ChatBridge {
       await new Promise((r) => setTimeout(r, wait));
     }
 
-    let lastError = null;
     for (let attempt = 0; attempt <= this._maxRetries; attempt++) {
       this._lastRequestTime = Date.now();
 
       const resp = await fetch(url, options);
 
       if (resp.ok) return resp;
+
+      // Check for "Maximum combo retry limit reached" — provider-level
+      // combo exhaustion. Don't retry internally; let outer loop rotate
+      // to next model/provider in chain.
+      if (resp.status === 503) {
+        const bodyText = await resp.text().catch(() => '');
+        if (bodyText.includes('Maximum combo retry limit reached')) {
+          console.warn(`[chat-bridge] Provider combo exhausted (503): ${bodyText.slice(0, 200)}`);
+          // Return response so caller sees 503 and advances fallback chain
+          return resp;
+        }
+      }
 
       const isRetryable = resp.status === 429 || resp.status === 503;
       if (!isRetryable || attempt === this._maxRetries) {
@@ -799,72 +936,128 @@ class ChatBridge {
     };
     this.sessions.set(sessionId, session);
 
-    // Run query in background
-    (async () => {
-      try {
-        console.log(`[chat-bridge] Starting query for session ${sessionId}, agent: ${agentName}, resume: ${sdkSessionId || 'new'}`);
-        console.log(`[chat-bridge] Query options:`, JSON.stringify({ cwd: queryOptions.cwd, agent: queryOptions.agent, resume: queryOptions.resume, allowedTools: queryOptions.allowedTools?.length }, null, 2));
-        const q = sdkQuery({ prompt: finalPrompt, options: queryOptions });
-        console.log(`[chat-bridge] Query created, starting iteration...`);
+    // Build provider fallback chain for external providers
+    let fallbackChain = [];
+    let currentFallbackIndex = 0;
+    if (isExternalProvider) {
+      fallbackChain = buildProviderFallbackChain(providerConfig);
+      console.log(`[chat-bridge] Built fallback chain with ${fallbackChain.length} attempts:`,
+        fallbackChain.map(c => `${c.providerId}:${c.model || 'native'}`).join(' → '));
+    }
 
-        for await (const message of q) {
-          if (!session.active) break;
+    // Run query with provider fallback
+    const runQueryWithFallback = async () => {
+      while (currentFallbackIndex < (fallbackChain.length || 1)) {
+        // Apply current fallback config if using external provider
+        if (isExternalProvider && fallbackChain.length > 0) {
+          const attempt = fallbackChain[currentFallbackIndex];
+          console.log(`[chat-bridge] Attempt ${currentFallbackIndex + 1}/${fallbackChain.length}: ${attempt.providerId}:${attempt.model || 'native'}`);
 
-          const eventDetail = message.type === 'stream_event' ? ` event=${message.event?.type} cb=${message.event?.content_block?.type || message.event?.delta?.type || ''}` : '';
-          if (message.type === 'system') {
-            console.log(`[chat-bridge] System message: subtype=${message.subtype}, agent=${message.agent || 'none'}, data=${JSON.stringify(message).slice(0, 200)}`);
-          } else {
-            console.log(`[chat-bridge] Message received: type=${message.type}${eventDetail}`);
+          // Update env vars for this attempt
+          queryOptions.env = {
+            ...buildProviderEnv(providerConfig), // base provider env
+            ...attempt.envVars, // override with attempt-specific model/baseUrl
+          };
+          if (attempt.baseUrl) {
+            queryOptions.env.OPENAI_BASE_URL = attempt.baseUrl;
           }
 
-          // Capture SDK session ID from any message that has it
-          if (message.session_id && !session.sdkSessionId) {
-            session.sdkSessionId = message.session_id;
-            if (onMessage) {
-              onMessage({ type: 'session_id', sdkSessionId: message.session_id });
+          // Update CLI path if provider changed
+          if (attempt.cliCommand && attempt.cliCommand !== providerConfig.cli_command) {
+            const cliPath = resolveCliBinary(attempt.cliCommand);
+            if (cliPath) {
+              queryOptions.pathToClaudeCodeExecutable = cliPath;
             }
           }
+        }
 
-          // Auto-detect ticket creation in tool_result blocks.
-          if (message.type === 'user') {
-            const content = message.message?.content || message.content;
-            if (Array.isArray(content)) {
-              for (const block of content) {
-                if (block.type !== 'tool_result') continue;
-                const raw = Array.isArray(block.content)
-                  ? block.content.map(c => (typeof c === 'string' ? c : c?.text || '')).join('\n')
-                  : (typeof block.content === 'string' ? block.content : '');
-                const ticketId = detectCreatedTicketId(raw);
-                if (ticketId) {
-                  console.log(`[chat-bridge] ✓ Detected ticket creation: ${ticketId} — auto-binding to session ${sessionId}`);
-                  if (onMessage) {
-                    onMessage({ type: 'ticket_detected', ticketId });
+        try {
+          console.log(`[chat-bridge] Starting query for session ${sessionId}, agent: ${agentName}, resume: ${sdkSessionId || 'new'}`);
+          console.log(`[chat-bridge] Query options:`, JSON.stringify({ cwd: queryOptions.cwd, agent: queryOptions.agent, resume: queryOptions.resume, allowedTools: queryOptions.allowedTools?.length }, null, 2));
+          const q = sdkQuery({ prompt: finalPrompt, options: queryOptions });
+          console.log(`[chat-bridge] Query created, starting iteration...`);
+
+          for await (const message of q) {
+            if (!session.active) break;
+
+            const eventDetail = message.type === 'stream_event' ? ` event=${message.event?.type} cb=${message.event?.content_block?.type || message.event?.delta?.type || ''}` : '';
+            if (message.type === 'system') {
+              console.log(`[chat-bridge] System message: subtype=${message.subtype}, agent=${message.agent || 'none'}, data=${JSON.stringify(message).slice(0, 200)}`);
+            } else {
+              console.log(`[chat-bridge] Message received: type=${message.type}${eventDetail}`);
+            }
+
+            // Capture SDK session ID from any message that has it
+            if (message.session_id && !session.sdkSessionId) {
+              session.sdkSessionId = message.session_id;
+              if (onMessage) {
+                onMessage({ type: 'session_id', sdkSessionId: message.session_id });
+              }
+            }
+
+            // Auto-detect ticket creation in tool_result blocks.
+            if (message.type === 'user') {
+              const content = message.message?.content || message.content;
+              if (Array.isArray(content)) {
+                for (const block of content) {
+                  if (block.type !== 'tool_result') continue;
+                  const raw = Array.isArray(block.content)
+                    ? block.content.map(c => (typeof c === 'string' ? c : c?.text || '')).join('\n')
+                    : (typeof block.content === 'string' ? block.content : '');
+                  const ticketId = detectCreatedTicketId(raw);
+                  if (ticketId) {
+                    console.log(`[chat-bridge] ✓ Detected ticket creation: ${ticketId} — auto-binding to session ${sessionId}`);
+                    if (onMessage) {
+                      onMessage({ type: 'ticket_detected', ticketId });
+                    }
                   }
                 }
               }
             }
-          }
 
-          if (onMessage) {
-            onMessage(this._transformMessage(message));
+            if (onMessage) {
+              onMessage(this._transformMessage(message));
+            }
           }
-        }
-        console.log(`[chat-bridge] Query iteration finished for session ${sessionId}`);
+          console.log(`[chat-bridge] Query iteration finished for session ${sessionId}`);
 
-        session.active = false;
-        this.sessions.delete(sessionId);
-        if (onComplete) onComplete({ sdkSessionId: session.sdkSessionId });
-      } catch (err) {
-        console.error(`[chat-bridge] Error in session ${sessionId}:`, err.message || err);
-        session.active = false;
-        this.sessions.delete(sessionId);
-        if (err.name === 'AbortError') {
+          session.active = false;
+          this.sessions.delete(sessionId);
           if (onComplete) onComplete({ sdkSessionId: session.sdkSessionId });
-        } else {
-          if (onError) onError(err);
+          return; // Success - exit fallback loop
+
+        } catch (err) {
+          console.error(`[chat-bridge] Error in session ${sessionId} (attempt ${currentFallbackIndex + 1}):`, err.message || err);
+
+          // Check if error is retryable and we have more fallbacks
+          const isRetryable = isExternalProvider && isRetryableProviderError(err);
+          const isFatal = isExternalProvider && isFatalProviderError(err);
+
+          if (isRetryable && currentFallbackIndex < fallbackChain.length - 1) {
+            currentFallbackIndex++;
+            console.warn(`[chat-bridge] Retryable error detected, advancing to fallback ${currentFallbackIndex + 1}/${fallbackChain.length}: ${fallbackChain[currentFallbackIndex].providerId}:${fallbackChain[currentFallbackIndex].model || 'native'}`);
+            // Continue loop to try next fallback
+            continue;
+          }
+
+          if (isFatal) {
+            console.error(`[chat-bridge] Fatal provider error, not falling back: ${err.message}`);
+          }
+
+          // No more fallbacks or fatal error - propagate error
+          session.active = false;
+          this.sessions.delete(sessionId);
+          if (err.name === 'AbortError') {
+            if (onComplete) onComplete({ sdkSessionId: session.sdkSessionId });
+          } else {
+            if (onError) onError(err);
+          }
+          return;
         }
       }
-    })();
+    };
+
+    runQueryWithFallback();
 
     return { sessionId, sdkSessionId: session.sdkSessionId };
   }
