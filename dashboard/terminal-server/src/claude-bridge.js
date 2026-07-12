@@ -371,6 +371,12 @@ class ClaudeBridge {
         // Container marker exported by entrypoint.sh — required for
         // --dangerously-skip-permissions to work as root.
         'IS_SANDBOX',
+        // opencode.json referencia {env:OMNIROUTE_SPIKE_API_KEY} pra resolver
+        // a apiKey do provider "opencode_omnirouter" — sem isso na whitelist,
+        // o processo filho não recebe a var mesmo com ela setada no .env da
+        // VPS, e o opencode cai em "authentication required" (achado testando
+        // ao vivo, 2026-07-12).
+        'OMNIROUTE_SPIKE_API_KEY',
       ];
       const cleanEnv = {};
       for (const key of SYSTEM_VARS) {
