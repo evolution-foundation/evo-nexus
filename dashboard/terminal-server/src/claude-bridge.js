@@ -64,6 +64,8 @@ class ClaudeBridge {
       let resolved;
       if (cliCommand === 'openclaude') {
         resolved = execSync('which openclaude', { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'] }).trim();
+      } else if (cliCommand === 'opencode') {
+        resolved = execSync('which opencode', { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'] }).trim();
       } else {
         resolved = execSync('which claude', { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'] }).trim();
       }
@@ -77,18 +79,27 @@ class ClaudeBridge {
 
     // Fallback: check common hardcoded paths
     const home = process.env.HOME || '/';
-    const paths = cliCommand === 'openclaude'
-      ? [
-          path.join(home, '.local', 'bin', 'openclaude'),
-          '/usr/local/bin/openclaude',
-          '/usr/bin/openclaude',
-        ]
-      : [
-          path.join(home, '.claude', 'local', 'claude'),
-          path.join(home, '.local', 'bin', 'claude'),
-          '/usr/local/bin/claude',
-          '/usr/bin/claude',
-        ];
+    let paths;
+    if (cliCommand === 'openclaude') {
+      paths = [
+        path.join(home, '.local', 'bin', 'openclaude'),
+        '/usr/local/bin/openclaude',
+        '/usr/bin/openclaude',
+      ];
+    } else if (cliCommand === 'opencode') {
+      paths = [
+        path.join(home, '.local', 'bin', 'opencode'),
+        '/usr/local/bin/opencode',
+        '/usr/bin/opencode',
+      ];
+    } else {
+      paths = [
+        path.join(home, '.claude', 'local', 'claude'),
+        path.join(home, '.local', 'bin', 'claude'),
+        '/usr/local/bin/claude',
+        '/usr/bin/claude',
+      ];
+    }
 
     for (const p of paths) {
       try {
@@ -200,71 +211,118 @@ class ClaudeBridge {
       // running as root (the clean-env whitelist below would otherwise drop it).
       const isRoot = process.getuid && process.getuid() === 0;
       const active = providerConfig.active || 'anthropic';
+      const isOpencode = providerConfig.cli_command === 'opencode';
       const args = [];
-      if (terminalTrustMode) {
-        args.push('--dangerously-skip-permissions');
-        if (isRoot) {
-          console.log('[permissions] Running as root in trust mode — injecting IS_SANDBOX=1 for the CLI root check');
-        }
-      }
-      if (agent && active === 'anthropic') {
-        args.push('--agent', agent);
-      }
-
-      // For non-Anthropic providers, use --system-prompt to force agent persona.
-      // --append-system-prompt is too weak — GPT models ignore appended instructions.
-      // --system-prompt REPLACES the default system prompt, ensuring the agent persona
-      // takes priority over CLAUDE.md and other context that mentions "Claude".
       let agentTier = null;
-      if (active !== 'anthropic' && agent) {
-        // Read the agent definition file to build a strong system prompt.
-        // Agent definitions live at the workspace root — workingDir varies per
-        // session (tickets, project folders), so prefer the root path.
-        const rootAgentFile = path.join(WORKSPACE_ROOT, '.claude', 'agents', `${agent}.md`);
-        const cwdAgentFile = path.join(workingDir, '.claude', 'agents', `${agent}.md`);
-        const agentFile = fs.existsSync(rootAgentFile) ? rootAgentFile : cwdAgentFile;
-        let agentPrompt = '';
-        try {
-          const content = fs.readFileSync(agentFile, 'utf8');
-          // Extract body (after YAML frontmatter ---)
-          const match = content.match(/^---\n[\s\S]*?\n---\n([\s\S]*)$/);
-          agentPrompt = match ? match[1].trim() : content;
-          for (const marker of ['\n# Persistent Agent Memory', '\n## MEMORY.md']) {
-            if (agentPrompt.includes(marker)) {
-              agentPrompt = agentPrompt.split(marker, 1)[0].trim();
+
+      if (isOpencode) {
+        // Sessão interativa via opencode — protocolo de CLI totalmente
+        // diferente do Claude Code, sem --agent/--system-prompt/
+        // --session-id/--resume/--fallback-model. Primeira versão desta
+        // integração (2026-07-12): sem verificação visual própria daqui
+        // (sem acesso a browser) — testar na UI real e ajustar com base
+        // em feedback, não assumir que está 100% certo de primeira.
+        if (terminalTrustMode) {
+          args.push('--auto');
+        }
+        const modelRef = providerModel ? `${active}/${providerModel}` : `${active}/auto`;
+        args.push('-m', modelRef);
+        if (agent) {
+          // opencode não tem --system-prompt; reaproveita o mesmo truque de
+          // persona embutida já validado no caminho headless
+          // (provider_fallback.py::_embed_agent_for_openclaude), mandado
+          // como prompt inicial via --prompt em vez de system-prompt puro.
+          const rootAgentFile = path.join(WORKSPACE_ROOT, '.claude', 'agents', `${agent}.md`);
+          const cwdAgentFile = path.join(workingDir, '.claude', 'agents', `${agent}.md`);
+          const agentFile = fs.existsSync(rootAgentFile) ? rootAgentFile : cwdAgentFile;
+          let agentPrompt = '';
+          try {
+            const content = fs.readFileSync(agentFile, 'utf8');
+            const match = content.match(/^---\n[\s\S]*?\n---\n([\s\S]*)$/);
+            agentPrompt = match ? match[1].trim() : content;
+            for (const marker of ['\n# Persistent Agent Memory', '\n## MEMORY.md']) {
+              if (agentPrompt.includes(marker)) {
+                agentPrompt = agentPrompt.split(marker, 1)[0].trim();
+              }
             }
+          } catch {
+            agentPrompt = `You are the ${agent} agent.`;
           }
-          // Extract the agent's model tier (opus|sonnet|haiku) from the
-          // frontmatter — used to pick a per-tier provider model below.
-          const fmMatch = content.match(/^---\n([\s\S]*?)\n---\n/);
-          if (fmMatch) {
-            const tierMatch = fmMatch[1].match(/^model:\s*["']?([a-z0-9.-]+)["']?\s*$/mi);
-            if (tierMatch) agentTier = tierMatch[1].toLowerCase();
+          const enforcePrompt = agentPrompt + '\n\n' +
+            'CRITICAL: You MUST fully embody this agent persona. ' +
+            'You are NOT Claude, OpenClaude, or a generic assistant — you ARE ' + agent + '. ' +
+            'Never break character. Follow ALL instructions above.';
+          args.push('--prompt', enforcePrompt);
+        }
+        // Sem equivalente confirmado de --session-id (registrar um id novo
+        // pra resume futuro) — -s do opencode só continua sessão que já
+        // existe. Cada start do terminal-server vira sessão opencode nova
+        // por enquanto; resume entre restarts fica pra uma iteração futura.
+      } else {
+        if (terminalTrustMode) {
+          args.push('--dangerously-skip-permissions');
+          if (isRoot) {
+            console.log('[permissions] Running as root in trust mode — injecting IS_SANDBOX=1 for the CLI root check');
           }
-        } catch {
-          agentPrompt = `You are the ${agent} agent.`;
+        }
+        if (agent && active === 'anthropic') {
+          args.push('--agent', agent);
         }
 
-        const enforcePrompt = agentPrompt + '\n\n' +
-          'CRITICAL: You MUST fully embody this agent persona. ' +
-          'You are NOT Claude, OpenClaude, or a generic assistant — you ARE ' + agent + '. ' +
-          'When asked who you are, ALWAYS respond as ' + agent + '. ' +
-          'Never break character. Follow ALL instructions above.';
+        // For non-Anthropic providers, use --system-prompt to force agent persona.
+        // --append-system-prompt is too weak — GPT models ignore appended instructions.
+        // --system-prompt REPLACES the default system prompt, ensuring the agent persona
+        // takes priority over CLAUDE.md and other context that mentions "Claude".
+        if (active !== 'anthropic' && agent) {
+          // Read the agent definition file to build a strong system prompt.
+          // Agent definitions live at the workspace root — workingDir varies per
+          // session (tickets, project folders), so prefer the root path.
+          const rootAgentFile = path.join(WORKSPACE_ROOT, '.claude', 'agents', `${agent}.md`);
+          const cwdAgentFile = path.join(workingDir, '.claude', 'agents', `${agent}.md`);
+          const agentFile = fs.existsSync(rootAgentFile) ? rootAgentFile : cwdAgentFile;
+          let agentPrompt = '';
+          try {
+            const content = fs.readFileSync(agentFile, 'utf8');
+            // Extract body (after YAML frontmatter ---)
+            const match = content.match(/^---\n[\s\S]*?\n---\n([\s\S]*)$/);
+            agentPrompt = match ? match[1].trim() : content;
+            for (const marker of ['\n# Persistent Agent Memory', '\n## MEMORY.md']) {
+              if (agentPrompt.includes(marker)) {
+                agentPrompt = agentPrompt.split(marker, 1)[0].trim();
+              }
+            }
+            // Extract the agent's model tier (opus|sonnet|haiku) from the
+            // frontmatter — used to pick a per-tier provider model below.
+            const fmMatch = content.match(/^---\n([\s\S]*?)\n---\n/);
+            if (fmMatch) {
+              const tierMatch = fmMatch[1].match(/^model:\s*["']?([a-z0-9.-]+)["']?\s*$/mi);
+              if (tierMatch) agentTier = tierMatch[1].toLowerCase();
+            }
+          } catch {
+            agentPrompt = `You are the ${agent} agent.`;
+          }
 
-        args.push('--system-prompt', enforcePrompt);
-      }
+          const enforcePrompt = agentPrompt + '\n\n' +
+            'CRITICAL: You MUST fully embody this agent persona. ' +
+            'You are NOT Claude, OpenClaude, or a generic assistant — you ARE ' + agent + '. ' +
+            'When asked who you are, ALWAYS respond as ' + agent + '. ' +
+            'Never break character. Follow ALL instructions above.';
 
-      // Pin the CLI conversation to the terminal-server session UUID so a
-      // crash, provider error, or terminal-server restart doesn't lose the
-      // conversation: the first start registers the id with --session-id,
-      // and any later start of the same session resumes it with --resume.
-      const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-      if (UUID_RE.test(sessionId)) {
-        if (this._hasPersistedConversation(sessionId, workingDir)) {
-          console.log(`[bridge] Resuming persisted conversation for session ${sessionId}`);
-          args.push('--resume', sessionId);
-        } else {
-          args.push('--session-id', sessionId);
+          args.push('--system-prompt', enforcePrompt);
+        }
+
+        // Pin the CLI conversation to the terminal-server session UUID so a
+        // crash, provider error, or terminal-server restart doesn't lose the
+        // conversation: the first start registers the id with --session-id,
+        // and any later start of the same session resumes it with --resume.
+        const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+        if (UUID_RE.test(sessionId)) {
+          if (this._hasPersistedConversation(sessionId, workingDir)) {
+            console.log(`[bridge] Resuming persisted conversation for session ${sessionId}`);
+            args.push('--resume', sessionId);
+          } else {
+            args.push('--session-id', sessionId);
+          }
         }
       }
 
@@ -284,11 +342,14 @@ class ClaudeBridge {
 
       // Automatic model fallback when the primary is overloaded. The CLI
       // accepts a single fallback — pass the first configured entry that
-      // differs from the primary model.
+      // differs from the primary model. --fallback-model não existe no
+      // opencode (quebraria o parsing de args dele), então pula pra esse
+      // provider — fallback fica só na cadeia do provider_fallback.py
+      // (heartbeats/ADW), não na sessão interativa.
       const fallbackModels = Array.isArray(providerConfig.fallback_models)
         ? providerConfig.fallback_models
         : [];
-      if (active !== 'anthropic') {
+      if (active !== 'anthropic' && !isOpencode) {
         const primary = providerEnv['OPENAI_MODEL'] || '';
         const fallback = fallbackModels.find((m) => m && m !== primary);
         if (fallback) {

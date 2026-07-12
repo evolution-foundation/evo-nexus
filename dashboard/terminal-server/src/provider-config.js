@@ -5,7 +5,7 @@ const WORKSPACE_ROOT = path.resolve(__dirname, '..', '..', '..');
 const PROVIDERS_PATH = path.join(WORKSPACE_ROOT, 'config', 'providers.json');
 const PROVIDERS_EXAMPLE_PATH = path.join(WORKSPACE_ROOT, 'config', 'providers.example.json');
 
-const ALLOWED_CLI = new Set(['claude', 'openclaude']);
+const ALLOWED_CLI = new Set(['claude', 'openclaude', 'opencode']);
 const ALLOWED_MODES = new Set(['code', 'chat']);
 const DEFAULT_CODE_PROVIDERS = new Set(['openrouter', 'omnirouter', 'nvidia', 'codex_auth']);
 const ALLOWED_ENV_VARS = new Set([
