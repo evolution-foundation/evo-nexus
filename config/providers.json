@@ -134,6 +134,15 @@
       "coming_soon": true,
       "description": "Claude via Google Cloud Vertex AI"
     },
+    "opencode_omnirouter": {
+      "name": "OmniRoute via opencode (spike — isolado, nada seleciona por padrão)",
+      "description": "Spike do harness opencode contra o OmniRoute (workspace/development/features/runtime-harness-agnostic-eval/). Não é fallback de nenhum outro provider e não é o telegram_provider — inerte até ser escolhido explicitamente (UI ou force_provider).",
+      "cli_command": "opencode",
+      "mode": "code",
+      "env_vars": {},
+      "default_model": "auto",
+      "requires_logout": false
+    },
     "codex_auth": {
       "name": "OpenAI Codex (OAuth)",
       "description": "GPT-5.x via ChatGPT Codex — login OAuth, sem API key",
