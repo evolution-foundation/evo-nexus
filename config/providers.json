@@ -1,5 +1,5 @@
 {
-  "active_provider": "nvidia",
+  "active_provider": "opencode_omnirouter",
   "providers": {
     "omnirouter": {
       "name": "OmniRoute (gateway local 237+ providers)",
@@ -135,13 +135,17 @@
       "description": "Claude via Google Cloud Vertex AI"
     },
     "opencode_omnirouter": {
-      "name": "OmniRoute via opencode (spike — isolado, nada seleciona por padrão)",
-      "description": "Spike do harness opencode contra o OmniRoute (workspace/development/features/runtime-harness-agnostic-eval/). Não é fallback de nenhum outro provider e não é o telegram_provider — inerte até ser escolhido explicitamente (UI ou force_provider).",
+      "name": "OmniRoute via opencode (spike)",
+      "description": "Harness opencode contra o OmniRoute (workspace/development/features/runtime-harness-agnostic-eval/). Ativado como active_provider em 2026-07-12.",
       "cli_command": "opencode",
       "mode": "code",
       "env_vars": {},
       "default_model": "auto",
-      "requires_logout": false
+      "requires_logout": false,
+      "fallback_providers": [
+        "nvidia",
+        "anthropic"
+      ]
     },
     "codex_auth": {
       "name": "OpenAI Codex (OAuth)",
