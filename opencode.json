@@ -1,0 +1,21 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "omnirouter": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "OmniRoute (spike, provider_id=omnirouter para bater com config/providers.json)",
+      "options": {
+        "baseURL": "https://omni.workflowapi.com.br/v1",
+        "apiKey": "{env:OMNIROUTE_SPIKE_API_KEY}"
+      },
+      "models": {
+        "auto": {
+          "name": "OmniRoute auto (LKGP)"
+        },
+        "auto/coding": {
+          "name": "OmniRoute auto/coding"
+        }
+      }
+    }
+  }
+}
