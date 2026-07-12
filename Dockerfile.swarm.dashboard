@@ -69,9 +69,13 @@ ARG CACHEBUST=1
 # sharp is an optional peer dep the CLI's own Read tool needs to process
 # image files (photos, reference images, screenshots) — without it, Read
 # on any image fails with "image support is not installed" every time.
+# opencode-ai é o provider "opencode_omnirouter" (spike, ver
+# workspace/development/features/runtime-harness-agnostic-eval/) — pinado
+# pela mesma razão do openclaude acima.
 RUN npm install -g \
         @anthropic-ai/claude-code \
         @gitlawb/openclaude@0.23.0 \
+        opencode-ai@1.17.18 \
         @openai/codex \
         sharp
 
@@ -103,6 +107,9 @@ COPY config/          config/
 COPY docs/            docs/
 COPY Makefile         ./
 COPY .env.example     ./
+# Config do provider "opencode_omnirouter" (baseURL/apiKey do OmniRoute) —
+# heartbeats rodam neste container (Flask+terminal-server+heartbeats).
+COPY opencode.json    ./
 
 # Pre-compiled terminal-server node_modules from stage 2
 COPY --from=terminal-build /terminal/node_modules dashboard/terminal-server/node_modules

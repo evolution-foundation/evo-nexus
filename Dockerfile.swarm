@@ -44,6 +44,11 @@ RUN npm install -g @anthropic-ai/claude-code
 # this deliberately after validating the new version.
 RUN npm install -g @gitlawb/openclaude@0.23.0
 
+# Install opencode CLI — provider "opencode_omnirouter" (spike, ver
+# workspace/development/features/runtime-harness-agnostic-eval/). Pinned
+# pela mesma razão do openclaude acima.
+RUN npm install -g opencode-ai@1.17.18
+
 # sharp — optional peer dep the CLI's own Read tool needs to process image
 # files (photos, reference images, screenshots). Without it, Read on any
 # image fails every time with "image support is not installed".
