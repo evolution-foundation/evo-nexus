@@ -61,8 +61,9 @@ ENV PATH="/root/.local/bin:${PATH}"
 ARG CACHEBUST=1
 
 # CLIs — the Providers page in the UI switches between them at runtime.
-# @gitlawb/openclaude@latest is pinned to the npm dist-tag which as of the
-# current fix is ≥0.3.0 (first version with the Codex shortcut endpoint).
+# @gitlawb/openclaude is pinned to a tested version instead of @latest —
+# floating @latest meant every redeploy could silently ship a new CLI release
+# without anyone testing it first. Bump deliberately after validating.
 # @openai/codex is used only to run the supported Codex device-auth flow and
 # persist ~/.codex/auth.json for OpenClaude's codex_auth provider.
 # sharp is an optional peer dep the CLI's own Read tool needs to process
@@ -70,7 +71,7 @@ ARG CACHEBUST=1
 # on any image fails with "image support is not installed" every time.
 RUN npm install -g \
         @anthropic-ai/claude-code \
-        @gitlawb/openclaude@latest \
+        @gitlawb/openclaude@0.23.0 \
         @openai/codex \
         sharp
 

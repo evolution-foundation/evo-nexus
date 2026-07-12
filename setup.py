@@ -863,7 +863,7 @@ def check_prerequisites():
     # "route OpenAI Codex shortcuts to correct endpoint" fix (#566) which
     # the codex_auth provider flow relies on.
     if not _check_tool("OpenClaude", ["openclaude", "--version"],
-                        install_cmd="npm install -g @gitlawb/openclaude@latest",
+                        install_cmd="npm install -g @gitlawb/openclaude@0.23.0",
                         min_version=(0, 3, 0)):
         missing.append("openclaude")
 
@@ -1732,7 +1732,7 @@ def _ensure_user_has_tools(service_user: str) -> None:
     if rc != 0:
         print(f"  {DIM}{T('tool_installing_verb', name=f'OpenClaude for {service_user}')}{RESET}")
         os.system(
-            f"su - {service_user} -c 'npm install -g @gitlawb/openclaude@latest --prefix ~/.local' "
+            f"su - {service_user} -c 'npm install -g @gitlawb/openclaude@0.23.0 --prefix ~/.local' "
             f">/dev/null 2>&1"
         )
 
@@ -2068,7 +2068,7 @@ def main():
                 print(f"  {DIM}Upgrading OpenClaude for {service_user} (found {oc_version}, need 0.3.0+)...{RESET}")
             else:
                 print(f"  {DIM}Installing OpenClaude for {service_user}...{RESET}")
-            os.system(f"su - {service_user} -c 'npm install -g @gitlawb/openclaude@latest --prefix ~/.local' >/dev/null 2>&1")
+            os.system(f"su - {service_user} -c 'npm install -g @gitlawb/openclaude@0.23.0 --prefix ~/.local' >/dev/null 2>&1")
             print(f"  {GREEN}✓{RESET} OpenClaude installed")
 
         # Sync deps as service user
