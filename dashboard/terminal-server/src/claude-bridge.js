@@ -675,19 +675,15 @@ class ClaudeBridge {
     }
 
     const modelRef = `${session.providerId}/${session.providerModel}`;
-    // `opencode run` defaults to the "build" agent when --agent isn't given.
-    // Confirmed live on the VPS (2026-07-13): for plain conversational
-    // messages ("ping", "lembra da ultima sessao?") build finishes the step
-    // with tokens.input=0/tokens.output=0/cost=0 — the model is never even
-    // called, presumably because build's own loop only engages the model
-    // when it recognizes an actionable task (matches the spike's earlier
-    // validated test: asking it to list files via bash DID produce a real
-    // tool call + reported text). "plan" is opencode's other primary agent,
-    // built for discussion rather than autonomous execution, with the same
-    // broad permission set as build (`opencode agent list` shows identical
-    // "allow *" rules for both) — so this isn't expected to cost tool
-    // access, just make conversational replies actually happen.
-    const args = ['run', fullMessage, '-m', modelRef, '--agent', 'plan', '--format', 'json', '--auto'];
+    // No --agent flag — defaults to opencode's "build" agent, which is what
+    // the original spike validated for real tool-use (bash calls + reported
+    // text). The zero-token/no-response symptom seen live on 2026-07-13
+    // turned out to be unrelated to agent choice (--agent plan didn't fix
+    // it either) — root cause was the OmniRoute "auto" combo routing to a
+    // stuck "auggie" candidate (see runtime-harness-agnostic-eval feature
+    // folder + omniroute-gateway memory). Fixed on the gateway side by
+    // removing "auggie" from the auto/* combo pools.
+    const args = ['run', fullMessage, '-m', modelRef, '--format', 'json', '--auto'];
     if (session.opencodeSessionId) {
       args.push('-s', session.opencodeSessionId);
     }
@@ -740,11 +736,6 @@ class ClaudeBridge {
       if (sid && !session.opencodeSessionId) {
         session.opencodeSessionId = sid;
       }
-      // Temporary (2026-07-13): diagnosing "sem resposta de texto" reports
-      // from the VPS — log every event type + a truncated preview so the
-      // real NDJSON shape is visible in `docker logs` instead of guessed.
-      // Remove once confirmed either way.
-      console.log(`[bridge] opencode event type=${event.type} full=${line}`);
       if (event.type === 'text') {
         const text = event.part && event.part.text;
         if (text) {
