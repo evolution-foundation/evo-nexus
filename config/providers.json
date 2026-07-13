@@ -1,8 +1,8 @@
 {
-  "active_provider": "opencode_omnirouter",
+  "active_provider": "opencode",
   "providers": {
     "omnirouter": {
-      "name": "OmniRoute (gateway local 237+ providers)",
+      "name": "OpenClaude (via OmniRoute)",
       "description": "Gateway de IA auto-hospedado na VPS — roteia 237+ providers com fallback automático e compressão de tokens.",
       "cli_command": "openclaude",
       "mode": "code",
@@ -134,12 +134,16 @@
       "coming_soon": true,
       "description": "Claude via Google Cloud Vertex AI"
     },
-    "opencode_omnirouter": {
-      "name": "OmniRoute via opencode (spike)",
-      "description": "Harness opencode contra o OmniRoute (workspace/development/features/runtime-harness-agnostic-eval/). Ativado como active_provider em 2026-07-12.",
+    "opencode": {
+      "name": "OpenCode",
+      "description": "Harness opencode — CLI agêntico com tool-use nativo, roteável por qualquer endpoint OpenAI-compatível (Base URL/API Key editáveis abaixo, igual ao OpenClaude). Ativado como active_provider em 2026-07-12; ver workspace/development/features/runtime-harness-agnostic-eval/.",
       "cli_command": "opencode",
       "mode": "code",
-      "env_vars": {},
+      "env_vars": {
+        "OPENAI_BASE_URL": "https://omni.workflowapi.com.br/v1",
+        "OPENAI_API_KEY": "[REDACTED]"
+      },
+      "default_base_url": "https://omni.workflowapi.com.br/v1",
       "default_model": "auto",
       "requires_logout": false,
       "fallback_providers": [
@@ -170,5 +174,5 @@
       ]
     }
   },
-  "telegram_provider": "omnirouter"
+  "telegram_provider": ""
 }

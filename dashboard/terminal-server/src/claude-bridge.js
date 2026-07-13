@@ -300,7 +300,7 @@ class ClaudeBridge {
       if (providerConfig.cli_command === 'opencode') {
         return this._startOpencodeReplSession(sessionId, {
           workingDir, agent, onOutput, onExit, onError,
-        }, providerConfig.active || 'anthropic', providerModel);
+        }, providerConfig.active || 'anthropic', providerModel, providerConfig.env_vars || {});
       }
 
       const cliCommand = this.findClaudeCommand(providerConfig.cli_command);
@@ -567,7 +567,7 @@ class ClaudeBridge {
    * that fails or times out just reports an error and leaves the session
    * ready for the next message.
    */
-  async _startOpencodeReplSession(sessionId, options, providerId, providerModel) {
+  async _startOpencodeReplSession(sessionId, options, providerId, providerModel, providerEnvVars = {}) {
     const { workingDir, agent, onOutput, onExit, onError } = options;
     const cliBin = this.findClaudeCommand('opencode');
 
@@ -591,6 +591,12 @@ class ClaudeBridge {
       personaPrefix,
       providerId,
       providerModel: providerModel || 'auto',
+      // OPENAI_BASE_URL/OPENAI_API_KEY come from this provider's own
+      // dashboard-editable config (same fields every other provider uses),
+      // already resolved from placeholders to real secrets by
+      // loadProviderConfig() before reaching here — opencode.json points
+      // its "opencode" provider at {env:OPENAI_BASE_URL}/{env:OPENAI_API_KEY}.
+      providerEnvVars,
       cliBin,
       onOutput,
       onExit,
@@ -611,10 +617,12 @@ class ClaudeBridge {
    * Build the environment for an `opencode run` child process. Mirrors the
    * SYSTEM_VARS whitelist used for the pty-spawned CLIs above — no full
    * process.env spread, so a stale OPENAI_API_KEY etc. can't hijack the
-   * call — plus OMNIROUTE_SPIKE_API_KEY, which opencode.json resolves via
-   * {env:OMNIROUTE_SPIKE_API_KEY} for the opencode_omnirouter provider.
+   * call. OPENAI_BASE_URL/OPENAI_API_KEY come from providerEnvVars (the
+   * "opencode" provider's own dashboard-editable config, same fields every
+   * other provider uses) — opencode.json resolves them via
+   * {env:OPENAI_BASE_URL}/{env:OPENAI_API_KEY}.
    */
-  _buildOpencodeEnv() {
+  _buildOpencodeEnv(providerEnvVars = {}) {
     const SYSTEM_VARS = [
       'HOME', 'USER', 'SHELL', 'PATH', 'LANG', 'LC_ALL', 'LC_CTYPE',
       'LOGNAME', 'HOSTNAME', 'XDG_RUNTIME_DIR', 'XDG_DATA_HOME',
@@ -622,12 +630,13 @@ class ClaudeBridge {
       'SSH_AUTH_SOCK', 'SSH_AGENT_PID',
       'NVM_DIR', 'NVM_BIN', 'NVM_INC',
       'CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'IS_SANDBOX',
-      'OMNIROUTE_SPIKE_API_KEY',
     ];
     const env = {};
     for (const key of SYSTEM_VARS) {
       if (process.env[key]) env[key] = process.env[key];
     }
+    if (providerEnvVars.OPENAI_BASE_URL) env.OPENAI_BASE_URL = providerEnvVars.OPENAI_BASE_URL;
+    if (providerEnvVars.OPENAI_API_KEY) env.OPENAI_API_KEY = providerEnvVars.OPENAI_API_KEY;
     env.DISABLE_AUTOUPDATER = '1';
     return env;
   }
@@ -720,7 +729,7 @@ class ClaudeBridge {
     try {
       child = cp.spawn(session.cliBin, args, {
         cwd: session.workingDir,
-        env: this._buildOpencodeEnv(),
+        env: this._buildOpencodeEnv(session.providerEnvVars),
         // Node leaves a child's stdin as an open, never-EOF'd pipe by
         // default — opencode blocks reading it before ever calling the
         // model, so the call just hangs forever with no output, no exit,

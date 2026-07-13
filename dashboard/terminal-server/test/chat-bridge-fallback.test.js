@@ -127,15 +127,15 @@ function makeOpencodeConfig() {
   return {
     cli_command: 'opencode',
     env_vars: { ...opencodeEnv },
-    active: 'opencode_omnirouter',
+    active: 'opencode',
     mode: 'code',
     fallback_models: [],
     fallback_providers: ['anthropic'],
     providers: {
-      opencode_omnirouter: {
+      opencode: {
         cli_command: 'opencode',
         env_vars: { ...opencodeEnv },
-        active: 'opencode_omnirouter',
+        active: 'opencode',
         mode: 'code',
         fallback_models: [],
         fallback_providers: ['anthropic'],
@@ -158,7 +158,7 @@ function makeOpencodeConfig() {
 test('cadeia crua inclui o attempt opencode (documenta o que precisa ser filtrado)', () => {
   const chain = buildProviderFallbackChain(makeOpencodeConfig());
   const labels = chain.map((c) => `${c.providerId}:${c.cliCommand}`);
-  assert.deepEqual(labels, ['opencode_omnirouter:opencode', 'anthropic:claude']);
+  assert.deepEqual(labels, ['opencode:opencode', 'anthropic:claude']);
 });
 
 test('filtro por SDK_COMPATIBLE_CLI remove o attempt opencode e mantém o anthropic nativo', () => {

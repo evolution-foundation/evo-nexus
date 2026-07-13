@@ -1,22 +1,22 @@
 {
   "$schema": "https://opencode.ai/config.json",
   "provider": {
-    "opencode_omnirouter": {
+    "opencode": {
       "npm": "@ai-sdk/openai-compatible",
-      "name": "OmniRoute via opencode (spike, isolado do provider omnirouter real que usa openclaude)",
+      "name": "OpenCode",
       "options": {
-        "baseURL": "https://omni.workflowapi.com.br/v1",
-        "apiKey": "{env:OMNIROUTE_SPIKE_API_KEY}"
+        "baseURL": "{env:OPENAI_BASE_URL}",
+        "apiKey": "{env:OPENAI_API_KEY}"
       },
       "models": {
         "auto": {
-          "name": "OmniRoute auto (LKGP)"
+          "name": "OpenCode auto (LKGP)"
         },
         "auto/coding": {
-          "name": "OmniRoute auto/coding"
+          "name": "OpenCode auto/coding"
         },
         "xai/grok-4.3": {
-          "name": "xAI Grok 4.3 via OmniRoute (teste de custo metrificado, nao-assinatura)"
+          "name": "xAI Grok 4.3 via OpenCode (teste de custo metrificado, nao-assinatura)"
         }
       }
     }
