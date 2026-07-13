@@ -436,6 +436,31 @@ class TerminalServer {
       res.json({ sessions });
     });
 
+    // Aggregate HUD status across every live opencode REPL session — lets
+    // the /agents page show "N agentes trabalhando agora" and which ones,
+    // without opening any individual terminal tab. Only opencode sessions
+    // carry busy/heavy telemetry today (see claude-bridge.js's
+    // _emitHudUpdate) — native claude/openclaude PTY sessions don't track
+    // turn boundaries, so they're left out rather than reported as a
+    // meaningless always-false busy flag.
+    this.app.get('/api/sessions/hud-status', (req, res) => {
+      const sessions = [];
+      for (const [id, s] of this.claudeBridge.sessions.entries()) {
+        if (!s.isOpencode || !s.active || !s.agentName) continue;
+        const hud = s.lastHud || {};
+        sessions.push({
+          sessionId: id,
+          agent: s.agentName,
+          busy: !!s.busy,
+          heavy: !!hud.heavy,
+          providerId: s.providerId,
+          providerModel: s.providerModel,
+          tokensPerSec: typeof hud.tokensPerSec === 'number' ? hud.tokensPerSec : 0,
+        });
+      }
+      res.json({ sessions });
+    });
+
     // Create a NEW session for an agent (always creates, never reuses)
     this.app.post('/api/sessions/create', (req, res) => {
       const { agentName, workingDir } = req.body;

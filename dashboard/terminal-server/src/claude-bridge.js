@@ -633,6 +633,10 @@ class ClaudeBridge {
       busy: false,
       lineBuffer: '',
       opencodeSessionId: null,
+      // Persona slug (e.g. "atlas-project") — lets a global status endpoint
+      // (GET /api/sessions/hud-status, see server.js) report which agents
+      // are working without touching any per-session terminal socket.
+      agentName: agent || null,
       personaPrefix,
       providerId,
       providerModel: providerModel || 'auto',
@@ -748,7 +752,7 @@ class ClaudeBridge {
     if (typeof patch.tokensPerSec === 'number' && patch.tokensPerSec > session.bestTokensPerSec) {
       session.bestTokensPerSec = patch.tokensPerSec;
     }
-    session.onHudUpdate({
+    const payload = {
       busy: session.busy,
       providerId,
       providerModel,
@@ -758,7 +762,13 @@ class ClaudeBridge {
       ...patch,
       bestTokensPerSec: session.bestTokensPerSec,
       shift,
-    });
+    };
+    // Stashed on the session so GET /api/sessions/hud-status can report
+    // this turn's state to callers with no open WebSocket (the /agents
+    // page) — onHudUpdate above only reaches whoever has this one
+    // terminal tab open right now.
+    session.lastHud = payload;
+    session.onHudUpdate(payload);
   }
 
   /**
