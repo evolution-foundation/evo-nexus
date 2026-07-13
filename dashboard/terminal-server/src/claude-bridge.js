@@ -267,17 +267,21 @@ class ClaudeBridge {
         // (sem acesso a browser) — testar na UI real e ajustar com base
         // em feedback, não assumir que está 100% certo de primeira.
         //
-        // --mini (2026-07-13): a TUI default (`opencode [project]`) usa
-        // alternate-screen-buffer + posicionamento absoluto de cursor numa
-        // tela cheia — visto ao vivo na VPS renderizando sobreposto/quebrado
-        // dentro do pty embutido no dashboard (o texto do campo `name` do
-        // provider em opencode.json apareceu por cima de outro frame não
-        // limpo). `opencode --mini` usa uma interface reduzida com
-        // repintura por linha fixa em vez de tela cheia — testado localmente
-        // (script -qc, pty real) e renderiza limpo, sem sobreposição, até
-        // erros de auth aparecem legíveis. Ainda não confirmado se resolve
-        // 100% ao vivo contra o OmniRoute — próximo teste real na VPS.
-        args.push('--mini');
+        // --mini testado e REVERTIDO (2026-07-13): a TUI default
+        // (`opencode [project]`) renderizou sobreposto/quebrado ao vivo na
+        // VPS (texto do campo `name` do opencode.json aparecendo por cima
+        // de outro frame não limpo). --mini evita esse overlap (testado
+        // localmente com pty real), mas ao vivo mostrou um problema pior:
+        // as respostas nunca aparecem no transcript — --mini usa uma área
+        // de status "viva" que se sobrescreve a cada atualização, então o
+        // texto da resposta é substituído pela linha de conclusão antes de
+        // virar histórico permanente. Nenhum dos dois modos de TUI do
+        // opencode é confiável dentro deste pty embutido — ver
+        // workspace/development/features/runtime-harness-agnostic-eval/
+        // pra o próximo passo (provavelmente: parar de usar a TUI
+        // interativa do opencode aqui e dirigir via `opencode run` headless
+        // + parser NDJSON já provado em provider_fallback.py, renderizando
+        // o texto nós mesmos).
         if (terminalTrustMode) {
           args.push('--auto');
         }
