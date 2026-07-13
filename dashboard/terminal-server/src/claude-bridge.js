@@ -675,7 +675,19 @@ class ClaudeBridge {
     }
 
     const modelRef = `${session.providerId}/${session.providerModel}`;
-    const args = ['run', fullMessage, '-m', modelRef, '--format', 'json', '--auto'];
+    // `opencode run` defaults to the "build" agent when --agent isn't given.
+    // Confirmed live on the VPS (2026-07-13): for plain conversational
+    // messages ("ping", "lembra da ultima sessao?") build finishes the step
+    // with tokens.input=0/tokens.output=0/cost=0 — the model is never even
+    // called, presumably because build's own loop only engages the model
+    // when it recognizes an actionable task (matches the spike's earlier
+    // validated test: asking it to list files via bash DID produce a real
+    // tool call + reported text). "plan" is opencode's other primary agent,
+    // built for discussion rather than autonomous execution, with the same
+    // broad permission set as build (`opencode agent list` shows identical
+    // "allow *" rules for both) — so this isn't expected to cost tool
+    // access, just make conversational replies actually happen.
+    const args = ['run', fullMessage, '-m', modelRef, '--agent', 'plan', '--format', 'json', '--auto'];
     if (session.opencodeSessionId) {
       args.push('-s', session.opencodeSessionId);
     }
