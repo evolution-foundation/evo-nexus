@@ -690,6 +690,17 @@ class TerminalServer {
                 message: 'Agent is not running in this session. Please start an agent first.',
               });
             }
+          } else if (session && !session.active) {
+            // The CLI process already died (crash, provider error, etc.) —
+            // without this, typing into a dead session silently vanished:
+            // the client kept sending 'input' with nothing telling it the
+            // PTY was gone, so the user saw no feedback at all ("send a
+            // prompt and nothing happens"). Tell the client explicitly so
+            // it can offer/trigger a restart instead of a dead end.
+            this.sendToWebSocket(wsInfo.ws, {
+              type: 'error',
+              message: 'Session has exited. Restart the agent to continue.',
+            });
           }
         }
         break;

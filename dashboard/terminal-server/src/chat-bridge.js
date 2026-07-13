@@ -107,6 +107,25 @@ function buildProviderFallbackChain(providerConfig) {
 }
 
 /**
+ * CLIs that implement the Agent SDK's subprocess wire protocol — the SDK
+ * always spawns pathToClaudeCodeExecutable with its own flags
+ * (--input-format stream-json --output-format stream-json --verbose,
+ * --permission-prompt-tool stdio, etc.) and talks to it over stdin/stdout
+ * with a control_request/control_response JSON protocol (see
+ * ProcessTransport in @anthropic-ai/claude-agent-sdk/sdk.mjs). claude and
+ * openclaude both speak that protocol; opencode does not — it has its own
+ * CLI shape (`opencode run <msg> -m <provider>/<model> --format json`) and
+ * TUI, unrelated to Claude Code's. Spawning opencode through the SDK fails
+ * immediately (unrecognized args, no control protocol reply) — that's the
+ * "exit code 1 / chat does nothing" failure mode. Chat can't drive opencode
+ * this way (yet — provider_fallback.py's headless "opencode run" +
+ * ndjson-parsing and the Terminal's native PTY spawn are the two paths that
+ * do work today), so any attempt using a non-SDK CLI is skipped here and the
+ * configured fallback_providers carry the conversation instead.
+ */
+const SDK_COMPATIBLE_CLI = new Set(['claude', 'openclaude']);
+
+/**
  * Check if an error is a retryable provider error (429, 503, quota, capacity).
  * Includes detection for "Maximum combo retry limit reached".
  */
@@ -170,6 +189,37 @@ const AUTO_APPROVE = new Set([
 const NEEDS_APPROVAL = new Set([
   'Write', 'Edit', 'Bash', 'NotebookEdit', 'Agent',
 ]);
+
+/**
+ * Read an agent's persistent memory (.claude/agent-memory/{agent}/), if any.
+ *
+ * Native Claude Code sessions get CLAUDE.md + .claude/rules/*.md auto-loaded
+ * via the 'claude_code' systemPrompt preset, including memory-recall.md,
+ * which tells the agent to self-serve read its own agent-memory folder.
+ * External providers replace the system prompt entirely (see the
+ * isExternalProvider branch below), so they never get that instruction —
+ * every session starts cold. Mirrors ClaudeBridge.loadAgentMemory in
+ * claude-bridge.js (Terminal); kept as a separate copy since these two
+ * files don't share a util module today.
+ */
+function loadAgentMemory(agent) {
+  if (!agent) return '';
+  const dir = path.join(WORKSPACE_ROOT, '.claude', 'agent-memory', agent);
+  const parts = [];
+  for (const file of ['learnings.md', 'MEMORY.md']) {
+    try {
+      const content = fs.readFileSync(path.join(dir, file), 'utf8').trim();
+      if (content) parts.push(`### ${file}\n${content}`);
+    } catch {
+      // File doesn't exist yet — this agent has no persisted memory. Fine.
+    }
+  }
+  if (!parts.length) return '';
+  const MAX_CHARS = 4000;
+  let combined = parts.join('\n\n');
+  if (combined.length > MAX_CHARS) combined = combined.slice(-MAX_CHARS);
+  return combined;
+}
 
 /**
  * Parse a .claude/agents/{name}.md file into an AgentDefinition.
@@ -298,9 +348,13 @@ function resolveCliBinary(cliCommand) {
 
   const { execSync } = require('child_process');
   try {
+    // Hardcoded dispatch per command (not a template) to satisfy semgrep,
+    // mirroring ClaudeBridge.findClaudeCommand.
     let resolved;
     if (cliCommand === 'openclaude') {
       resolved = execSync('which openclaude', { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'] }).trim();
+    } else if (cliCommand === 'opencode') {
+      resolved = execSync('which opencode', { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'] }).trim();
     } else {
       resolved = execSync('which claude', { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'] }).trim();
     }
@@ -312,18 +366,27 @@ function resolveCliBinary(cliCommand) {
   } catch { /* which failed — try hardcoded paths */ }
 
   const home = process.env.HOME || '/';
-  const candidates = cliCommand === 'openclaude'
-    ? [
-        path.join(home, '.local', 'bin', 'openclaude'),
-        '/usr/local/bin/openclaude',
-        '/usr/bin/openclaude',
-      ]
-    : [
-        path.join(home, '.claude', 'local', 'claude'),
-        path.join(home, '.local', 'bin', 'claude'),
-        '/usr/local/bin/claude',
-        '/usr/bin/claude',
-      ];
+  let candidates;
+  if (cliCommand === 'openclaude') {
+    candidates = [
+      path.join(home, '.local', 'bin', 'openclaude'),
+      '/usr/local/bin/openclaude',
+      '/usr/bin/openclaude',
+    ];
+  } else if (cliCommand === 'opencode') {
+    candidates = [
+      path.join(home, '.local', 'bin', 'opencode'),
+      '/usr/local/bin/opencode',
+      '/usr/bin/opencode',
+    ];
+  } else {
+    candidates = [
+      path.join(home, '.claude', 'local', 'claude'),
+      path.join(home, '.local', 'bin', 'claude'),
+      '/usr/local/bin/claude',
+      '/usr/bin/claude',
+    ];
+  }
   for (const p of candidates) {
     try {
       if (fs.existsSync(p)) {
@@ -749,10 +812,14 @@ class ChatBridge {
       if (getProviderMode(providerConfig) !== 'code') {
         return this._startOpenAICompatibleSession(sessionId, options, providerConfig);
       }
-      externalCliPath = resolveCliBinary(providerConfig.cli_command || 'openclaude');
-      if (!externalCliPath) {
-        console.warn(`[chat-bridge] ${providerConfig.cli_command} binary not found — falling back to chat completion. Install with: npm install -g @gitlawb/openclaude`);
-        return this._startOpenAICompatibleSession(sessionId, options, providerConfig);
+      if (SDK_COMPATIBLE_CLI.has(providerConfig.cli_command)) {
+        externalCliPath = resolveCliBinary(providerConfig.cli_command || 'openclaude');
+        if (!externalCliPath) {
+          console.warn(`[chat-bridge] ${providerConfig.cli_command} binary not found — falling back to chat completion. Install with: npm install -g @gitlawb/openclaude`);
+          return this._startOpenAICompatibleSession(sessionId, options, providerConfig);
+        }
+      } else {
+        console.warn(`[chat-bridge] Active provider "${providerConfig.active}" uses cli_command "${providerConfig.cli_command}", which doesn't speak the Agent SDK protocol — Chat will use its fallback_providers instead`);
       }
     }
 
@@ -770,11 +837,11 @@ class ChatBridge {
       abortController,
     };
 
-    if (isExternalProvider) {
+    if (isExternalProvider && externalCliPath) {
       queryOptions.pathToClaudeCodeExecutable = externalCliPath;
       queryOptions.env = buildProviderEnv(providerConfig);
       console.log(`[chat-bridge] External provider "${providerConfig.active}" via ${externalCliPath} (model: ${resolveProviderModel(providerConfig) || 'default'})`);
-    } else {
+    } else if (!isExternalProvider) {
       const claudeExe = resolveClaudeExecutable();
       if (claudeExe) queryOptions.pathToClaudeCodeExecutable = claudeExe;
     }
@@ -813,6 +880,10 @@ class ChatBridge {
           // models, so REPLACE the system prompt to force the agent persona.
           // agentDef.model is a Claude model name — meaningless here; the
           // model comes from the provider's OPENAI_MODEL env var.
+          const priorMemory = loadAgentMemory(agentName);
+          if (priorMemory) {
+            promptAppend += '\n\n## Previous Session Memory (yours — resume/summarize before acting)\n' + priorMemory;
+          }
           queryOptions.systemPrompt = promptAppend + '\n\n' +
             'CRITICAL: You MUST fully embody this agent persona. ' +
             'You are NOT Claude, OpenClaude, or a generic assistant — you ARE ' + agentName + '. ' +
@@ -955,7 +1026,12 @@ class ChatBridge {
     let fallbackChain = [];
     let currentFallbackIndex = 0;
     if (isExternalProvider) {
-      fallbackChain = buildProviderFallbackChain(providerConfig);
+      // Drop attempts whose cli_command can't speak the Agent SDK protocol
+      // (see SDK_COMPATIBLE_CLI) — e.g. opencode. buildProviderFallbackChain
+      // always appends a trailing native-anthropic entry when the active
+      // provider isn't anthropic, so this never filters down to empty.
+      fallbackChain = buildProviderFallbackChain(providerConfig)
+        .filter((attempt) => SDK_COMPATIBLE_CLI.has(attempt.cliCommand));
       console.log(`[chat-bridge] Built fallback chain with ${fallbackChain.length} attempts:`,
         fallbackChain.map(c => `${c.providerId}:${c.model || 'native'}`).join(' → '));
     }
@@ -1380,4 +1456,5 @@ module.exports = {
   buildProviderFallbackChain,
   isRetryableProviderError,
   isFatalProviderError,
+  SDK_COMPATIBLE_CLI,
 };

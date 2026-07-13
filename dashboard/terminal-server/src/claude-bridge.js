@@ -41,6 +41,38 @@ function isPtyEio(error) {
   return error?.code === 'EIO' || /\bEIO\b|read EIO|write EIO/i.test(error?.message || '');
 }
 
+/**
+ * Read an agent's persistent memory (.claude/agent-memory/{agent}/), if any.
+ *
+ * Native Claude Code sessions get CLAUDE.md + .claude/rules/*.md auto-loaded
+ * on startup, including memory-recall.md, which tells the agent to go read
+ * its own agent-memory folder before acting. Non-Anthropic providers
+ * (openclaude/opencode) don't go through that auto-load — the persona
+ * embedding here only injects the agent's own .md file — so without this,
+ * every non-Anthropic session starts cold with zero memory of prior
+ * sessions. Reads learnings.md (dated lessons) and MEMORY.md (curated
+ * summary) when present and concatenates them; learnings.md is append-only
+ * so only the tail (most recent entries) is kept to bound prompt size.
+ */
+function loadAgentMemory(agent) {
+  if (!agent) return '';
+  const dir = path.join(WORKSPACE_ROOT, '.claude', 'agent-memory', agent);
+  const parts = [];
+  for (const file of ['learnings.md', 'MEMORY.md']) {
+    try {
+      const content = fs.readFileSync(path.join(dir, file), 'utf8').trim();
+      if (content) parts.push(`### ${file}\n${content}`);
+    } catch {
+      // File doesn't exist yet — this agent has no persisted memory. Fine.
+    }
+  }
+  if (!parts.length) return '';
+  const MAX_CHARS = 4000;
+  let combined = parts.join('\n\n');
+  if (combined.length > MAX_CHARS) combined = combined.slice(-MAX_CHARS);
+  return combined;
+}
+
 class ClaudeBridge {
   constructor() {
     this.sessions = new Map();
@@ -248,6 +280,10 @@ class ClaudeBridge {
           } catch {
             agentPrompt = `You are the ${agent} agent.`;
           }
+          const priorMemory = loadAgentMemory(agent);
+          if (priorMemory) {
+            agentPrompt += '\n\n## Previous Session Memory (yours — resume/summarize before acting)\n' + priorMemory;
+          }
           const enforcePrompt = agentPrompt + '\n\n' +
             'CRITICAL: You MUST fully embody this agent persona. ' +
             'You are NOT Claude, OpenClaude, or a generic assistant — you ARE ' + agent + '. ' +
@@ -300,6 +336,11 @@ class ClaudeBridge {
             }
           } catch {
             agentPrompt = `You are the ${agent} agent.`;
+          }
+
+          const priorMemory = loadAgentMemory(agent);
+          if (priorMemory) {
+            agentPrompt += '\n\n## Previous Session Memory (yours — resume/summarize before acting)\n' + priorMemory;
           }
 
           const enforcePrompt = agentPrompt + '\n\n' +

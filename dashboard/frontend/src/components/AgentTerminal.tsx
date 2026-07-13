@@ -86,6 +86,14 @@ export default function AgentTerminal({ agent, sessionId: externalSessionId, wor
   const pingRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const [status, setStatus] = useState<Status>('connecting')
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
+  // Mirrors `status` for the onData closure below, which is registered once
+  // on mount and would otherwise only ever see the 'connecting' status from
+  // that first render (React state, not a ref, doesn't update in a stale
+  // closure).
+  const statusRef = useRef<Status>('connecting')
+  useEffect(() => {
+    statusRef.current = status
+  }, [status])
 
   // Mount xterm once
   useEffect(() => {
@@ -164,9 +172,31 @@ export default function AgentTerminal({ agent, sessionId: externalSessionId, wor
     const AUTO_REPLY_RE = /^\x1b\[(\?|>)[0-9;]*[a-zA-Z]$|^\x1b\[[0-9;]*[nRct]$/
     term.onData((data) => {
       if (AUTO_REPLY_RE.test(data)) return
-      if (wsRef.current?.readyState === WebSocket.OPEN) {
-        wsRef.current.send(JSON.stringify({ type: 'input', data }))
+      const ws = wsRef.current
+      if (!ws || ws.readyState !== WebSocket.OPEN) return
+
+      // The CLI process can die mid-session (provider crash, exit 1, etc.)
+      // without the user noticing beyond the small status badge. Forwarding
+      // raw keystrokes to a dead PTY used to just vanish — the server has
+      // nothing to write them to. Treat "user typed something" as an
+      // implicit restart request instead of a dead end.
+      if (statusRef.current === 'exited' || statusRef.current === 'error') {
+        statusRef.current = 'starting'
+        setStatus('starting')
+        term!.write('\r\n\x1b[33m[Restarting agent]\x1b[0m\r\n')
+        ws.send(JSON.stringify({
+          type: 'start_claude',
+          options: {
+            dangerouslySkipPermissions: true,
+            agent,
+            cols: term!.cols,
+            rows: term!.rows,
+          },
+        }))
+        return
       }
+
+      ws.send(JSON.stringify({ type: 'input', data }))
     })
 
     return () => {

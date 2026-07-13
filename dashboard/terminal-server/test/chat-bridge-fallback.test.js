@@ -5,6 +5,7 @@ const {
   buildProviderFallbackChain,
   isRetryableProviderError,
   isFatalProviderError,
+  SDK_COMPATIBLE_CLI,
 } = require('../src/chat-bridge');
 
 // Fixture no formato retornado por loadProviderConfig()
@@ -112,4 +113,64 @@ test('isFatalProviderError reconhece erros de auth', () => {
   assert.ok(isFatalProviderError(new Error('401 Unauthorized')));
   assert.ok(isFatalProviderError(new Error('invalid api key')));
   assert.ok(!isFatalProviderError(new Error('503 Service Unavailable')));
+});
+
+// opencode não implementa o protocolo de subprocesso do Agent SDK
+// (--input-format stream-json / control_request-response) — só claude e
+// openclaude falam esse protocolo. Um attempt com cli_command "opencode" na
+// cadeia (ex.: se o provider ativo algum dia ganhar um OPENAI_MODEL) tem que
+// ser filtrado pelo chamador antes de spawnar via SDK, senão é o crash
+// "exit code 1 / chat não responde" que motivou esse teste.
+function makeOpencodeConfig() {
+  const opencodeEnv = { OPENAI_MODEL: 'auto' };
+  const anthropicEnv = {};
+  return {
+    cli_command: 'opencode',
+    env_vars: { ...opencodeEnv },
+    active: 'opencode_omnirouter',
+    mode: 'code',
+    fallback_models: [],
+    fallback_providers: ['anthropic'],
+    providers: {
+      opencode_omnirouter: {
+        cli_command: 'opencode',
+        env_vars: { ...opencodeEnv },
+        active: 'opencode_omnirouter',
+        mode: 'code',
+        fallback_models: [],
+        fallback_providers: ['anthropic'],
+        model_tiers: {},
+      },
+      anthropic: {
+        cli_command: 'claude',
+        env_vars: { ...anthropicEnv },
+        active: 'anthropic',
+        mode: null,
+        fallback_models: [],
+        fallback_providers: [],
+        model_tiers: {},
+      },
+    },
+    model_tiers: {},
+  };
+}
+
+test('cadeia crua inclui o attempt opencode (documenta o que precisa ser filtrado)', () => {
+  const chain = buildProviderFallbackChain(makeOpencodeConfig());
+  const labels = chain.map((c) => `${c.providerId}:${c.cliCommand}`);
+  assert.deepEqual(labels, ['opencode_omnirouter:opencode', 'anthropic:claude']);
+});
+
+test('filtro por SDK_COMPATIBLE_CLI remove o attempt opencode e mantém o anthropic nativo', () => {
+  const chain = buildProviderFallbackChain(makeOpencodeConfig())
+    .filter((attempt) => SDK_COMPATIBLE_CLI.has(attempt.cliCommand));
+  assert.equal(chain.length, 1);
+  assert.equal(chain[0].providerId, 'anthropic');
+  assert.equal(chain[0].cliCommand, 'claude');
+});
+
+test('SDK_COMPATIBLE_CLI aceita claude e openclaude, rejeita opencode', () => {
+  assert.ok(SDK_COMPATIBLE_CLI.has('claude'));
+  assert.ok(SDK_COMPATIBLE_CLI.has('openclaude'));
+  assert.ok(!SDK_COMPATIBLE_CLI.has('opencode'));
 });
