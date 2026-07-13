@@ -92,6 +92,19 @@ function isPtyEio(error) {
 // evidence-based number once real task latencies are observed.
 const OPENCODE_TURN_TIMEOUT_MS = 600_000;
 
+// Above this many tokens in a single step, the terminal HUD (see
+// terminal-hud feature folder) marks the turn "heavy" (red semaphore
+// light). Provisional — same status as the timeout above, adjust once
+// real usage patterns are observed.
+const HUD_HEAVY_TOKEN_THRESHOLD = 20_000;
+
+// ~4 chars/token is the usual rough English/Portuguese estimate — opencode
+// doesn't stream incremental token counts, only a total per completed step,
+// so this is what drives the live tokens/s readout while a turn is still
+// running. Reconciled with the real total from `step_finish` as soon as
+// it's available.
+const HUD_CHARS_PER_TOKEN_ESTIMATE = 4;
+
 /**
  * Read an agent's persistent memory (.claude/agent-memory/{agent}/), if any.
  *
@@ -296,6 +309,7 @@ class ClaudeBridge {
       onOutput = () => {},
       onExit = () => {},
       onError = () => {},
+      onHudUpdate = () => {},
       cols = 80,
       rows = 24
     } = options;
@@ -330,7 +344,7 @@ class ClaudeBridge {
       // — and render the text ourselves.
       if (providerConfig.cli_command === 'opencode') {
         return this._startOpencodeReplSession(sessionId, {
-          workingDir, agent, onOutput, onExit, onError,
+          workingDir, agent, onOutput, onExit, onError, onHudUpdate,
         }, providerConfig.active || 'anthropic', providerModel, providerConfig.env_vars || {});
       }
 
@@ -599,7 +613,7 @@ class ClaudeBridge {
    * ready for the next message.
    */
   async _startOpencodeReplSession(sessionId, options, providerId, providerModel, providerEnvVars = {}) {
-    const { workingDir, agent, onOutput, onExit, onError } = options;
+    const { workingDir, agent, onOutput, onExit, onError, onHudUpdate } = options;
     const cliBin = this.findClaudeCommand('opencode');
 
     let personaPrefix = null;
@@ -632,6 +646,13 @@ class ClaudeBridge {
       onOutput,
       onExit,
       onError,
+      onHudUpdate: onHudUpdate || (() => {}),
+      // Tracks the provider/model shown in the last hud_update sent — lets
+      // us tell the frontend "this specific update is a change" (fires the
+      // gear-shift animation) vs. just a routine tick.
+      lastHudProviderId: null,
+      lastHudProviderModel: null,
+      bestTokensPerSec: 0,
     };
     this.sessions.set(sessionId, session);
 
@@ -712,6 +733,35 @@ class ClaudeBridge {
   }
 
   /**
+   * Push a status snapshot to the terminal HUD (see the terminal-hud
+   * feature folder — semaphore + gear/LCD panel). `shift` is computed here,
+   * not passed in: true only on the specific update where providerId or
+   * providerModel actually changed since the last one sent, so the frontend
+   * knows to play the gear-shift animation instead of a routine tick.
+   */
+  _emitHudUpdate(session, patch = {}) {
+    const providerId = patch.providerId || session.providerId;
+    const providerModel = patch.providerModel || session.providerModel;
+    const shift = providerId !== session.lastHudProviderId || providerModel !== session.lastHudProviderModel;
+    session.lastHudProviderId = providerId;
+    session.lastHudProviderModel = providerModel;
+    if (typeof patch.tokensPerSec === 'number' && patch.tokensPerSec > session.bestTokensPerSec) {
+      session.bestTokensPerSec = patch.tokensPerSec;
+    }
+    session.onHudUpdate({
+      busy: session.busy,
+      providerId,
+      providerModel,
+      tokensPerSec: null,
+      totalTokens: null,
+      heavy: false,
+      ...patch,
+      bestTokensPerSec: session.bestTokensPerSec,
+      shift,
+    });
+  }
+
+  /**
    * Run one `opencode run` turn headlessly and stream its NDJSON `text`
    * events into session.onOutput as they arrive. Same event shape already
    * parsed in provider_fallback.py::_parse_opencode_ndjson — kept as a
@@ -777,11 +827,17 @@ class ClaudeBridge {
       return;
     }
     session.currentChild = child;
+    if (attemptNumber === 0) {
+      this._emitHudUpdate(session);
+    }
 
     let stdoutBuffer = '';
     let stderrBuffer = '';
     let textBuffer = '';
     let sawText = false;
+    let charsSoFar = 0;
+    let realTotalTokens = null;
+    const turnStartedAt = Date.now();
     let sawError = false;
     let errorMessage = '';
     let timedOut = false;
@@ -815,11 +871,33 @@ class ClaudeBridge {
           // "**bo" + "ld**"). Rendered whole once the turn closes.
           sawText = true;
           textBuffer += text;
+          charsSoFar += text.length;
+          const elapsedSec = (Date.now() - turnStartedAt) / 1000;
+          const estTokens = charsSoFar / HUD_CHARS_PER_TOKEN_ESTIMATE;
+          this._emitHudUpdate(session, {
+            tokensPerSec: elapsedSec > 0 ? estTokens / elapsedSec : 0,
+            totalTokens: Math.round(estTokens),
+          });
         }
       } else if (event.type === 'error') {
         sawError = true;
         const err = event.error || {};
         errorMessage = (err.data && err.data.message) || err.name || 'erro desconhecido';
+      } else if (event.type === 'step_finish') {
+        // Real token count for the step that just closed — reconciles the
+        // char-based live estimate above. Multiple steps can happen in one
+        // turn (tool calls between text replies); keep the running total.
+        const tokens = event.part && event.part.tokens;
+        if (tokens) {
+          const stepTotal = (tokens.input || 0) + (tokens.output || 0);
+          realTotalTokens = (realTotalTokens || 0) + stepTotal;
+          const elapsedSec = (Date.now() - turnStartedAt) / 1000;
+          this._emitHudUpdate(session, {
+            tokensPerSec: elapsedSec > 0 ? realTotalTokens / elapsedSec : 0,
+            totalTokens: realTotalTokens,
+            heavy: realTotalTokens > HUD_HEAVY_TOKEN_THRESHOLD,
+          });
+        }
       }
     };
 
@@ -851,6 +929,11 @@ class ClaudeBridge {
       }
 
       session.busy = false;
+      this._emitHudUpdate(session, {
+        tokensPerSec: 0,
+        totalTokens: realTotalTokens,
+        heavy: (realTotalTokens || 0) > HUD_HEAVY_TOKEN_THRESHOLD,
+      });
       session.onOutput('\r\x1b[K'); // clear the "…" placeholder either way
 
       if (textBuffer) {
@@ -874,6 +957,7 @@ class ClaudeBridge {
       clearTimeout(killTimer);
       session.currentChild = null;
       session.busy = false;
+      this._emitHudUpdate(session, { tokensPerSec: 0 });
       session.onOutput(`\r\x1b[K\r\n\x1b[31m[opencode] falha ao executar: ${error.message}\x1b[0m\r\n\r\n`);
     });
   }

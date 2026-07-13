@@ -1088,6 +1088,12 @@ class TerminalServer {
             this.broadcastToSession(sessionId, { type: 'error', message: error.message });
           }
         },
+        onHudUpdate: (hud) => {
+          // terminal-hud feature: semaphore + gear/LCD panel. opencode REPL
+          // sessions only (claude-bridge.js's onHudUpdate is a no-op for the
+          // pty-interactive claude/openclaude path).
+          this.broadcastToSession(sessionId, { type: 'hud_update', ...hud });
+        },
       });
 
       session.active = true;
