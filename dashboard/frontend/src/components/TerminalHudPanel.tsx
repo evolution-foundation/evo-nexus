@@ -23,6 +23,24 @@ interface Props {
   accentColor: string
 }
 
+// Fires once on the specific tick where `busy` flips true -> false — the
+// moment a turn closes and the live char-based tokens/s estimate is
+// replaced by the real reconciled number (see claude-bridge.js's
+// _emitHudUpdate at turn close). That's the one moment a "needle settle"
+// kick reads as physical rather than jittery — every other tick the number
+// just drifts smoothly as text streams in, no kick needed.
+function useSettleTick(busy: boolean) {
+  const [tick, setTick] = useState(0)
+  const prevBusy = useRef(busy)
+  useEffect(() => {
+    if (prevBusy.current && !busy) {
+      setTick((t) => t + 1)
+    }
+    prevBusy.current = busy
+  }, [busy])
+  return tick
+}
+
 function useGear(providerId: string, providerModel: string, shift: boolean) {
   const [gear, setGear] = useState(1)
   const prevKey = useRef('')
@@ -43,6 +61,7 @@ function useGear(providerId: string, providerModel: string, shift: boolean) {
 
 export default function TerminalHudPanel({ hud, accentColor }: Props) {
   const gear = useGear(hud.providerId, hud.providerModel, hud.shift)
+  const settleTick = useSettleTick(hud.busy)
   const speed = Math.max(0, Math.round(hud.tokensPerSec))
   const isPb = hud.bestTokensPerSec > 0 && speed >= Math.round(hud.bestTokensPerSec) && speed > 0
 
@@ -90,7 +109,11 @@ export default function TerminalHudPanel({ hud, accentColor }: Props) {
         <span className="text-[9px] tracking-wide opacity-90 truncate max-w-[110px]">
           {hud.providerId}/{hud.providerModel}
         </span>
-        <span className="text-[10px] font-bold tabular-nums">
+        <span
+          key={settleTick}
+          className="text-[10px] font-bold tabular-nums inline-block"
+          style={{ animation: 'terminal-hud-needle-settle 320ms cubic-bezier(0.34, 1.56, 0.64, 1)' }}
+        >
           {speed} tok/s{isPb && <span className="ml-1 text-[8px] font-normal opacity-80">PB</span>}
         </span>
       </div>
@@ -104,6 +127,12 @@ export default function TerminalHudPanel({ hud, accentColor }: Props) {
           0% { transform: scale(1); }
           40% { transform: scale(1.28); }
           100% { transform: scale(1); }
+        }
+        @keyframes terminal-hud-needle-settle {
+          0% { transform: translateX(0); }
+          30% { transform: translateX(2px); }
+          60% { transform: translateX(-1px); }
+          100% { transform: translateX(0); }
         }
       `}</style>
     </div>
