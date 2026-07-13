@@ -52,10 +52,14 @@ function isPtyEio(error) {
 }
 
 // Max time a single `opencode run` turn may take before we kill it and
-// report a timeout instead of leaving the user waiting forever. Provisional
-// — Fase 3 burn-in (runtime-harness-agnostic-eval feature folder) should
-// replace it with an evidence-based number once real latencies are observed.
-const OPENCODE_TURN_TIMEOUT_MS = 120_000;
+// report a timeout instead of leaving the user waiting forever. Confirmed
+// live (2026-07-13) that 120s was too short for real multi-step agentic
+// work (reviewing drafts, reading multiple files, rewriting content) — the
+// watchdog killed a turn mid-task that was doing legitimate work, not
+// hanging. 10 minutes is still provisional; Fase 3 burn-in
+// (runtime-harness-agnostic-eval feature folder) should replace it with an
+// evidence-based number once real task latencies are observed.
+const OPENCODE_TURN_TIMEOUT_MS = 600_000;
 
 /**
  * Read an agent's persistent memory (.claude/agent-memory/{agent}/), if any.
@@ -683,6 +687,17 @@ class ClaudeBridge {
       session.personaPrefix = null; // embed only once — -s keeps the rest of the context
     }
 
+    this._attemptOpencodeTurn(sessionId, session, fullMessage, 0);
+  }
+
+  /**
+   * One `opencode run` attempt for a turn. On timeout, retries once with the
+   * same message instead of failing outright — a stuck attempt (like the
+   * OmniRoute "auggie" LKGP hang from 2026-07-13) is often transient, and a
+   * silent retry costs nothing the user wasn't already waiting for. Only
+   * gives up and reports an error after the retry ALSO times out.
+   */
+  _attemptOpencodeTurn(sessionId, session, fullMessage, attemptNumber) {
     const modelRef = `${session.providerId}/${session.providerModel}`;
     // No --agent flag — defaults to opencode's "build" agent, which is what
     // the original spike validated for real tool-use (bash calls + reported
@@ -697,7 +712,9 @@ class ClaudeBridge {
       args.push('-s', session.opencodeSessionId);
     }
 
-    session.onOutput('\x1b[90m…\x1b[0m');
+    if (attemptNumber === 0) {
+      session.onOutput('\x1b[90m…\x1b[0m');
+    }
 
     let child;
     try {
@@ -726,9 +743,11 @@ class ClaudeBridge {
     let sawText = false;
     let sawError = false;
     let errorMessage = '';
+    let timedOut = false;
 
     const killTimer = setTimeout(() => {
-      console.warn(`[bridge] opencode turn for session ${sessionId} exceeded ${OPENCODE_TURN_TIMEOUT_MS}ms — killing`);
+      timedOut = true;
+      console.warn(`[bridge] opencode turn for session ${sessionId} exceeded ${OPENCODE_TURN_TIMEOUT_MS}ms (attempt ${attemptNumber + 1}) — killing`);
       try { child.kill('SIGKILL'); } catch (_) {}
     }, OPENCODE_TURN_TIMEOUT_MS);
 
@@ -780,11 +799,20 @@ class ClaudeBridge {
       clearTimeout(killTimer);
       if (stdoutBuffer.trim()) processLine(stdoutBuffer);
       session.currentChild = null;
-      session.busy = false;
 
+      if (timedOut && !sawText && attemptNumber < 1) {
+        console.warn(`[bridge] opencode turn timed out for session ${sessionId}, retrying once`);
+        session.onOutput(`\r\x1b[K\r\n\x1b[33m[opencode] sem resposta em ${Math.round(OPENCODE_TURN_TIMEOUT_MS / 1000)}s — tentando de novo\x1b[0m\r\n`);
+        this._attemptOpencodeTurn(sessionId, session, fullMessage, attemptNumber + 1);
+        return; // stays busy — the retry owns finishing the turn
+      }
+
+      session.busy = false;
       if (!sawText) session.onOutput('\r\x1b[K'); // clear the "…" if nothing textual ever came
 
-      if (sawError) {
+      if (timedOut) {
+        session.onOutput(`\r\n\x1b[31m[opencode] sem resposta em ${Math.round(OPENCODE_TURN_TIMEOUT_MS / 1000)}s, de novo mesmo depois de tentar outra vez — desisti\x1b[0m\r\n`);
+      } else if (sawError) {
         session.onOutput(`\r\n\x1b[31m[opencode] ${toTerminalText(errorMessage)}\x1b[0m\r\n`);
       } else if (code !== 0) {
         const stderrTail = stderrBuffer.trim().slice(0, 300);
