@@ -3,6 +3,26 @@ const cp = require('child_process');
 const path = require('path');
 const fs = require('fs');
 
+// chalk (used inside marked-terminal) auto-detects color support from THIS
+// process's own stdout — but this process is a backend service with no real
+// tty of its own; the actual renderer is the browser's xterm.js, which
+// supports full color regardless. Without this, chalk sees "no tty" and
+// silently strips every ANSI code before marked-terminal's output ever
+// leaves this process. Must be set before requiring marked-terminal —
+// chalk reads it once at import time.
+process.env.FORCE_COLOR = process.env.FORCE_COLOR || '1';
+
+const { marked } = require('marked');
+const TerminalRenderer = require('marked-terminal').default;
+
+// Renders the opencode REPL's response markdown (headers, bold, lists, code
+// blocks) as ANSI-styled terminal output instead of dumping raw markdown
+// syntax. reflowText:false — the pty/xterm.js already wraps at the real
+// terminal width; re-wrapping here at a fixed guess would fight that.
+marked.setOptions({
+  renderer: new TerminalRenderer({ reflowText: false }),
+});
+
 // Workspace root is three levels up from this file (dashboard/terminal-server/src/).
 const WORKSPACE_ROOT = path.resolve(__dirname, '..', '..', '..');
 const {
@@ -45,6 +65,17 @@ function terminalPromptAcceptInput(buffer) {
 // staircase (each line starting one column further right than the last).
 function toTerminalText(text) {
   return text.replace(/\r?\n/g, '\r\n');
+}
+
+// marked-terminal throws on some malformed/edge-case markdown rather than
+// degrading gracefully — a rendering bug shouldn't ever hide the model's
+// actual answer, so fall back to the raw text if parsing fails.
+function renderMarkdown(text) {
+  try {
+    return marked(text).replace(/\n+$/, '');
+  } catch {
+    return text;
+  }
 }
 
 function isPtyEio(error) {
@@ -749,6 +780,7 @@ class ClaudeBridge {
 
     let stdoutBuffer = '';
     let stderrBuffer = '';
+    let textBuffer = '';
     let sawText = false;
     let sawError = false;
     let errorMessage = '';
@@ -776,11 +808,13 @@ class ClaudeBridge {
       if (event.type === 'text') {
         const text = event.part && event.part.text;
         if (text) {
-          if (!sawText) {
-            session.onOutput('\r\x1b[K'); // clear the "…" placeholder once real text starts
-            sawText = true;
-          }
-          session.onOutput(toTerminalText(text));
+          // Buffered, not streamed straight to onOutput — the response is
+          // markdown (headers, bold, lists, code blocks) and arrives in
+          // arbitrary-sized fragments; parsing each fragment as markdown on
+          // its own would mangle syntax split across two chunks (e.g.
+          // "**bo" + "ld**"). Rendered whole once the turn closes.
+          sawText = true;
+          textBuffer += text;
         }
       } else if (event.type === 'error') {
         sawError = true;
@@ -817,7 +851,11 @@ class ClaudeBridge {
       }
 
       session.busy = false;
-      if (!sawText) session.onOutput('\r\x1b[K'); // clear the "…" if nothing textual ever came
+      session.onOutput('\r\x1b[K'); // clear the "…" placeholder either way
+
+      if (textBuffer) {
+        session.onOutput(toTerminalText(renderMarkdown(textBuffer)));
+      }
 
       if (timedOut) {
         session.onOutput(`\r\n\x1b[31m[opencode] sem resposta em ${Math.round(OPENCODE_TURN_TIMEOUT_MS / 1000)}s, de novo mesmo depois de tentar outra vez — desisti\x1b[0m\r\n`);
