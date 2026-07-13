@@ -728,6 +728,11 @@ class ClaudeBridge {
       if (sid && !session.opencodeSessionId) {
         session.opencodeSessionId = sid;
       }
+      // Temporary (2026-07-13): diagnosing "sem resposta de texto" reports
+      // from the VPS — log every event type + a truncated preview so the
+      // real NDJSON shape is visible in `docker logs` instead of guessed.
+      // Remove once confirmed either way.
+      console.log(`[bridge] opencode event type=${event.type} preview=${line.slice(0, 200)}`);
       if (event.type === 'text') {
         const text = event.part && event.part.text;
         if (text) {
