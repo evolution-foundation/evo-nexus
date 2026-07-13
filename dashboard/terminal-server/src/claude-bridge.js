@@ -38,6 +38,15 @@ function terminalPromptAcceptInput(buffer) {
 }
 
 
+// A real pty (node-pty) has a line discipline that turns \n into \r\n on
+// output; a plain string piped to onOutput doesn't. Terminals move down one
+// row on \n but don't return to column 0 without an explicit \r, so raw
+// multi-line text from opencode's NDJSON `text` events renders as a
+// staircase (each line starting one column further right than the last).
+function toTerminalText(text) {
+  return text.replace(/\r?\n/g, '\r\n');
+}
+
 function isPtyEio(error) {
   return error?.code === 'EIO' || /\bEIO\b|read EIO|write EIO/i.test(error?.message || '');
 }
@@ -743,7 +752,7 @@ class ClaudeBridge {
             session.onOutput('\r\x1b[K'); // clear the "…" placeholder once real text starts
             sawText = true;
           }
-          session.onOutput(text);
+          session.onOutput(toTerminalText(text));
         }
       } else if (event.type === 'error') {
         sawError = true;
@@ -776,10 +785,10 @@ class ClaudeBridge {
       if (!sawText) session.onOutput('\r\x1b[K'); // clear the "…" if nothing textual ever came
 
       if (sawError) {
-        session.onOutput(`\r\n\x1b[31m[opencode] ${errorMessage}\x1b[0m\r\n`);
+        session.onOutput(`\r\n\x1b[31m[opencode] ${toTerminalText(errorMessage)}\x1b[0m\r\n`);
       } else if (code !== 0) {
         const stderrTail = stderrBuffer.trim().slice(0, 300);
-        session.onOutput(`\r\n\x1b[31m[opencode] processo saiu com código ${code}${stderrTail ? ': ' + stderrTail : ''}\x1b[0m\r\n`);
+        session.onOutput(`\r\n\x1b[31m[opencode] processo saiu com código ${code}${stderrTail ? ': ' + toTerminalText(stderrTail) : ''}\x1b[0m\r\n`);
       } else if (!sawText) {
         session.onOutput('\r\n\x1b[33m[opencode] sem resposta de texto nesse turno.\x1b[0m\r\n');
       }
