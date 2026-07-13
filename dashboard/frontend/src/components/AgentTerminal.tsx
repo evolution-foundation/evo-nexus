@@ -73,6 +73,21 @@ const CC_WEB_WS = override
 
 type Status = 'connecting' | 'ready' | 'starting' | 'running' | 'error' | 'exited'
 
+// Terminal HUD (see workspace/development/features/terminal-hud) — only
+// populated for opencode REPL sessions; claude/openclaude (pty-interactive)
+// sessions never send 'hud_update', so this stays null for them and the
+// semaphore/gear panel just doesn't render.
+interface HudState {
+  busy: boolean
+  heavy: boolean
+  providerId: string
+  providerModel: string
+  tokensPerSec: number
+  totalTokens: number | null
+  bestTokensPerSec: number
+  shift: boolean
+}
+
 function isEioMessage(message: unknown) {
   return /\bEIO\b|read EIO|write EIO/i.test(String(message || ''))
 }
@@ -86,6 +101,7 @@ export default function AgentTerminal({ agent, sessionId: externalSessionId, wor
   const pingRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const [status, setStatus] = useState<Status>('connecting')
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
+  const [hud, setHud] = useState<HudState | null>(null)
   // Mirrors `status` for the onData closure below, which is registered once
   // on mount and would otherwise only ever see the 'connecting' status from
   // that first render (React state, not a ref, doesn't update in a stale
@@ -386,6 +402,18 @@ export default function AgentTerminal({ agent, sessionId: externalSessionId, wor
             break
           case 'pong':
             break
+          case 'hud_update':
+            setHud({
+              busy: !!msg.busy,
+              heavy: !!msg.heavy,
+              providerId: msg.providerId || '',
+              providerModel: msg.providerModel || '',
+              tokensPerSec: typeof msg.tokensPerSec === 'number' ? msg.tokensPerSec : 0,
+              totalTokens: typeof msg.totalTokens === 'number' ? msg.totalTokens : null,
+              bestTokensPerSec: typeof msg.bestTokensPerSec === 'number' ? msg.bestTokensPerSec : 0,
+              shift: !!msg.shift,
+            })
+            break
         }
       }
 
@@ -482,6 +510,34 @@ export default function AgentTerminal({ agent, sessionId: externalSessionId, wor
         <span className="text-[10px] uppercase tracking-[0.12em] text-[#667085]">
           {statusLabel}
         </span>
+        {hud && (
+          // Semaphore (terminal-hud Sprint 2): 3 fixed lights, only the
+          // active one lit — green=waiting for a prompt, yellow=working,
+          // red=last completed turn was heavy (>20k tokens). Priority
+          // red > yellow > green when both could apply (a heavy turn just
+          // finished right as a new one starts).
+          <div className="ml-auto flex items-center gap-1" title={
+            hud.heavy ? 'contexto/tokens grande no último turno'
+              : hud.busy ? 'trabalhando…'
+              : 'esperando prompt'
+          }>
+            {(['#22c55e', '#eab308', '#ef4444'] as const).map((color, i) => {
+              const activeIdx = hud.heavy ? 2 : hud.busy ? 1 : 0
+              const isActive = i === activeIdx
+              return (
+                <span
+                  key={color}
+                  className="inline-block h-1.5 w-1.5 rounded-full transition-opacity duration-200"
+                  style={{
+                    backgroundColor: color,
+                    opacity: isActive ? 1 : 0.18,
+                    boxShadow: isActive ? `0 0 5px ${color}aa` : 'none',
+                  }}
+                />
+              )
+            })}
+          </div>
+        )}
         {errorMsg && (
           <span
             className="ml-auto text-[10px] text-[#ef4444] truncate max-w-[50%]"
