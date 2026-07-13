@@ -3,6 +3,7 @@ import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import '@xterm/xterm/css/xterm.css'
+import TerminalHudPanel from './TerminalHudPanel'
 
 interface AgentTerminalProps {
   agent: string
@@ -511,31 +512,38 @@ export default function AgentTerminal({ agent, sessionId: externalSessionId, wor
           {statusLabel}
         </span>
         {hud && (
-          // Semaphore (terminal-hud Sprint 2): 3 fixed lights, only the
-          // active one lit — green=waiting for a prompt, yellow=working,
-          // red=last completed turn was heavy (>20k tokens). Priority
-          // red > yellow > green when both could apply (a heavy turn just
-          // finished right as a new one starts).
-          <div className="ml-auto flex items-center gap-1" title={
-            hud.heavy ? 'contexto/tokens grande no último turno'
-              : hud.busy ? 'trabalhando…'
-              : 'esperando prompt'
-          }>
-            {(['#22c55e', '#eab308', '#ef4444'] as const).map((color, i) => {
-              const activeIdx = hud.heavy ? 2 : hud.busy ? 1 : 0
-              const isActive = i === activeIdx
-              return (
-                <span
-                  key={color}
-                  className="inline-block h-1.5 w-1.5 rounded-full transition-opacity duration-200"
-                  style={{
-                    backgroundColor: color,
-                    opacity: isActive ? 1 : 0.18,
-                    boxShadow: isActive ? `0 0 5px ${color}aa` : 'none',
-                  }}
-                />
-              )
-            })}
+          <div className="ml-auto flex items-center gap-2">
+            {/* Gear/LCD panel (Sprint 3) — hidden below `sm`, mobile-first:
+                the semaphore alone is enough on a narrow phone screen. */}
+            <TerminalHudPanel hud={hud} accentColor={accentColor} />
+
+            {/* Semaphore (Sprint 2): 3 fixed lights, only the active one
+                lit — green=waiting for a prompt, yellow=working,
+                red=last completed turn was heavy (>20k tokens). Priority
+                red > yellow > green when both could apply (a heavy turn
+                just finished right as a new one starts). Always visible,
+                including on mobile. */}
+            <div className="flex items-center gap-1" title={
+              hud.heavy ? 'contexto/tokens grande no último turno'
+                : hud.busy ? 'trabalhando…'
+                : 'esperando prompt'
+            }>
+              {(['#22c55e', '#eab308', '#ef4444'] as const).map((color, i) => {
+                const activeIdx = hud.heavy ? 2 : hud.busy ? 1 : 0
+                const isActive = i === activeIdx
+                return (
+                  <span
+                    key={color}
+                    className="inline-block h-1.5 w-1.5 rounded-full transition-opacity duration-200"
+                    style={{
+                      backgroundColor: color,
+                      opacity: isActive ? 1 : 0.18,
+                      boxShadow: isActive ? `0 0 5px ${color}aa` : 'none',
+                    }}
+                  />
+                )
+              })}
+            </div>
           </div>
         )}
         {errorMsg && (
