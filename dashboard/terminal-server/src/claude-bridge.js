@@ -1,4 +1,5 @@
 const { spawn } = require('node-pty');
+const cp = require('child_process');
 const path = require('path');
 const fs = require('fs');
 
@@ -41,17 +42,11 @@ function isPtyEio(error) {
   return error?.code === 'EIO' || /\bEIO\b|read EIO|write EIO/i.test(error?.message || '');
 }
 
-// How long an opencode session may go without producing any new output after
-// the user submits something before we treat it as hung and kill it. Claude
-// Code/openclaude aren't watched by this — their protocol is well-understood
-// and this bridge already trusted their own internal timeouts/retries; the
-// bug this guards against (2026-07-13: user sends a prompt, opencode "thinks"
-// then never responds — no exit, no error, nothing) is opencode-specific and
-// still under investigation (see runtime-harness-agnostic-eval feature
-// folder). Provisional value — Fase 3 burn-in in that plan should replace it
-// with an evidence-based number instead of a guess if real latencies turn
-// out to run close to it.
-const OPENCODE_HANG_TIMEOUT_MS = 120_000;
+// Max time a single `opencode run` turn may take before we kill it and
+// report a timeout instead of leaving the user waiting forever. Provisional
+// — Fase 3 burn-in (runtime-harness-agnostic-eval feature folder) should
+// replace it with an evidence-based number once real latencies are observed.
+const OPENCODE_TURN_TIMEOUT_MS = 120_000;
 
 /**
  * Read an agent's persistent memory (.claude/agent-memory/{agent}/), if any.
@@ -83,6 +78,49 @@ function loadAgentMemory(agent) {
   let combined = parts.join('\n\n');
   if (combined.length > MAX_CHARS) combined = combined.slice(-MAX_CHARS);
   return combined;
+}
+
+/**
+ * Build the agent persona block (persona .md + enforce-character text +
+ * prior-session memory) shared by the openclaude --system-prompt path and
+ * the opencode REPL path below.
+ */
+function buildAgentPersona(agent, workingDir) {
+  const rootAgentFile = path.join(WORKSPACE_ROOT, '.claude', 'agents', `${agent}.md`);
+  const cwdAgentFile = path.join(workingDir, '.claude', 'agents', `${agent}.md`);
+  const agentFile = fs.existsSync(rootAgentFile) ? rootAgentFile : cwdAgentFile;
+  let agentPrompt = '';
+  let agentTier = null;
+  try {
+    const content = fs.readFileSync(agentFile, 'utf8');
+    const match = content.match(/^---\n[\s\S]*?\n---\n([\s\S]*)$/);
+    agentPrompt = match ? match[1].trim() : content;
+    for (const marker of ['\n# Persistent Agent Memory', '\n## MEMORY.md']) {
+      if (agentPrompt.includes(marker)) {
+        agentPrompt = agentPrompt.split(marker, 1)[0].trim();
+      }
+    }
+    const fmMatch = content.match(/^---\n([\s\S]*?)\n---\n/);
+    if (fmMatch) {
+      const tierMatch = fmMatch[1].match(/^model:\s*["']?([a-z0-9.-]+)["']?\s*$/mi);
+      if (tierMatch) agentTier = tierMatch[1].toLowerCase();
+    }
+  } catch {
+    agentPrompt = `You are the ${agent} agent.`;
+  }
+
+  const priorMemory = loadAgentMemory(agent);
+  if (priorMemory) {
+    agentPrompt += '\n\n## Previous Session Memory (yours — resume/summarize before acting)\n' + priorMemory;
+  }
+
+  const enforcePrompt = agentPrompt + '\n\n' +
+    'CRITICAL: You MUST fully embody this agent persona. ' +
+    'You are NOT Claude, OpenClaude, or a generic assistant — you ARE ' + agent + '. ' +
+    'When asked who you are, ALWAYS respond as ' + agent + '. ' +
+    'Never break character. Follow ALL instructions above.';
+
+  return { prompt: enforcePrompt, agentTier };
 }
 
 class ClaudeBridge {
@@ -201,6 +239,9 @@ class ClaudeBridge {
       if (existing.process) {
         try { existing.process.kill('SIGKILL'); } catch (_) {}
       }
+      if (existing.currentChild) {
+        try { existing.currentChild.kill('SIGKILL'); } catch (_) {}
+      }
       this.sessions.delete(sessionId);
     }
 
@@ -235,6 +276,20 @@ class ClaudeBridge {
         );
       }
 
+      // opencode's own interactive TUI (default full-screen and --mini) don't
+      // render reliably inside this embedded pty — confirmed live on the VPS
+      // (2026-07-13, see runtime-harness-agnostic-eval feature folder):
+      // default mode overlaps frames from resize/redraw, --mini hides
+      // response text in a self-overwriting status area. Drive it headlessly
+      // instead — `opencode run --format json` + NDJSON parsing, the same
+      // approach already proven in provider_fallback.py for every heartbeat
+      // — and render the text ourselves.
+      if (providerConfig.cli_command === 'opencode') {
+        return this._startOpencodeReplSession(sessionId, {
+          workingDir, agent, onOutput, onExit, onError,
+        }, providerConfig.active || 'anthropic', providerModel);
+      }
+
       const cliCommand = this.findClaudeCommand(providerConfig.cli_command);
 
       console.log(`Starting session ${sessionId} with ${providerConfig.cli_command}`);
@@ -255,143 +310,40 @@ class ClaudeBridge {
       // running as root (the clean-env whitelist below would otherwise drop it).
       const isRoot = process.getuid && process.getuid() === 0;
       const active = providerConfig.active || 'anthropic';
-      const isOpencode = providerConfig.cli_command === 'opencode';
       const args = [];
       let agentTier = null;
 
-      if (isOpencode) {
-        // Sessão interativa via opencode — protocolo de CLI totalmente
-        // diferente do Claude Code, sem --agent/--system-prompt/
-        // --session-id/--resume/--fallback-model. Primeira versão desta
-        // integração (2026-07-12): sem verificação visual própria daqui
-        // (sem acesso a browser) — testar na UI real e ajustar com base
-        // em feedback, não assumir que está 100% certo de primeira.
-        //
-        // --mini testado e REVERTIDO (2026-07-13): a TUI default
-        // (`opencode [project]`) renderizou sobreposto/quebrado ao vivo na
-        // VPS (texto do campo `name` do opencode.json aparecendo por cima
-        // de outro frame não limpo). --mini evita esse overlap (testado
-        // localmente com pty real), mas ao vivo mostrou um problema pior:
-        // as respostas nunca aparecem no transcript — --mini usa uma área
-        // de status "viva" que se sobrescreve a cada atualização, então o
-        // texto da resposta é substituído pela linha de conclusão antes de
-        // virar histórico permanente. Nenhum dos dois modos de TUI do
-        // opencode é confiável dentro deste pty embutido — ver
-        // workspace/development/features/runtime-harness-agnostic-eval/
-        // pra o próximo passo (provavelmente: parar de usar a TUI
-        // interativa do opencode aqui e dirigir via `opencode run` headless
-        // + parser NDJSON já provado em provider_fallback.py, renderizando
-        // o texto nós mesmos).
-        if (terminalTrustMode) {
-          args.push('--auto');
+      if (terminalTrustMode) {
+        args.push('--dangerously-skip-permissions');
+        if (isRoot) {
+          console.log('[permissions] Running as root in trust mode — injecting IS_SANDBOX=1 for the CLI root check');
         }
-        const modelRef = providerModel ? `${active}/${providerModel}` : `${active}/auto`;
-        args.push('-m', modelRef);
-        if (agent) {
-          // opencode não tem --system-prompt; reaproveita o mesmo truque de
-          // persona embutida já validado no caminho headless
-          // (provider_fallback.py::_embed_agent_for_openclaude), mandado
-          // como prompt inicial via --prompt em vez de system-prompt puro.
-          const rootAgentFile = path.join(WORKSPACE_ROOT, '.claude', 'agents', `${agent}.md`);
-          const cwdAgentFile = path.join(workingDir, '.claude', 'agents', `${agent}.md`);
-          const agentFile = fs.existsSync(rootAgentFile) ? rootAgentFile : cwdAgentFile;
-          let agentPrompt = '';
-          try {
-            const content = fs.readFileSync(agentFile, 'utf8');
-            const match = content.match(/^---\n[\s\S]*?\n---\n([\s\S]*)$/);
-            agentPrompt = match ? match[1].trim() : content;
-            for (const marker of ['\n# Persistent Agent Memory', '\n## MEMORY.md']) {
-              if (agentPrompt.includes(marker)) {
-                agentPrompt = agentPrompt.split(marker, 1)[0].trim();
-              }
-            }
-          } catch {
-            agentPrompt = `You are the ${agent} agent.`;
-          }
-          const priorMemory = loadAgentMemory(agent);
-          if (priorMemory) {
-            agentPrompt += '\n\n## Previous Session Memory (yours — resume/summarize before acting)\n' + priorMemory;
-          }
-          const enforcePrompt = agentPrompt + '\n\n' +
-            'CRITICAL: You MUST fully embody this agent persona. ' +
-            'You are NOT Claude, OpenClaude, or a generic assistant — you ARE ' + agent + '. ' +
-            'Never break character. Follow ALL instructions above.';
-          args.push('--prompt', enforcePrompt);
-        }
-        // Sem equivalente confirmado de --session-id (registrar um id novo
-        // pra resume futuro) — -s do opencode só continua sessão que já
-        // existe. Cada start do terminal-server vira sessão opencode nova
-        // por enquanto; resume entre restarts fica pra uma iteração futura.
-      } else {
-        if (terminalTrustMode) {
-          args.push('--dangerously-skip-permissions');
-          if (isRoot) {
-            console.log('[permissions] Running as root in trust mode — injecting IS_SANDBOX=1 for the CLI root check');
-          }
-        }
-        if (agent && active === 'anthropic') {
-          args.push('--agent', agent);
-        }
+      }
+      if (agent && active === 'anthropic') {
+        args.push('--agent', agent);
+      }
 
-        // For non-Anthropic providers, use --system-prompt to force agent persona.
-        // --append-system-prompt is too weak — GPT models ignore appended instructions.
-        // --system-prompt REPLACES the default system prompt, ensuring the agent persona
-        // takes priority over CLAUDE.md and other context that mentions "Claude".
-        if (active !== 'anthropic' && agent) {
-          // Read the agent definition file to build a strong system prompt.
-          // Agent definitions live at the workspace root — workingDir varies per
-          // session (tickets, project folders), so prefer the root path.
-          const rootAgentFile = path.join(WORKSPACE_ROOT, '.claude', 'agents', `${agent}.md`);
-          const cwdAgentFile = path.join(workingDir, '.claude', 'agents', `${agent}.md`);
-          const agentFile = fs.existsSync(rootAgentFile) ? rootAgentFile : cwdAgentFile;
-          let agentPrompt = '';
-          try {
-            const content = fs.readFileSync(agentFile, 'utf8');
-            // Extract body (after YAML frontmatter ---)
-            const match = content.match(/^---\n[\s\S]*?\n---\n([\s\S]*)$/);
-            agentPrompt = match ? match[1].trim() : content;
-            for (const marker of ['\n# Persistent Agent Memory', '\n## MEMORY.md']) {
-              if (agentPrompt.includes(marker)) {
-                agentPrompt = agentPrompt.split(marker, 1)[0].trim();
-              }
-            }
-            // Extract the agent's model tier (opus|sonnet|haiku) from the
-            // frontmatter — used to pick a per-tier provider model below.
-            const fmMatch = content.match(/^---\n([\s\S]*?)\n---\n/);
-            if (fmMatch) {
-              const tierMatch = fmMatch[1].match(/^model:\s*["']?([a-z0-9.-]+)["']?\s*$/mi);
-              if (tierMatch) agentTier = tierMatch[1].toLowerCase();
-            }
-          } catch {
-            agentPrompt = `You are the ${agent} agent.`;
-          }
+      // For non-Anthropic providers, use --system-prompt to force agent persona.
+      // --append-system-prompt is too weak — GPT models ignore appended instructions.
+      // --system-prompt REPLACES the default system prompt, ensuring the agent persona
+      // takes priority over CLAUDE.md and other context that mentions "Claude".
+      if (active !== 'anthropic' && agent) {
+        const persona = buildAgentPersona(agent, workingDir);
+        agentTier = persona.agentTier;
+        args.push('--system-prompt', persona.prompt);
+      }
 
-          const priorMemory = loadAgentMemory(agent);
-          if (priorMemory) {
-            agentPrompt += '\n\n## Previous Session Memory (yours — resume/summarize before acting)\n' + priorMemory;
-          }
-
-          const enforcePrompt = agentPrompt + '\n\n' +
-            'CRITICAL: You MUST fully embody this agent persona. ' +
-            'You are NOT Claude, OpenClaude, or a generic assistant — you ARE ' + agent + '. ' +
-            'When asked who you are, ALWAYS respond as ' + agent + '. ' +
-            'Never break character. Follow ALL instructions above.';
-
-          args.push('--system-prompt', enforcePrompt);
-        }
-
-        // Pin the CLI conversation to the terminal-server session UUID so a
-        // crash, provider error, or terminal-server restart doesn't lose the
-        // conversation: the first start registers the id with --session-id,
-        // and any later start of the same session resumes it with --resume.
-        const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-        if (UUID_RE.test(sessionId)) {
-          if (this._hasPersistedConversation(sessionId, workingDir)) {
-            console.log(`[bridge] Resuming persisted conversation for session ${sessionId}`);
-            args.push('--resume', sessionId);
-          } else {
-            args.push('--session-id', sessionId);
-          }
+      // Pin the CLI conversation to the terminal-server session UUID so a
+      // crash, provider error, or terminal-server restart doesn't lose the
+      // conversation: the first start registers the id with --session-id,
+      // and any later start of the same session resumes it with --resume.
+      const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      if (UUID_RE.test(sessionId)) {
+        if (this._hasPersistedConversation(sessionId, workingDir)) {
+          console.log(`[bridge] Resuming persisted conversation for session ${sessionId}`);
+          args.push('--resume', sessionId);
+        } else {
+          args.push('--session-id', sessionId);
         }
       }
 
@@ -411,14 +363,11 @@ class ClaudeBridge {
 
       // Automatic model fallback when the primary is overloaded. The CLI
       // accepts a single fallback — pass the first configured entry that
-      // differs from the primary model. --fallback-model não existe no
-      // opencode (quebraria o parsing de args dele), então pula pra esse
-      // provider — fallback fica só na cadeia do provider_fallback.py
-      // (heartbeats/ADW), não na sessão interativa.
+      // differs from the primary model.
       const fallbackModels = Array.isArray(providerConfig.fallback_models)
         ? providerConfig.fallback_models
         : [];
-      if (active !== 'anthropic' && !isOpencode) {
+      if (active !== 'anthropic') {
         const primary = providerEnv['OPENAI_MODEL'] || '';
         const fallback = fallbackModels.find((m) => m && m !== primary);
         if (fallback) {
@@ -440,12 +389,6 @@ class ClaudeBridge {
         // Container marker exported by entrypoint.sh — required for
         // --dangerously-skip-permissions to work as root.
         'IS_SANDBOX',
-        // opencode.json referencia {env:OMNIROUTE_SPIKE_API_KEY} pra resolver
-        // a apiKey do provider "opencode_omnirouter" — sem isso na whitelist,
-        // o processo filho não recebe a var mesmo com ela setada no .env da
-        // VPS, e o opencode cai em "authentication required" (achado testando
-        // ao vivo, 2026-07-12).
-        'OMNIROUTE_SPIKE_API_KEY',
       ];
       const cleanEnv = {};
       for (const key of SYSTEM_VARS) {
@@ -503,10 +446,6 @@ class ClaudeBridge {
         // 'error' (EIO) event from node-pty doesn't double-fire onExit
         // or surface a misleading "read EIO" toast to the user.
         exited: false,
-        // Hang watchdog (opencode only — see OPENCODE_HANG_TIMEOUT_MS).
-        isOpencode,
-        lastOutputAt: Date.now(),
-        hangTimer: null,
       };
 
       this.sessions.set(sessionId, session);
@@ -517,14 +456,6 @@ class ClaudeBridge {
       claudeProcess.onData((data) => {
         if (process.env.DEBUG) {
           console.log(`Session ${sessionId} output:`, data);
-        }
-
-        // Any output means the process is alive and producing — clears the
-        // hang watchdog armed on the last submitted input (see sendInput).
-        session.lastOutputAt = Date.now();
-        if (session.hangTimer) {
-          clearTimeout(session.hangTimer);
-          session.hangTimer = null;
         }
 
         // Buffer data to check for interactive trust / permission prompts.
@@ -547,7 +478,7 @@ class ClaudeBridge {
         if (dataBuffer.length > 10000) {
           dataBuffer = dataBuffer.slice(-5000);
         }
-        
+
         onOutput(data);
       });
 
@@ -567,10 +498,6 @@ class ClaudeBridge {
         if (session.killTimeout) {
           clearTimeout(session.killTimeout);
           session.killTimeout = null;
-        }
-        if (session.hangTimer) {
-          clearTimeout(session.hangTimer);
-          session.hangTimer = null;
         }
         session.active = false;
         this.sessions.delete(sessionId);
@@ -599,10 +526,6 @@ class ClaudeBridge {
           clearTimeout(session.killTimeout);
           session.killTimeout = null;
         }
-        if (session.hangTimer) {
-          clearTimeout(session.hangTimer);
-          session.hangTimer = null;
-        }
         session.exited = true;
         session.active = false;
         this.sessions.delete(sessionId);
@@ -614,14 +537,6 @@ class ClaudeBridge {
         }
       });
 
-      // opencode sessions with an agent get an initial task via --prompt
-      // (see the isOpencode branch above) — that's a submission just like an
-      // Enter keypress, so arm the watchdog for it too instead of only
-      // covering prompts typed after startup.
-      if (isOpencode && agent) {
-        this._armOpencodeHangWatchdog(sessionId, session);
-      }
-
       console.log(`Claude session ${sessionId} started successfully`);
       return session;
 
@@ -632,27 +547,243 @@ class ClaudeBridge {
   }
 
   /**
-   * Kill an opencode session if it produces no new output within
-   * OPENCODE_HANG_TIMEOUT_MS of the last submitted input. Re-arms itself if
-   * output arrived more recently than the deadline instead of firing
-   * immediately, so a slow-but-alive response isn't mistaken for a hang.
-   * onData() clears the timer outright on any output — this timeout is the
-   * backstop for when no output arrives at all.
+   * Start an opencode session as a headless REPL instead of an interactive
+   * pty process. No long-lived child process — each submitted line spawns
+   * its own `opencode run` call (see _runOpencodeTurn), so there's no CLI
+   * "process" for this session to crash or hang mid-conversation; a turn
+   * that fails or times out just reports an error and leaves the session
+   * ready for the next message.
    */
-  _armOpencodeHangWatchdog(sessionId, session) {
-    if (session.hangTimer) clearTimeout(session.hangTimer);
-    session.hangTimer = setTimeout(() => {
-      const idleMs = Date.now() - session.lastOutputAt;
-      if (idleMs < OPENCODE_HANG_TIMEOUT_MS) {
-        this._armOpencodeHangWatchdog(sessionId, session);
+  async _startOpencodeReplSession(sessionId, options, providerId, providerModel) {
+    const { workingDir, agent, onOutput, onExit, onError } = options;
+    const cliBin = this.findClaudeCommand('opencode');
+
+    let personaPrefix = null;
+    if (agent) {
+      const persona = buildAgentPersona(agent, workingDir);
+      personaPrefix = persona.prompt;
+    }
+
+    const session = {
+      workingDir,
+      created: new Date(),
+      active: true,
+      exited: false,
+      isOpencode: true,
+      process: null,
+      currentChild: null,
+      busy: false,
+      lineBuffer: '',
+      opencodeSessionId: null,
+      personaPrefix,
+      providerId,
+      providerModel: providerModel || 'auto',
+      cliBin,
+      onOutput,
+      onExit,
+      onError,
+    };
+    this.sessions.set(sessionId, session);
+
+    onOutput(
+      `\x1b[36mopencode (${providerId}/${session.providerModel}) — modo REPL headless.\x1b[0m\r\n` +
+      `Digite sua mensagem e pressione Enter.\r\n\r\n`
+    );
+
+    console.log(`[bridge] opencode REPL session ${sessionId} ready (agent: ${agent || 'none'})`);
+    return session;
+  }
+
+  /**
+   * Build the environment for an `opencode run` child process. Mirrors the
+   * SYSTEM_VARS whitelist used for the pty-spawned CLIs above — no full
+   * process.env spread, so a stale OPENAI_API_KEY etc. can't hijack the
+   * call — plus OMNIROUTE_SPIKE_API_KEY, which opencode.json resolves via
+   * {env:OMNIROUTE_SPIKE_API_KEY} for the opencode_omnirouter provider.
+   */
+  _buildOpencodeEnv() {
+    const SYSTEM_VARS = [
+      'HOME', 'USER', 'SHELL', 'PATH', 'LANG', 'LC_ALL', 'LC_CTYPE',
+      'LOGNAME', 'HOSTNAME', 'XDG_RUNTIME_DIR', 'XDG_DATA_HOME',
+      'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'TMPDIR',
+      'SSH_AUTH_SOCK', 'SSH_AGENT_PID',
+      'NVM_DIR', 'NVM_BIN', 'NVM_INC',
+      'CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'IS_SANDBOX',
+      'OMNIROUTE_SPIKE_API_KEY',
+    ];
+    const env = {};
+    for (const key of SYSTEM_VARS) {
+      if (process.env[key]) env[key] = process.env[key];
+    }
+    env.DISABLE_AUTOUPDATER = '1';
+    return env;
+  }
+
+  /**
+   * Handle raw keystrokes for an opencode REPL session: echo printable
+   * characters, support backspace and Ctrl+C (clears the pending line —
+   * can't interrupt an in-flight turn without killing it), and submit the
+   * buffered line on Enter. No cursor movement / history — MVP REPL, not a
+   * full line editor.
+   */
+  _handleOpencodeKeystrokes(sessionId, session, data) {
+    // xterm sends escape sequences (arrows, function keys, etc.) as a
+    // single multi-byte chunk starting with ESC. Swallow the whole thing
+    // instead of leaking its raw bytes into the message buffer.
+    if (data.length > 1 && data.charCodeAt(0) === 0x1b) return;
+
+    for (const ch of data) {
+      if (ch === '\r' || ch === '\n') {
+        session.onOutput('\r\n');
+        const line = session.lineBuffer;
+        session.lineBuffer = '';
+        if (!line.trim()) continue;
+        if (session.busy) {
+          session.onOutput('\x1b[33m(ainda processando a mensagem anterior — aguarde)\x1b[0m\r\n');
+          continue;
+        }
+        this._runOpencodeTurn(sessionId, session, line);
+      } else if (ch === '\x7f' || ch === '\b') {
+        if (session.lineBuffer.length > 0) {
+          session.lineBuffer = session.lineBuffer.slice(0, -1);
+          session.onOutput('\b \b');
+        }
+      } else if (ch === '\x03') {
+        session.lineBuffer = '';
+        session.onOutput('^C\r\n');
+      } else if (ch >= ' ') {
+        session.lineBuffer += ch;
+        session.onOutput(ch);
+      }
+    }
+  }
+
+  /**
+   * Run one `opencode run` turn headlessly and stream its NDJSON `text`
+   * events into session.onOutput as they arrive. Same event shape already
+   * parsed in provider_fallback.py::_parse_opencode_ndjson — kept as a
+   * separate JS implementation since these two bridges don't share a util
+   * module today.
+   */
+  _runOpencodeTurn(sessionId, session, message) {
+    session.busy = true;
+
+    let fullMessage = message;
+    if (session.personaPrefix) {
+      fullMessage = `${session.personaPrefix}\n\n---\n\nTask:\n${message}`;
+      session.personaPrefix = null; // embed only once — -s keeps the rest of the context
+    }
+
+    const modelRef = `${session.providerId}/${session.providerModel}`;
+    const args = ['run', fullMessage, '-m', modelRef, '--format', 'json', '--auto'];
+    if (session.opencodeSessionId) {
+      args.push('-s', session.opencodeSessionId);
+    }
+
+    session.onOutput('\x1b[90m…\x1b[0m');
+
+    let child;
+    try {
+      child = cp.spawn(session.cliBin, args, {
+        cwd: session.workingDir,
+        env: this._buildOpencodeEnv(),
+        // Node leaves a child's stdin as an open, never-EOF'd pipe by
+        // default — opencode blocks reading it before ever calling the
+        // model, so the call just hangs forever with no output, no exit,
+        // no error (confirmed locally, 2026-07-13: identical spawn args
+        // via bash with stdin inherited from a real TTY complete in
+        // under a second; the same spawn() call in Node without this
+        // hangs indefinitely). `run` never reads stdin for anything we
+        // use here, so closing it costs nothing.
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+    } catch (error) {
+      session.busy = false;
+      session.onOutput(`\r\x1b[K\r\n\x1b[31m[opencode] falha ao executar: ${error.message}\x1b[0m\r\n\r\n`);
+      return;
+    }
+    session.currentChild = child;
+
+    let stdoutBuffer = '';
+    let stderrBuffer = '';
+    let sawText = false;
+    let sawError = false;
+    let errorMessage = '';
+
+    const killTimer = setTimeout(() => {
+      console.warn(`[bridge] opencode turn for session ${sessionId} exceeded ${OPENCODE_TURN_TIMEOUT_MS}ms — killing`);
+      try { child.kill('SIGKILL'); } catch (_) {}
+    }, OPENCODE_TURN_TIMEOUT_MS);
+
+    const processLine = (rawLine) => {
+      const line = rawLine.trim();
+      if (!line) return;
+      let event;
+      try {
+        event = JSON.parse(line);
+      } catch {
         return;
       }
-      console.warn(
-        `[bridge] opencode session ${sessionId} produced no output for ` +
-        `${Math.round(idleMs / 1000)}s after input — treating as hung, killing`
-      );
-      try { session.process.kill('SIGKILL'); } catch (_) {}
-    }, OPENCODE_HANG_TIMEOUT_MS);
+      const sid = event.sessionID || event.session_id;
+      if (sid && !session.opencodeSessionId) {
+        session.opencodeSessionId = sid;
+      }
+      if (event.type === 'text') {
+        const text = event.part && event.part.text;
+        if (text) {
+          if (!sawText) {
+            session.onOutput('\r\x1b[K'); // clear the "…" placeholder once real text starts
+            sawText = true;
+          }
+          session.onOutput(text);
+        }
+      } else if (event.type === 'error') {
+        sawError = true;
+        const err = event.error || {};
+        errorMessage = (err.data && err.data.message) || err.name || 'erro desconhecido';
+      }
+    };
+
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', (chunk) => {
+      stdoutBuffer += chunk;
+      let idx;
+      while ((idx = stdoutBuffer.indexOf('\n')) !== -1) {
+        processLine(stdoutBuffer.slice(0, idx));
+        stdoutBuffer = stdoutBuffer.slice(idx + 1);
+      }
+    });
+
+    child.stderr.setEncoding('utf8');
+    child.stderr.on('data', (chunk) => {
+      stderrBuffer += chunk;
+    });
+
+    child.on('close', (code) => {
+      clearTimeout(killTimer);
+      if (stdoutBuffer.trim()) processLine(stdoutBuffer);
+      session.currentChild = null;
+      session.busy = false;
+
+      if (!sawText) session.onOutput('\r\x1b[K'); // clear the "…" if nothing textual ever came
+
+      if (sawError) {
+        session.onOutput(`\r\n\x1b[31m[opencode] ${errorMessage}\x1b[0m\r\n`);
+      } else if (code !== 0) {
+        const stderrTail = stderrBuffer.trim().slice(0, 300);
+        session.onOutput(`\r\n\x1b[31m[opencode] processo saiu com código ${code}${stderrTail ? ': ' + stderrTail : ''}\x1b[0m\r\n`);
+      } else if (!sawText) {
+        session.onOutput('\r\n\x1b[33m[opencode] sem resposta de texto nesse turno.\x1b[0m\r\n');
+      }
+      session.onOutput('\r\n');
+    });
+
+    child.on('error', (error) => {
+      clearTimeout(killTimer);
+      session.currentChild = null;
+      session.busy = false;
+      session.onOutput(`\r\x1b[K\r\n\x1b[31m[opencode] falha ao executar: ${error.message}\x1b[0m\r\n\r\n`);
+    });
   }
 
   async sendInput(sessionId, data) {
@@ -661,16 +792,13 @@ class ClaudeBridge {
       throw new Error(`Session ${sessionId} not found or not active`);
     }
 
+    if (session.isOpencode) {
+      this._handleOpencodeKeystrokes(sessionId, session, data);
+      return true;
+    }
+
     try {
       session.process.write(data);
-      // Raw keystrokes come through here one at a time (xterm's onData), so
-      // this only arms on an actual submit (Enter/Return), not every
-      // character — arming on every keystroke would restart the countdown
-      // mid-typing and never let it fire, and typing itself isn't "waiting
-      // for a response".
-      if (session.isOpencode && /[\r\n]/.test(data)) {
-        this._armOpencodeHangWatchdog(sessionId, session);
-      }
       return true;
     } catch (error) {
       if (isPtyEio(error)) {
@@ -692,6 +820,8 @@ class ClaudeBridge {
       throw new Error(`Session ${sessionId} not found or not active`);
     }
 
+    if (session.isOpencode) return; // no real pty to resize in REPL mode
+
     try {
       session.process.resize(cols, rows);
     } catch (error) {
@@ -710,20 +840,25 @@ class ClaudeBridge {
       return;
     }
 
+    if (session.isOpencode) {
+      if (session.currentChild) {
+        try { session.currentChild.kill('SIGKILL'); } catch (_) {}
+      }
+      session.active = false;
+      this.sessions.delete(sessionId);
+      return;
+    }
+
     try {
       // Clear any existing kill timeout
       if (session.killTimeout) {
         clearTimeout(session.killTimeout);
         session.killTimeout = null;
       }
-      if (session.hangTimer) {
-        clearTimeout(session.hangTimer);
-        session.hangTimer = null;
-      }
 
       if (session.active && session.process) {
         session.process.kill('SIGTERM');
-        
+
         session.killTimeout = setTimeout(() => {
           if (session.active && session.process) {
             session.process.kill('SIGKILL');
