@@ -41,6 +41,18 @@ function isPtyEio(error) {
   return error?.code === 'EIO' || /\bEIO\b|read EIO|write EIO/i.test(error?.message || '');
 }
 
+// How long an opencode session may go without producing any new output after
+// the user submits something before we treat it as hung and kill it. Claude
+// Code/openclaude aren't watched by this — their protocol is well-understood
+// and this bridge already trusted their own internal timeouts/retries; the
+// bug this guards against (2026-07-13: user sends a prompt, opencode "thinks"
+// then never responds — no exit, no error, nothing) is opencode-specific and
+// still under investigation (see runtime-harness-agnostic-eval feature
+// folder). Provisional value — Fase 3 burn-in in that plan should replace it
+// with an evidence-based number instead of a guess if real latencies turn
+// out to run close to it.
+const OPENCODE_HANG_TIMEOUT_MS = 120_000;
+
 /**
  * Read an agent's persistent memory (.claude/agent-memory/{agent}/), if any.
  *
@@ -475,6 +487,10 @@ class ClaudeBridge {
         // 'error' (EIO) event from node-pty doesn't double-fire onExit
         // or surface a misleading "read EIO" toast to the user.
         exited: false,
+        // Hang watchdog (opencode only — see OPENCODE_HANG_TIMEOUT_MS).
+        isOpencode,
+        lastOutputAt: Date.now(),
+        hangTimer: null,
       };
 
       this.sessions.set(sessionId, session);
@@ -485,6 +501,14 @@ class ClaudeBridge {
       claudeProcess.onData((data) => {
         if (process.env.DEBUG) {
           console.log(`Session ${sessionId} output:`, data);
+        }
+
+        // Any output means the process is alive and producing — clears the
+        // hang watchdog armed on the last submitted input (see sendInput).
+        session.lastOutputAt = Date.now();
+        if (session.hangTimer) {
+          clearTimeout(session.hangTimer);
+          session.hangTimer = null;
         }
 
         // Buffer data to check for interactive trust / permission prompts.
@@ -528,6 +552,10 @@ class ClaudeBridge {
           clearTimeout(session.killTimeout);
           session.killTimeout = null;
         }
+        if (session.hangTimer) {
+          clearTimeout(session.hangTimer);
+          session.hangTimer = null;
+        }
         session.active = false;
         this.sessions.delete(sessionId);
         onExit(exitCode, signal);
@@ -555,6 +583,10 @@ class ClaudeBridge {
           clearTimeout(session.killTimeout);
           session.killTimeout = null;
         }
+        if (session.hangTimer) {
+          clearTimeout(session.hangTimer);
+          session.hangTimer = null;
+        }
         session.exited = true;
         session.active = false;
         this.sessions.delete(sessionId);
@@ -566,6 +598,14 @@ class ClaudeBridge {
         }
       });
 
+      // opencode sessions with an agent get an initial task via --prompt
+      // (see the isOpencode branch above) — that's a submission just like an
+      // Enter keypress, so arm the watchdog for it too instead of only
+      // covering prompts typed after startup.
+      if (isOpencode && agent) {
+        this._armOpencodeHangWatchdog(sessionId, session);
+      }
+
       console.log(`Claude session ${sessionId} started successfully`);
       return session;
 
@@ -573,6 +613,30 @@ class ClaudeBridge {
       console.error(`Failed to start Claude session ${sessionId}:`, error);
       throw new Error(`Failed to start Claude Code: ${error.message}`);
     }
+  }
+
+  /**
+   * Kill an opencode session if it produces no new output within
+   * OPENCODE_HANG_TIMEOUT_MS of the last submitted input. Re-arms itself if
+   * output arrived more recently than the deadline instead of firing
+   * immediately, so a slow-but-alive response isn't mistaken for a hang.
+   * onData() clears the timer outright on any output — this timeout is the
+   * backstop for when no output arrives at all.
+   */
+  _armOpencodeHangWatchdog(sessionId, session) {
+    if (session.hangTimer) clearTimeout(session.hangTimer);
+    session.hangTimer = setTimeout(() => {
+      const idleMs = Date.now() - session.lastOutputAt;
+      if (idleMs < OPENCODE_HANG_TIMEOUT_MS) {
+        this._armOpencodeHangWatchdog(sessionId, session);
+        return;
+      }
+      console.warn(
+        `[bridge] opencode session ${sessionId} produced no output for ` +
+        `${Math.round(idleMs / 1000)}s after input — treating as hung, killing`
+      );
+      try { session.process.kill('SIGKILL'); } catch (_) {}
+    }, OPENCODE_HANG_TIMEOUT_MS);
   }
 
   async sendInput(sessionId, data) {
@@ -583,6 +647,14 @@ class ClaudeBridge {
 
     try {
       session.process.write(data);
+      // Raw keystrokes come through here one at a time (xterm's onData), so
+      // this only arms on an actual submit (Enter/Return), not every
+      // character — arming on every keystroke would restart the countdown
+      // mid-typing and never let it fire, and typing itself isn't "waiting
+      // for a response".
+      if (session.isOpencode && /[\r\n]/.test(data)) {
+        this._armOpencodeHangWatchdog(sessionId, session);
+      }
       return true;
     } catch (error) {
       if (isPtyEio(error)) {
@@ -627,6 +699,10 @@ class ClaudeBridge {
       if (session.killTimeout) {
         clearTimeout(session.killTimeout);
         session.killTimeout = null;
+      }
+      if (session.hangTimer) {
+        clearTimeout(session.hangTimer);
+        session.hangTimer = null;
       }
 
       if (session.active && session.process) {
