@@ -732,7 +732,7 @@ class ClaudeBridge {
       // from the VPS — log every event type + a truncated preview so the
       // real NDJSON shape is visible in `docker logs` instead of guessed.
       // Remove once confirmed either way.
-      console.log(`[bridge] opencode event type=${event.type} preview=${line.slice(0, 200)}`);
+      console.log(`[bridge] opencode event type=${event.type} full=${line}`);
       if (event.type === 'text') {
         const text = event.part && event.part.text;
         if (text) {
