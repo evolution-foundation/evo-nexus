@@ -722,12 +722,26 @@ class ClaudeBridge {
       // are working without touching any per-session terminal socket.
       agentName: agent || null,
       personaPrefix,
+      // cliProviderId/cliModelArg are the ONLY values ever passed to `opencode
+      // run -m <...>` — fixed at session creation, never touched again.
+      // providerId/providerModel below are a SEPARATE pair used purely for
+      // the HUD display (rewritten to "auto-routing" for a nicer label, and
+      // later to the real routed model/provider by _probeOmniRouteRoute).
+      // Confirmed live 2026-07-14 (docker exec into the deployed container):
+      // reusing one pair for both purposes meant the HUD's "auto-routing"
+      // display label was also getting sent as the actual `-m` argument —
+      // `-m opencode/auto-routing` fails with ProviderModelNotFoundError
+      // ("auto-routing" isn't a model opencode.json defines; only "auto" is)
+      // — masked by opencode as a generic "Unexpected server error". Manual
+      // `-m opencode/auto` in the same container succeeded immediately.
+      cliProviderId: providerId,
+      cliModelArg: providerModel || 'auto',
       providerId,
       // "auto-routing" instead of the bare "auto" from providers.json's
       // default_model — that string means "OmniRoute decides server-side",
       // not a model name, and showing it unlabeled on the HUD reads as a
       // broken/generic value. Overwritten with the real provider/model the
-      // moment one is seen in the NDJSON (see _extractRealProviderModel).
+      // moment the OmniRoute probe resolves one (see _probeOmniRouteRoute).
       providerModel: providerModel && providerModel !== 'auto' ? providerModel : 'auto-routing',
       // OPENAI_BASE_URL/OPENAI_API_KEY come from this provider's own
       // dashboard-editable config (same fields every other provider uses),
@@ -887,7 +901,7 @@ class ClaudeBridge {
    * gives up and reports an error after the retry ALSO times out.
    */
   _attemptOpencodeTurn(sessionId, session, fullMessage, attemptNumber) {
-    const modelRef = `${session.providerId}/${session.providerModel}`;
+    const modelRef = `${session.cliProviderId}/${session.cliModelArg}`;
     // No --agent flag — defaults to opencode's "build" agent, which is what
     // the original spike validated for real tool-use (bash calls + reported
     // text). The zero-token/no-response symptom seen live on 2026-07-13
