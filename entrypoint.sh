@@ -148,16 +148,46 @@ fi
 # a key. Instead of crash-looping, we wait and re-read .env every 30s. When
 # the user saves the key in dashboard → Providers, it lands in .env and
 # we pick it up on the next iteration — no manual restart needed.
+#
+# Confirmed live 2026-07-14: this gate only ever checked ANTHROPIC_API_KEY,
+# hardcoded — a workspace whose active_provider is opencode/openclaude
+# (credentials live in config/providers.json's per-provider env_vars, not a
+# top-level ANTHROPIC_API_KEY) waits here FOREVER, even with a fully working
+# non-Anthropic provider configured. scheduler.py never even starts, so no
+# routine — core or custom — ever runs; this was mistaken for a
+# config/routines.yaml bug before the entrypoint log revealed the real
+# blocker. Fix: also unblock when config/providers.json's active provider
+# has a real (non-empty, non-"[REDACTED]") credential — same check
+# _get_provider_config() in ADWs/runner.py already does at call time.
+_has_usable_provider() {
+    [ -n "${ANTHROPIC_API_KEY:-}" ] && return 0
+    _PYBIN="/workspace/.venv/bin/python3"
+    [ -x "$_PYBIN" ] || _PYBIN="$(command -v python3 || true)"
+    [ -n "$_PYBIN" ] || return 1
+    "$_PYBIN" -c "
+import json, sys
+try:
+    cfg = json.load(open('$CONFIG_DIR/providers.json'))
+except Exception:
+    sys.exit(1)
+active = cfg.get('active_provider')
+provider = (cfg.get('providers') or {}).get(active) or {}
+env_vars = provider.get('env_vars') or {}
+key = env_vars.get('OPENAI_API_KEY') or env_vars.get('ANTHROPIC_API_KEY') or ''
+sys.exit(0 if key and key != '[REDACTED]' else 1)
+" 2>/dev/null
+}
+
 if [ "${REQUIRE_ANTHROPIC_KEY:-0}" = "1" ]; then
-    while [ -z "${ANTHROPIC_API_KEY:-}" ]; do
-        echo "[$(date -Is)] waiting for ANTHROPIC_API_KEY — configure via dashboard → Providers" >&2
+    while ! _has_usable_provider; do
+        echo "[$(date -Is)] waiting for a usable provider (ANTHROPIC_API_KEY or an active provider with a real key in Providers) — configure via dashboard → Providers" >&2
         sleep 30
         set -a
         # shellcheck disable=SC1091
         . "$CONFIG_DIR/.env" 2>/dev/null || true
         set +a
     done
-    echo "[$(date -Is)] ANTHROPIC_API_KEY detected — starting $*" >&2
+    echo "[$(date -Is)] usable provider detected — starting $*" >&2
 fi
 
 # --- 8b. Claude CLI headless bootstrap --------------------------------------
