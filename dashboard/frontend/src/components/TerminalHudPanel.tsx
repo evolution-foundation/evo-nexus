@@ -87,32 +87,34 @@ export default function TerminalHudPanel({ hud, accentColor }: Props) {
       {/* Shifter knob — H-gate diagram with a puck that slides between the
           5 positions (CSS transform transition, not a remount) plus a
           numeral badge on the corner. Reads as "gear changed" the same way
-          a real shifter would, instead of just an incrementing digit. */}
+          a real shifter would, instead of just an incrementing digit.
+          Bumped from 32px to 44px + brighter gate/bezel contrast — the
+          32px version read as a barely-visible dark smudge in the panel. */}
       <div
-        className="relative flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-md"
+        className="relative flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-lg"
         style={{
-          background: 'radial-gradient(circle at 35% 30%, #1c2333, #0a0e17 70%)',
-          border: '1px solid #262d3d',
-          boxShadow: 'inset 0 1px 1px rgba(255,255,255,0.06), inset 0 -2px 4px rgba(0,0,0,0.5)',
+          background: 'radial-gradient(circle at 35% 28%, #2a3346, #0a0e17 72%)',
+          border: '1.5px solid #3a4256',
+          boxShadow: 'inset 0 1px 2px rgba(255,255,255,0.10), inset 0 -3px 6px rgba(0,0,0,0.6), 0 1px 3px rgba(0,0,0,0.4)',
         }}
       >
-        <svg viewBox="0 0 24 24" className="h-full w-full p-1">
+        <svg viewBox="0 0 24 24" className="h-full w-full p-1.5">
           {/* gate lines */}
           <path
             d="M6 6 V18 M12 6 V18 M18 6 V12 M6 12 H18"
-            stroke="#3a4256"
-            strokeWidth="1.4"
+            stroke="#5a6478"
+            strokeWidth="1.6"
             strokeLinecap="round"
             fill="none"
           />
           {/* puck — position transitions via CSS transform, not a re-mount */}
           <circle
-            r="2.4"
-            fill={hud.busy ? accentColor : '#6b7280'}
+            r="3"
+            fill={hud.busy ? accentColor : '#8b95a8'}
             style={{
               transform: `translate(${puckX}px, ${puckY}px)`,
               transition: 'transform 280ms cubic-bezier(0.34, 1.56, 0.64, 1)',
-              filter: hud.busy ? `drop-shadow(0 0 3px ${accentColor})` : 'none',
+              filter: hud.busy ? `drop-shadow(0 0 4px ${accentColor})` : 'drop-shadow(0 0 1px rgba(0,0,0,0.6))',
             }}
           />
         </svg>
@@ -120,12 +122,12 @@ export default function TerminalHudPanel({ hud, accentColor }: Props) {
             every shift, same trick the old plain-numeral version used. */}
         <div
           key={gear}
-          className="absolute -top-1.5 -left-1.5 flex h-4 w-4 items-center justify-center rounded-full font-mono text-[9px] font-bold"
+          className="absolute -top-2 -left-2 flex h-5 w-5 items-center justify-center rounded-full font-mono text-[11px] font-bold"
           style={{
             background: '#111826',
-            border: '1px solid #262d3d',
-            color: hud.busy ? accentColor : '#8b95a8',
-            textShadow: hud.busy ? `0 0 5px ${accentColor}99` : 'none',
+            border: '1.5px solid #3a4256',
+            color: hud.busy ? accentColor : '#c3cad9',
+            textShadow: hud.busy ? `0 0 6px ${accentColor}cc` : 'none',
             animation: 'terminal-hud-gear-kick 260ms cubic-bezier(0.34, 1.56, 0.64, 1)',
           }}
         >
