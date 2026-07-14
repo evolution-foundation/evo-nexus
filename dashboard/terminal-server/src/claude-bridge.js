@@ -2,6 +2,7 @@ const { spawn } = require('node-pty');
 const cp = require('child_process');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 
 // chalk (used inside marked-terminal) auto-detects color support from THIS
 // process's own stdout — but this process is a backend service with no real
@@ -234,6 +235,72 @@ function loadAgentMemory(agent) {
  * prior-session memory) shared by the openclaude --system-prompt path and
  * the opencode REPL path below.
  */
+/**
+ * Keep the global opencode config (~/.config/opencode/opencode.json) in
+ * sync with WHATEVER provider is currently active, instead of relying on a
+ * static file that only ever defined one hardcoded "opencode" provider
+ * block. Before this, switching config/providers.json's active_provider to
+ * anything else with cli_command "opencode" would reproduce the exact same
+ * ProviderModelNotFoundError bug already fixed for the "opencode" entry —
+ * `opencode run -m <providerId>/<model>` only resolves if opencode.json has
+ * a provider block under that exact key. Runs once per session creation
+ * (cheap — a few KB JSON read/write), merges into the existing file rather
+ * than overwriting it, so manually-added provider/model entries (e.g. a
+ * test xai/grok-4.3 model) survive.
+ *
+ * Also where the "build" agent's `skill` tool gets disabled — see the
+ * comment on that line for why (94% token reduction, measured live).
+ */
+function _ensureOpencodeProviderConfig(providerId, modelArg, providerEnvVars) {
+  if (!providerId || !providerEnvVars?.OPENAI_BASE_URL || !providerEnvVars?.OPENAI_API_KEY) return;
+  const configDir = path.join(os.homedir(), '.config', 'opencode');
+  const configPath = path.join(configDir, 'opencode.json');
+  let config = { $schema: 'https://opencode.ai/config.json', provider: {}, agent: {} };
+  try {
+    const existing = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    if (existing && typeof existing === 'object') config = existing;
+  } catch {
+    // No file yet, or it's malformed — start fresh rather than fail the turn.
+  }
+  if (!config.provider || typeof config.provider !== 'object') config.provider = {};
+  const existingProvider = config.provider[providerId] || {};
+  config.provider[providerId] = {
+    ...existingProvider,
+    npm: '@ai-sdk/openai-compatible',
+    name: existingProvider.name || providerId,
+    options: {
+      baseURL: providerEnvVars.OPENAI_BASE_URL,
+      apiKey: providerEnvVars.OPENAI_API_KEY,
+    },
+    models: {
+      ...(existingProvider.models || {}),
+      [modelArg]: (existingProvider.models && existingProvider.models[modelArg]) || { name: modelArg },
+    },
+  };
+  if (!config.agent || typeof config.agent !== 'object') config.agent = {};
+  // Confirmed live 2026-07-14: with 194+ skills under .claude/skills/, the
+  // "build" agent's auto-discovered <available_skills> tool description
+  // alone cost ~30k tokens on every single turn — an isolated dir with no
+  // skills used 2,076 input tokens for "ping"; the repo root (same prompt,
+  // same model) used ~32,000-37,000. Skills are loaded on-demand by
+  // opencode's own `skill` tool, not needed for ordinary agent chat/REPL
+  // turns — this workspace's actual skill invocation flow is Claude Code's
+  // native slash commands, unrelated to this tool. Disabling it here cuts
+  // routine turn cost by roughly 15x with no loss of the slash-command flow.
+  config.agent.build = {
+    ...(config.agent.build || {}),
+    tools: { ...(config.agent.build?.tools || {}), skill: false },
+  };
+  try {
+    fs.mkdirSync(configDir, { recursive: true });
+    const tmpPath = `${configPath}.tmp-${process.pid}`;
+    fs.writeFileSync(tmpPath, JSON.stringify(config, null, 2));
+    fs.renameSync(tmpPath, configPath);
+  } catch (err) {
+    console.warn('[bridge] failed to write dynamic opencode provider config:', err && err.message);
+  }
+}
+
 function buildAgentPersona(agent, workingDir) {
   const rootAgentFile = path.join(WORKSPACE_ROOT, '.claude', 'agents', `${agent}.md`);
   const cwdAgentFile = path.join(workingDir, '.claude', 'agents', `${agent}.md`);
@@ -707,6 +774,12 @@ class ClaudeBridge {
   async _startOpencodeReplSession(sessionId, options, providerId, providerModel, providerEnvVars = {}) {
     const { workingDir, agent, onOutput, onExit, onError, onHudUpdate } = options;
     const cliBin = this.findClaudeCommand('opencode');
+
+    // Keeps opencode.json's provider block in sync with whichever provider
+    // is actually active — see _ensureOpencodeProviderConfig for why this
+    // is required for any provider other than the original hardcoded
+    // "opencode" one to work at all.
+    _ensureOpencodeProviderConfig(providerId, providerModel || 'auto', providerEnvVars);
 
     let personaPrefix = null;
     if (agent) {
