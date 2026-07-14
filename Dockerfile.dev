@@ -32,9 +32,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # CLIs usadas pelo terminal embutido (/agents) e pela página de providers (/providers)
+# openclaude pinado (não @latest) — ver Dockerfile principal para o motivo.
 RUN npm install -g \
         @anthropic-ai/claude-code \
-        @gitlawb/openclaude@latest
+        @gitlawb/openclaude@0.23.0
 
 # uv
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh

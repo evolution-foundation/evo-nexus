@@ -36,7 +36,7 @@ _CODEX_DEVICE_PROCESS = None
 _CODEX_DEVICE_OUTPUT = ""
 
 # Allowlisted CLI commands — only these binaries can be spawned
-ALLOWED_CLI_COMMANDS = frozenset({"claude", "openclaude"})
+ALLOWED_CLI_COMMANDS = frozenset({"claude", "openclaude", "opencode"})
 
 # Allowlisted env var names — only these can be injected into subprocess
 ALLOWED_ENV_VARS = frozenset({
@@ -163,6 +163,8 @@ def _run_cli_version(command: str, env: dict | None = None) -> dict:
             result = subprocess.run(["openclaude", "--version"], **run_kwargs)  # noqa: S603, S607
         elif command == "claude":
             result = subprocess.run(["claude", "--version"], **run_kwargs)  # noqa: S603, S607
+        elif command == "opencode":
+            result = subprocess.run(["opencode", "--version"], **run_kwargs)  # noqa: S603, S607
         else:
             return {"installed": False, "version": None, "path": None}
 
@@ -299,16 +301,22 @@ def list_providers():
     active = config.get("active_provider", "anthropic")
     providers = config.get("providers", {})
 
-    # Check CLI installation status for both binaries
+    # Check CLI installation status for each binary
     claude_status = _check_cli("claude")
     openclaude_status = _check_cli("openclaude")
+    opencode_status = _check_cli("opencode")
+    cli_status_by_command = {
+        "claude": claude_status,
+        "openclaude": openclaude_status,
+        "opencode": opencode_status,
+    }
 
     result = []
     for key, prov in providers.items():
         cli = prov.get("cli_command", "claude")
         if cli not in ALLOWED_CLI_COMMANDS:
             continue
-        cli_status = claude_status if cli == "claude" else openclaude_status
+        cli_status = cli_status_by_command.get(cli, claude_status)
 
         # Mask env var values for API response
         env_vars = prov.get("env_vars", {})
@@ -349,6 +357,7 @@ def list_providers():
         "active_provider": active,
         "claude_installed": claude_status["installed"],
         "openclaude_installed": openclaude_status["installed"],
+        "opencode_installed": opencode_status["installed"],
     })
 
 

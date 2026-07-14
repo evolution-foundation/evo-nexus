@@ -14,9 +14,11 @@ ENV PATH="/root/.local/bin:$PATH"
 RUN npm install -g @anthropic-ai/claude-code
 
 # Install OpenClaude CLI (required for non-Anthropic providers: OpenAI, Codex OAuth, OpenRouter, Gemini, etc.)
-# Pin to @latest to avoid the npm dist-tag lag; min supported is 0.3.0
-# (first version with the Codex shortcut endpoint fix, openclaude#566).
-RUN npm install -g @gitlawb/openclaude@latest
+# Pinned to a tested version instead of @latest — floating @latest meant every
+# image rebuild could silently change CLI behavior (backoff, error bodies,
+# provider rotation) without anyone testing the new release first. Bump this
+# deliberately after validating the new version, not automatically.
+RUN npm install -g @gitlawb/openclaude@0.23.0
 
 # Install GitHub CLI
 RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \

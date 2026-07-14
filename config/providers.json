@@ -131,6 +131,22 @@
         "codexplan",
         "codexspark"
       ]
+    },
+    "opencode": {
+      "name": "OpenCode",
+      "description": "Harness opencode — CLI agêntico com tool-use nativo, roteável por qualquer endpoint OpenAI-compatível (Base URL/API Key editáveis abaixo, igual ao OpenClaude). Requer opencode.json na raiz do workspace com um provider \"opencode\" registrado (baseURL/apiKey resolvidos via env em runtime).",
+      "cli_command": "opencode",
+      "mode": "code",
+      "env_vars": {
+        "OPENAI_BASE_URL": "",
+        "OPENAI_API_KEY": ""
+      },
+      "default_base_url": "",
+      "default_model": "auto",
+      "requires_logout": false,
+      "fallback_providers": [
+        "anthropic"
+      ]
     }
   },
   "telegram_provider": "nvidia"
