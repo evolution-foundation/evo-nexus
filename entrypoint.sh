@@ -118,10 +118,31 @@ fi
 
 # --- 5. Source .env (UI-configured values become env vars) -----------------
 # Using `set -a` so every variable assigned here is auto-exported.
+#
+# Confirmed live 2026-07-14: .env.example ships secrets meant to come from
+# the Swarm stack's `environment:` section (e.g. DASHBOARD_API_TOKEN=, no
+# default) as blank lines — first boot copies that verbatim into
+# $CONFIG_DIR/.env (step 2 above). Docker sets the real value on the
+# container BEFORE this script runs, but sourcing .env here with `set -a`
+# blindly re-exports every line in it, including the blank one, silently
+# clobbering the correct value with an empty string. Every Bearer-token API
+# call then hit "Authentication required" — not because the token was wrong,
+# but because the server-side value had already been erased by the time
+# Flask read it, while `docker exec ... printenv` (a fresh process, never
+# ran this script) still showed the real one, which made it look like a
+# token mismatch instead of an overwrite. Fix: snapshot secrets Docker may
+# have injected, source .env, then restore any that .env blanked out —
+# non-empty file values still win (so the Providers/Settings UI can update
+# them), only genuinely empty ones are prevented from erasing a real value.
+_DASHBOARD_API_TOKEN_PRE="${DASHBOARD_API_TOKEN:-}"
 set -a
 # shellcheck disable=SC1091
 . "$CONFIG_DIR/.env" 2>/dev/null || true
 set +a
+if [ -z "${DASHBOARD_API_TOKEN:-}" ] && [ -n "$_DASHBOARD_API_TOKEN_PRE" ]; then
+    export DASHBOARD_API_TOKEN="$_DASHBOARD_API_TOKEN_PRE"
+fi
+unset _DASHBOARD_API_TOKEN_PRE
 
 # --- 6. Optional: _FILE env vars (explicit Docker Secrets pattern) ---------
 for file_var in $(compgen -A variable | grep -E '_FILE$' || true); do
