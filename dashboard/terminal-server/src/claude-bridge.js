@@ -98,23 +98,51 @@ const OPENCODE_TURN_TIMEOUT_MS = 600_000;
 // real usage patterns are observed.
 const HUD_HEAVY_TOKEN_THRESHOLD = 20_000;
 
-// Sprint 2 (terminal-ux-upgrade): OmniRoute picks the real backing
-// provider/model server-side when the configured model is "auto" — the
-// `opencode run --format json` NDJSON schema validated live on 2026-07-12
-// (see provider_fallback.py::_parse_opencode_ndjson) only carries
-// tokens/cost on step_finish, no provider/model field. Two live probes on
-// 2026-07-14 against the real gateway (both "auto" and a concrete model)
-// errored server-side before any text/step_finish arrived, so this couldn't
-// be re-confirmed either way. Kept defensive and forward-compatible: if a
-// future opencode version (or this gateway) starts emitting one of these
-// field names, it gets picked up automatically with no code change; until
-// then this is a silent no-op and the HUD falls back to the resolved model
-// config (never the bare "auto" string — see session.providerModel init).
-function _extractRealProviderModel(event, part) {
-  const providerId = event.providerID || event.provider || part.providerID || part.provider;
-  const providerModel = event.modelID || event.model || part.modelID || part.model;
-  if (!providerId && !providerModel) return null;
-  return { providerId: providerId || null, providerModel: providerModel || null };
+// Confirmed live 2026-07-14 (opencode --print-logs --log-level DEBUG, plus
+// `opencode export <sessionID>`): the NDJSON stream, the debug logs and the
+// exported session JSON all only ever carry the *requested* alias
+// (providerID=opencode modelID=auto) — opencode never records which
+// concrete model OmniRoute actually routed "auto" to. That data only exists
+// in the HTTP response OmniRoute itself sends back (`x-omniroute-model` /
+// `x-omniroute-provider` headers, confirmed via direct curl), and opencode's
+// own HTTP client swallows it. So instead of parsing it out of opencode,
+// _probeOmniRouteRoute below asks OmniRoute directly with a throwaway
+// 1-token call and reads those headers.
+const OMNIROUTE_PROBE_MIN_INTERVAL_MS = 20_000;
+const OMNIROUTE_PROBE_TIMEOUT_MS = 6_000;
+
+// Only meaningful while the session is on an "auto" alias — a pinned model
+// (e.g. nvidia's fixed model) is already the real model, nothing to probe.
+// Throttled per-session so rapid-fire messages don't double the request
+// volume against OmniRoute just to refresh a cosmetic HUD label.
+async function _probeOmniRouteRoute(session) {
+  if (session.providerModel !== 'auto-routing' && session.providerModel !== 'auto') return null;
+  const baseUrl = session.providerEnvVars && session.providerEnvVars.OPENAI_BASE_URL;
+  const apiKey = session.providerEnvVars && session.providerEnvVars.OPENAI_API_KEY;
+  if (!baseUrl || !apiKey) return null;
+  const now = Date.now();
+  if (session.lastRouteProbeAt && now - session.lastRouteProbeAt < OMNIROUTE_PROBE_MIN_INTERVAL_MS) {
+    return null;
+  }
+  session.lastRouteProbeAt = now;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), OMNIROUTE_PROBE_TIMEOUT_MS);
+  try {
+    const resp = await fetch(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'auto', messages: [{ role: 'user', content: '.' }], max_tokens: 1, stream: false }),
+      signal: controller.signal,
+    });
+    const realModel = resp.headers.get('x-omniroute-model');
+    const realProvider = resp.headers.get('x-omniroute-provider');
+    if (!realModel && !realProvider) return null;
+    return { providerId: realProvider || null, providerModel: realModel || null };
+  } catch (_) {
+    return null; // cosmetic HUD data only — never let a probe failure affect the real turn
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // Sprint 3 (terminal-ux-upgrade): the tok/s figure used to be recomputed
@@ -900,6 +928,17 @@ class ClaudeBridge {
     session.currentChild = child;
     if (attemptNumber === 0) {
       this._emitHudUpdate(session);
+      // Fire-and-forget: resolves independently of this turn (see
+      // _probeOmniRouteRoute) and just refreshes the HUD label once it
+      // lands, whether that's before or after the turn itself closes.
+      _probeOmniRouteRoute(session)
+        .then((route) => {
+          if (!route || (!route.providerId && !route.providerModel)) return;
+          if (route.providerId) session.providerId = route.providerId;
+          if (route.providerModel) session.providerModel = route.providerModel;
+          this._emitHudUpdate(session, { tokensPerSec: _avgTokensPerSecFor(session.providerModel) });
+        })
+        .catch(() => {});
     }
 
     let stdoutBuffer = '';
@@ -932,14 +971,6 @@ class ClaudeBridge {
         session.opencodeSessionId = sid;
       }
       const part = event.part || {};
-      const realRoute = _extractRealProviderModel(event, part);
-      if (realRoute) {
-        // Real backing provider/model surfaced this turn — persist on the
-        // session so it survives past this one hud_update tick (matches
-        // providerId/providerModel init pattern above).
-        if (realRoute.providerId) session.providerId = realRoute.providerId;
-        if (realRoute.providerModel) session.providerModel = realRoute.providerModel;
-      }
       if (event.type === 'text') {
         const text = part.text;
         if (text) {
@@ -955,7 +986,6 @@ class ClaudeBridge {
           this._emitHudUpdate(session, {
             tokensPerSec: _avgTokensPerSecFor(session.providerModel),
             totalTokens: Math.round(estTokens),
-            ...(realRoute || {}),
           });
         }
       } else if (event.type === 'error') {
@@ -974,7 +1004,6 @@ class ClaudeBridge {
             tokensPerSec: _avgTokensPerSecFor(session.providerModel),
             totalTokens: realTotalTokens,
             heavy: realTotalTokens > HUD_HEAVY_TOKEN_THRESHOLD,
-            ...(realRoute || {}),
           });
         }
       }

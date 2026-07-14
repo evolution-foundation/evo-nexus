@@ -511,40 +511,6 @@ export default function AgentTerminal({ agent, sessionId: externalSessionId, wor
         <span className="text-[10px] uppercase tracking-[0.12em] text-[#667085]">
           {statusLabel}
         </span>
-        {hud && (
-          <div className="ml-auto flex items-center gap-2">
-            {/* Gear/LCD panel (Sprint 3) */}
-            <TerminalHudPanel hud={hud} accentColor={accentColor} />
-
-            {/* Semaphore (Sprint 2): 3 fixed lights, only the active one
-                lit — green=waiting for a prompt, yellow=working,
-                red=last completed turn was heavy (>20k tokens). Priority
-                red > yellow > green when both could apply (a heavy turn
-                just finished right as a new one starts). Always visible,
-                including on mobile. */}
-            <div className="flex items-center gap-1" title={
-              hud.heavy ? 'contexto/tokens grande no último turno'
-                : hud.busy ? 'trabalhando…'
-                : 'esperando prompt'
-            }>
-              {(['#22c55e', '#eab308', '#ef4444'] as const).map((color, i) => {
-                const activeIdx = hud.heavy ? 2 : hud.busy ? 1 : 0
-                const isActive = i === activeIdx
-                return (
-                  <span
-                    key={color}
-                    className="inline-block h-1.5 w-1.5 rounded-full transition-opacity duration-200"
-                    style={{
-                      backgroundColor: color,
-                      opacity: isActive ? 1 : 0.18,
-                      boxShadow: isActive ? `0 0 5px ${color}aa` : 'none',
-                    }}
-                  />
-                )
-              })}
-            </div>
-          </div>
-        )}
         {errorMsg && (
           <span
             className="ml-auto text-[10px] text-[#ef4444] truncate max-w-[50%]"
@@ -554,6 +520,43 @@ export default function AgentTerminal({ agent, sessionId: externalSessionId, wor
           </span>
         )}
       </div>
+
+      {/* Dashboard row (car-panel HUD, Sprint 3) — own row instead of
+          crammed into the 32px status bar above, so the LCD readout has
+          real width to work with instead of truncating provider/model. */}
+      {hud && (
+        <div className="flex-shrink-0 flex items-center gap-2 px-4 py-1.5 border-b border-[#21262d] bg-[#0d1117]">
+          <TerminalHudPanel hud={hud} accentColor={accentColor} />
+
+          {/* Semaphore (Sprint 2): 3 fixed lights, only the active one
+              lit — green=waiting for a prompt, yellow=working,
+              red=last completed turn was heavy (>20k tokens). Priority
+              red > yellow > green when both could apply (a heavy turn
+              just finished right as a new one starts). Always visible,
+              including on mobile. */}
+          <div className="ml-auto flex items-center gap-1" title={
+            hud.heavy ? 'contexto/tokens grande no último turno'
+              : hud.busy ? 'trabalhando…'
+              : 'esperando prompt'
+          }>
+            {(['#22c55e', '#eab308', '#ef4444'] as const).map((color, i) => {
+              const activeIdx = hud.heavy ? 2 : hud.busy ? 1 : 0
+              const isActive = i === activeIdx
+              return (
+                <span
+                  key={color}
+                  className="inline-block h-1.5 w-1.5 rounded-full transition-opacity duration-200"
+                  style={{
+                    backgroundColor: color,
+                    opacity: isActive ? 1 : 0.18,
+                    boxShadow: isActive ? `0 0 5px ${color}aa` : 'none',
+                  }}
+                />
+              )
+            })}
+          </div>
+        </div>
+      )}
 
       {/* xterm */}
       <div ref={containerRef} className="flex-1 min-h-0 px-4 py-3 bg-[#0C111D]" />
