@@ -110,6 +110,16 @@ COPY .env.example     ./
 # Config do provider "opencode_omnirouter" (baseURL/apiKey do OmniRoute) —
 # heartbeats rodam neste container (Flask+terminal-server+heartbeats).
 COPY opencode.json    ./
+# `opencode run` só descobre esse provider customizado subindo diretórios a
+# partir do seu cwd até achar um opencode.json — funciona pra sessões cujo
+# workingDir está sob /workspace, mas NÃO pra sessões com workingDir fora
+# dessa árvore (ex.: pastas de agente fora do repo). Copiar pro config
+# global do XDG (~/.config/opencode, container roda como root => /root)
+# resolve isso: é encontrado não importa o cwd da sessão. Confirmado ao vivo
+# 2026-07-14 — sem isso, `-m opencode/auto` falha com
+# "ProviderModelNotFoundError: Model not found: opencode/auto." fora de
+# /workspace (mascarado como "Unexpected server error" genérico no NDJSON).
+RUN mkdir -p /root/.config/opencode && cp opencode.json /root/.config/opencode/opencode.json
 
 # Pre-compiled terminal-server node_modules from stage 2
 COPY --from=terminal-build /terminal/node_modules dashboard/terminal-server/node_modules
