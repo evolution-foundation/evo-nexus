@@ -103,6 +103,14 @@ export default function AgentTerminal({ agent, sessionId: externalSessionId, wor
   const [status, setStatus] = useState<Status>('connecting')
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
   const [hud, setHud] = useState<HudState | null>(null)
+  // opencode REPL sessions get a dedicated input bar below (see render) —
+  // xterm becomes output-only for them so typed keys never reach the
+  // onData forwarder below and the two input paths can't double-process a
+  // keystroke (that's what broke typing the first time this was tried).
+  // Ref because onData is registered once at mount and would otherwise
+  // only ever see the null `hud` from that first render (stale closure).
+  const isOpencodeRef = useRef(false)
+  const [inputValue, setInputValue] = useState('')
   // Mirrors `status` for the onData closure below, which is registered once
   // on mount and would otherwise only ever see the 'connecting' status from
   // that first render (React state, not a ref, doesn't update in a stale
@@ -188,6 +196,9 @@ export default function AgentTerminal({ agent, sessionId: externalSessionId, wor
     // alternative.
     const AUTO_REPLY_RE = /^\x1b\[(\?|>)[0-9;]*[a-zA-Z]$|^\x1b\[[0-9;]*[nRct]$/
     term.onData((data) => {
+      // opencode sessions type into the dedicated input bar instead (see
+      // render) — xterm here is output-only for them.
+      if (isOpencodeRef.current) return
       if (AUTO_REPLY_RE.test(data)) return
       const ws = wsRef.current
       if (!ws || ws.readyState !== WebSocket.OPEN) return
@@ -251,6 +262,8 @@ export default function AgentTerminal({ agent, sessionId: externalSessionId, wor
     async function run() {
       setStatus('connecting')
       setErrorMsg(null)
+      isOpencodeRef.current = false
+      setHud(null)
       term!.clear()
 
       // 1) Use provided sessionId or find-or-create for this agent
@@ -404,6 +417,7 @@ export default function AgentTerminal({ agent, sessionId: externalSessionId, wor
           case 'pong':
             break
           case 'hud_update':
+            isOpencodeRef.current = true
             setHud({
               busy: !!msg.busy,
               heavy: !!msg.heavy,
@@ -560,6 +574,52 @@ export default function AgentTerminal({ agent, sessionId: externalSessionId, wor
 
       {/* xterm */}
       <div ref={containerRef} className="flex-1 min-h-0 px-4 py-3 bg-[#0C111D]" />
+
+      {/* Dedicated input bar (opencode sessions only, i.e. hud !== null) —
+          keeps what you type visually separate from the AI's streamed
+          response instead of both sharing the same scrollback, which read
+          as confusing (couldn't tell where your line ended and the reply
+          began). xterm above is output-only for these sessions — see the
+          isOpencodeRef guard in the onData handler. */}
+      {hud && (
+        <form
+          onSubmit={(e) => {
+            e.preventDefault()
+            const text = inputValue.trim()
+            if (!text) return
+            const ws = wsRef.current
+            if (!ws || ws.readyState !== WebSocket.OPEN) return
+            // One WS message with the whole line + newline — the server's
+            // opencode keystroke handler iterates char-by-char and submits
+            // on \n either way, so this is equivalent to typing it out.
+            ws.send(JSON.stringify({ type: 'input', data: text + '\n' }))
+            setInputValue('')
+          }}
+          className="flex-shrink-0 flex items-end gap-2 border-t border-[#21262d] bg-[#0d1117] px-3 py-2"
+        >
+          <textarea
+            value={inputValue}
+            onChange={(e) => setInputValue(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault()
+                e.currentTarget.form?.requestSubmit()
+              }
+            }}
+            placeholder="Digite sua mensagem… (Shift+Enter para nova linha)"
+            rows={1}
+            className="flex-1 resize-none rounded-md border border-[#21262d] bg-[#0a0e14] px-3 py-1.5 text-[13px] leading-normal text-[#e6edf3] placeholder:text-[#4b5563] outline-none focus:border-[#3a4256]"
+          />
+          <button
+            type="submit"
+            disabled={!inputValue.trim() || hud.busy}
+            className="flex-shrink-0 rounded-md px-3 py-1.5 text-[12px] font-medium transition-opacity disabled:opacity-40"
+            style={{ background: accentColor, color: '#04120a' }}
+          >
+            Enviar
+          </button>
+        </form>
+      )}
     </div>
   )
 }

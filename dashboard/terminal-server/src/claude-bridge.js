@@ -94,9 +94,14 @@ const OPENCODE_TURN_TIMEOUT_MS = 600_000;
 
 // Above this many tokens in a single step, the terminal HUD (see
 // terminal-hud feature folder) marks the turn "heavy" (red semaphore
-// light). Provisional — same status as the timeout above, adjust once
-// real usage patterns are observed.
-const HUD_HEAVY_TOKEN_THRESHOLD = 20_000;
+// light). Confirmed live 2026-07-14: a trivial "ping" already used
+// ~32k input tokens — `opencode run` is a fresh headless process per
+// turn with no prompt caching across calls, so the full system
+// prompt + tool definitions get resent every single time. 20k made
+// the semaphore red on essentially every turn, not just genuinely
+// large ones. Raised well above that per-turn baseline so "heavy"
+// means an unusually large turn again, not the opencode norm.
+const HUD_HEAVY_TOKEN_THRESHOLD = 60_000;
 
 // Confirmed live 2026-07-14 (opencode --print-logs --log-level DEBUG, plus
 // `opencode export <sessionID>`): the NDJSON stream, the debug logs and the
