@@ -88,7 +88,11 @@ def _build_routines(raw_metrics: dict) -> list[dict]:
     """Transform raw metrics into routines table."""
     routines = []
     for name, v in sorted(raw_metrics.items(), key=lambda x: x[1].get("last_run", ""), reverse=True):
-        rate = v.get("success_rate", 0)
+        # Derived fresh from raw counts, not the stored success_rate field —
+        # see the comment in Routines.tsx's transformRoutineMetrics for why
+        # (one routine used to write it as a 0-1 fraction instead of 0-100).
+        runs_v = v.get("runs", 0)
+        rate = round((v.get("successes", 0) / runs_v) * 100, 1) if runs_v > 0 else 0
         last_success = v.get("last_success")
         if last_success is False:
             status = "critical"

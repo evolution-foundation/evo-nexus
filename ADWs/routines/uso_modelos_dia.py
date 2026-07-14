@@ -264,7 +264,13 @@ def _update_metrics(results: list[dict]) -> None:
     entry["runs"] += new_runs
     entry["successes"] += successes
     if entry["runs"] > 0:
-        entry["success_rate"] = round(entry["successes"] / entry["runs"], 4)
+        # 0-100 percentage, matching ADWs/runner.py's convention for every
+        # other routine's success_rate field — this one used to store a 0-1
+        # fraction instead, which every consumer (Routines.tsx, overview.py)
+        # reads assuming 0-100. Confirmed live: 25/30 real successes stored
+        # as 0.8333 displayed/classified as "0.8333% success" / "critical"
+        # instead of the real 83.3% / "healthy".
+        entry["success_rate"] = round((entry["successes"] / entry["runs"]) * 100, 1)
     # Aggregate token totals
     entry["total_input_tokens"] = entry.get("total_input_tokens", 0) + new_in
     entry["total_output_tokens"] = entry.get("total_output_tokens", 0) + new_out
