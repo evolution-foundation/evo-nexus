@@ -1,11 +1,343 @@
 const { spawn } = require('node-pty');
+const cp = require('child_process');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
+
+// chalk (used inside marked-terminal) auto-detects color support from THIS
+// process's own stdout — but this process is a backend service with no real
+// tty of its own; the actual renderer is the browser's xterm.js, which
+// supports full color regardless. Without this, chalk sees "no tty" and
+// silently strips every ANSI code before marked-terminal's output ever
+// leaves this process. Must be set before requiring marked-terminal —
+// chalk reads it once at import time.
+process.env.FORCE_COLOR = process.env.FORCE_COLOR || '1';
+
+const { marked } = require('marked');
+const TerminalRenderer = require('marked-terminal').default;
+
+// Renders the opencode REPL's response markdown (headers, bold, lists, code
+// blocks) as ANSI-styled terminal output instead of dumping raw markdown
+// syntax. reflowText:false — the pty/xterm.js already wraps at the real
+// terminal width; re-wrapping here at a fixed guess would fight that.
+marked.setOptions({
+  renderer: new TerminalRenderer({ reflowText: false }),
+});
+
+// Workspace root is three levels up from this file (dashboard/terminal-server/src/).
+const WORKSPACE_ROOT = path.resolve(__dirname, '..', '..', '..');
 const {
   loadProviderConfig,
   resolveProviderModel,
   getProviderMode,
 } = require('./provider-config');
+
+
+function readTerminalTrustMode() {
+  try {
+    const yaml = fs.readFileSync(path.join(WORKSPACE_ROOT, 'config', 'workspace.yaml'), 'utf8');
+    const m = yaml.match(/^chat:\s*\n(?:[ \t]+[^\n]*\n)*?[ \t]+trustMode:\s*(true|false)/m);
+    return m ? m[1] === 'true' : false;
+  } catch {
+    return false;
+  }
+}
+
+function terminalPromptAcceptInput(buffer) {
+  const clean = String(buffer || '').replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '');
+  if (/Do you trust the files in this folder\?/i.test(clean)) return '\r';
+  // First-run bypass-permissions confirmation dialog (Claude Code /
+  // OpenClaude v0.22+): "1. No, exit / 2. Yes, I accept" — accept is option 2.
+  if (/\b2\.\s*Yes, I accept/i.test(clean)) return '2\r';
+  if (/Do you want to proceed\?/i.test(clean)
+    || /Allow (this )?(command|tool|operation)/i.test(clean)
+    || /permission (request|required|to use|to run)/i.test(clean)
+    || /\b1\.\s*(Yes|Allow|Proceed)/i.test(clean)) {
+    return '1\r';
+  }
+  return null;
+}
+
+
+// A real pty (node-pty) has a line discipline that turns \n into \r\n on
+// output; a plain string piped to onOutput doesn't. Terminals move down one
+// row on \n but don't return to column 0 without an explicit \r, so raw
+// multi-line text from opencode's NDJSON `text` events renders as a
+// staircase (each line starting one column further right than the last).
+function toTerminalText(text) {
+  return text.replace(/\r?\n/g, '\r\n');
+}
+
+// marked-terminal throws on some malformed/edge-case markdown rather than
+// degrading gracefully — a rendering bug shouldn't ever hide the model's
+// actual answer, so fall back to the raw text if parsing fails.
+function renderMarkdown(text) {
+  try {
+    return marked(text).replace(/\n+$/, '');
+  } catch {
+    return text;
+  }
+}
+
+function isPtyEio(error) {
+  return error?.code === 'EIO' || /\bEIO\b|read EIO|write EIO/i.test(error?.message || '');
+}
+
+// Max time a single `opencode run` turn may take before we kill it and
+// report a timeout instead of leaving the user waiting forever. Confirmed
+// live (2026-07-13) that 120s was too short for real multi-step agentic
+// work (reviewing drafts, reading multiple files, rewriting content) — the
+// watchdog killed a turn mid-task that was doing legitimate work, not
+// hanging. 10 minutes is still provisional; Fase 3 burn-in
+// (runtime-harness-agnostic-eval feature folder) should replace it with an
+// evidence-based number once real task latencies are observed.
+const OPENCODE_TURN_TIMEOUT_MS = 600_000;
+
+// Above this many tokens in a single step, the terminal HUD (see
+// terminal-hud feature folder) marks the turn "heavy" (red semaphore
+// light). Confirmed live 2026-07-14: a trivial "ping" already used
+// ~32k input tokens — `opencode run` is a fresh headless process per
+// turn with no prompt caching across calls, so the full system
+// prompt + tool definitions get resent every single time. 20k made
+// the semaphore red on essentially every turn, not just genuinely
+// large ones. Raised well above that per-turn baseline so "heavy"
+// means an unusually large turn again, not the opencode norm.
+const HUD_HEAVY_TOKEN_THRESHOLD = 60_000;
+
+// Confirmed live 2026-07-14 (opencode --print-logs --log-level DEBUG, plus
+// `opencode export <sessionID>`): the NDJSON stream, the debug logs and the
+// exported session JSON all only ever carry the *requested* alias
+// (providerID=opencode modelID=auto) — opencode never records which
+// concrete model OmniRoute actually routed "auto" to. That data only exists
+// in the HTTP response OmniRoute itself sends back (`x-omniroute-model` /
+// `x-omniroute-provider` headers, confirmed via direct curl), and opencode's
+// own HTTP client swallows it. So instead of parsing it out of opencode,
+// _probeOmniRouteRoute below asks OmniRoute directly with a throwaway
+// 1-token call and reads those headers.
+const OMNIROUTE_PROBE_MIN_INTERVAL_MS = 20_000;
+const OMNIROUTE_PROBE_TIMEOUT_MS = 6_000;
+
+// Only meaningful while the session is on an "auto" alias — a pinned model
+// (e.g. nvidia's fixed model) is already the real model, nothing to probe.
+// Throttled per-session so rapid-fire messages don't double the request
+// volume against OmniRoute just to refresh a cosmetic HUD label.
+async function _probeOmniRouteRoute(session) {
+  if (session.providerModel !== 'auto-routing' && session.providerModel !== 'auto') return null;
+  const baseUrl = session.providerEnvVars && session.providerEnvVars.OPENAI_BASE_URL;
+  const apiKey = session.providerEnvVars && session.providerEnvVars.OPENAI_API_KEY;
+  if (!baseUrl || !apiKey) return null;
+  const now = Date.now();
+  if (session.lastRouteProbeAt && now - session.lastRouteProbeAt < OMNIROUTE_PROBE_MIN_INTERVAL_MS) {
+    return null;
+  }
+  session.lastRouteProbeAt = now;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), OMNIROUTE_PROBE_TIMEOUT_MS);
+  try {
+    const resp = await fetch(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'auto', messages: [{ role: 'user', content: '.' }], max_tokens: 1, stream: false }),
+      signal: controller.signal,
+    });
+    const realModel = resp.headers.get('x-omniroute-model');
+    const realProvider = resp.headers.get('x-omniroute-provider');
+    if (!realModel && !realProvider) return null;
+    return { providerId: realProvider || null, providerModel: realModel || null };
+  } catch (err) {
+    // Cosmetic HUD data only — logged for diagnosability, never lets a
+    // probe failure affect the real turn.
+    console.warn('[bridge] OmniRoute route probe request failed:', err && err.message);
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Sprint 3 (terminal-ux-upgrade): the tok/s figure used to be recomputed
+// live from chars-streamed-so-far ÷ elapsed-time on every 'text' fragment,
+// which swings wildly early in a turn (a 3-char fragment after 40ms reads
+// as a nonsense instantaneous rate) — that's the "varia demais" the HUD
+// needle was chasing. Replaced with a fixed typical-throughput-per-model
+// baseline: stable during a turn, changes only when the model changes.
+// totalTokens (the real step_finish count) stays live/accurate — only the
+// speed readout is now a constant. Matched by substring against whatever
+// providerModel string is active, since it may be the config's raw model
+// id ("auto-routing") or a real model name if Sprint 2 ever recovers one.
+const MODEL_AVG_TOKENS_PER_SEC = {
+  'opus': 35,
+  'sonnet': 55,
+  'haiku': 95,
+  'fable': 70,
+  'gpt-5': 60,
+  'gpt-4': 70,
+  'gemini': 65,
+  'deepseek': 50,
+  'glm': 45,
+  'qwen': 55,
+  'kimi': 50,
+  'nemotron': 45,
+  'minimax': 55,
+  'grok': 60,
+  'pickle': 60,
+};
+const DEFAULT_AVG_TOKENS_PER_SEC = 50;
+
+function _avgTokensPerSecFor(providerModel) {
+  const m = (providerModel || '').toLowerCase();
+  for (const key in MODEL_AVG_TOKENS_PER_SEC) {
+    if (m.includes(key)) return MODEL_AVG_TOKENS_PER_SEC[key];
+  }
+  return DEFAULT_AVG_TOKENS_PER_SEC;
+}
+
+// ~4 chars/token is the usual rough English/Portuguese estimate — opencode
+// doesn't stream incremental token counts, only a total per completed step,
+// so this is what drives the live tokens/s readout while a turn is still
+// running. Reconciled with the real total from `step_finish` as soon as
+// it's available.
+const HUD_CHARS_PER_TOKEN_ESTIMATE = 4;
+
+/**
+ * Read an agent's persistent memory (.claude/agent-memory/{agent}/), if any.
+ *
+ * Native Claude Code sessions get CLAUDE.md + .claude/rules/*.md auto-loaded
+ * on startup, including memory-recall.md, which tells the agent to go read
+ * its own agent-memory folder before acting. Non-Anthropic providers
+ * (openclaude/opencode) don't go through that auto-load — the persona
+ * embedding here only injects the agent's own .md file — so without this,
+ * every non-Anthropic session starts cold with zero memory of prior
+ * sessions. Reads learnings.md (dated lessons) and MEMORY.md (curated
+ * summary) when present and concatenates them; learnings.md is append-only
+ * so only the tail (most recent entries) is kept to bound prompt size.
+ */
+function loadAgentMemory(agent) {
+  if (!agent) return '';
+  const dir = path.join(WORKSPACE_ROOT, '.claude', 'agent-memory', agent);
+  const parts = [];
+  for (const file of ['learnings.md', 'MEMORY.md']) {
+    try {
+      const content = fs.readFileSync(path.join(dir, file), 'utf8').trim();
+      if (content) parts.push(`### ${file}\n${content}`);
+    } catch {
+      // File doesn't exist yet — this agent has no persisted memory. Fine.
+    }
+  }
+  if (!parts.length) return '';
+  const MAX_CHARS = 4000;
+  let combined = parts.join('\n\n');
+  if (combined.length > MAX_CHARS) combined = combined.slice(-MAX_CHARS);
+  return combined;
+}
+
+/**
+ * Build the agent persona block (persona .md + enforce-character text +
+ * prior-session memory) shared by the openclaude --system-prompt path and
+ * the opencode REPL path below.
+ */
+/**
+ * Keep the global opencode config (~/.config/opencode/opencode.json) in
+ * sync with WHATEVER provider is currently active, instead of relying on a
+ * static file that only ever defined one hardcoded "opencode" provider
+ * block. Before this, switching config/providers.json's active_provider to
+ * anything else with cli_command "opencode" would reproduce the exact same
+ * ProviderModelNotFoundError bug already fixed for the "opencode" entry —
+ * `opencode run -m <providerId>/<model>` only resolves if opencode.json has
+ * a provider block under that exact key. Runs once per session creation
+ * (cheap — a few KB JSON read/write), merges into the existing file rather
+ * than overwriting it, so manually-added provider/model entries (e.g. a
+ * test xai/grok-4.3 model) survive.
+ *
+ * Also where the "build" agent's `skill` tool gets disabled — see the
+ * comment on that line for why (94% token reduction, measured live).
+ */
+function _ensureOpencodeProviderConfig(providerId, modelArg, providerEnvVars) {
+  if (!providerId || !providerEnvVars?.OPENAI_BASE_URL || !providerEnvVars?.OPENAI_API_KEY) return;
+  const configDir = path.join(os.homedir(), '.config', 'opencode');
+  const configPath = path.join(configDir, 'opencode.json');
+  let config = { $schema: 'https://opencode.ai/config.json', provider: {}, agent: {} };
+  try {
+    const existing = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    if (existing && typeof existing === 'object') config = existing;
+  } catch {
+    // No file yet, or it's malformed — start fresh rather than fail the turn.
+  }
+  if (!config.provider || typeof config.provider !== 'object') config.provider = {};
+  const existingProvider = config.provider[providerId] || {};
+  config.provider[providerId] = {
+    ...existingProvider,
+    npm: '@ai-sdk/openai-compatible',
+    name: existingProvider.name || providerId,
+    options: {
+      baseURL: providerEnvVars.OPENAI_BASE_URL,
+      apiKey: providerEnvVars.OPENAI_API_KEY,
+    },
+    models: {
+      ...(existingProvider.models || {}),
+      [modelArg]: (existingProvider.models && existingProvider.models[modelArg]) || { name: modelArg },
+    },
+  };
+  if (!config.agent || typeof config.agent !== 'object') config.agent = {};
+  // Confirmed live 2026-07-14: with 194+ skills under .claude/skills/, the
+  // "build" agent's auto-discovered <available_skills> tool description
+  // alone cost ~30k tokens on every single turn — an isolated dir with no
+  // skills used 2,076 input tokens for "ping"; the repo root (same prompt,
+  // same model) used ~32,000-37,000. Skills are loaded on-demand by
+  // opencode's own `skill` tool, not needed for ordinary agent chat/REPL
+  // turns — this workspace's actual skill invocation flow is Claude Code's
+  // native slash commands, unrelated to this tool. Disabling it here cuts
+  // routine turn cost by roughly 15x with no loss of the slash-command flow.
+  config.agent.build = {
+    ...(config.agent.build || {}),
+    tools: { ...(config.agent.build?.tools || {}), skill: false },
+  };
+  try {
+    fs.mkdirSync(configDir, { recursive: true });
+    const tmpPath = `${configPath}.tmp-${process.pid}`;
+    fs.writeFileSync(tmpPath, JSON.stringify(config, null, 2));
+    fs.renameSync(tmpPath, configPath);
+  } catch (err) {
+    console.warn('[bridge] failed to write dynamic opencode provider config:', err && err.message);
+  }
+}
+
+function buildAgentPersona(agent, workingDir) {
+  const rootAgentFile = path.join(WORKSPACE_ROOT, '.claude', 'agents', `${agent}.md`);
+  const cwdAgentFile = path.join(workingDir, '.claude', 'agents', `${agent}.md`);
+  const agentFile = fs.existsSync(rootAgentFile) ? rootAgentFile : cwdAgentFile;
+  let agentPrompt = '';
+  let agentTier = null;
+  try {
+    const content = fs.readFileSync(agentFile, 'utf8');
+    const match = content.match(/^---\n[\s\S]*?\n---\n([\s\S]*)$/);
+    agentPrompt = match ? match[1].trim() : content;
+    for (const marker of ['\n# Persistent Agent Memory', '\n## MEMORY.md']) {
+      if (agentPrompt.includes(marker)) {
+        agentPrompt = agentPrompt.split(marker, 1)[0].trim();
+      }
+    }
+    const fmMatch = content.match(/^---\n([\s\S]*?)\n---\n/);
+    if (fmMatch) {
+      const tierMatch = fmMatch[1].match(/^model:\s*["']?([a-z0-9.-]+)["']?\s*$/mi);
+      if (tierMatch) agentTier = tierMatch[1].toLowerCase();
+    }
+  } catch {
+    agentPrompt = `You are the ${agent} agent.`;
+  }
+
+  const priorMemory = loadAgentMemory(agent);
+  if (priorMemory) {
+    agentPrompt += '\n\n## Previous Session Memory (yours — resume/summarize before acting)\n' + priorMemory;
+  }
+
+  const enforcePrompt = agentPrompt + '\n\n' +
+    'CRITICAL: You MUST fully embody this agent persona. ' +
+    'You are NOT Claude, OpenClaude, or a generic assistant — you ARE ' + agent + '. ' +
+    'When asked who you are, ALWAYS respond as ' + agent + '. ' +
+    'Never break character. Follow ALL instructions above.';
+
+  return { prompt: enforcePrompt, agentTier };
+}
 
 class ClaudeBridge {
   constructor() {
@@ -30,6 +362,8 @@ class ClaudeBridge {
       let resolved;
       if (cliCommand === 'openclaude') {
         resolved = execSync('which openclaude', { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'] }).trim();
+      } else if (cliCommand === 'opencode') {
+        resolved = execSync('which opencode', { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'] }).trim();
       } else {
         resolved = execSync('which claude', { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'] }).trim();
       }
@@ -43,18 +377,27 @@ class ClaudeBridge {
 
     // Fallback: check common hardcoded paths
     const home = process.env.HOME || '/';
-    const paths = cliCommand === 'openclaude'
-      ? [
-          path.join(home, '.local', 'bin', 'openclaude'),
-          '/usr/local/bin/openclaude',
-          '/usr/bin/openclaude',
-        ]
-      : [
-          path.join(home, '.claude', 'local', 'claude'),
-          path.join(home, '.local', 'bin', 'claude'),
-          '/usr/local/bin/claude',
-          '/usr/bin/claude',
-        ];
+    let paths;
+    if (cliCommand === 'openclaude') {
+      paths = [
+        path.join(home, '.local', 'bin', 'openclaude'),
+        '/usr/local/bin/openclaude',
+        '/usr/bin/openclaude',
+      ];
+    } else if (cliCommand === 'opencode') {
+      paths = [
+        path.join(home, '.local', 'bin', 'opencode'),
+        '/usr/local/bin/opencode',
+        '/usr/bin/opencode',
+      ];
+    } else {
+      paths = [
+        path.join(home, '.claude', 'local', 'claude'),
+        path.join(home, '.local', 'bin', 'claude'),
+        '/usr/local/bin/claude',
+        '/usr/bin/claude',
+      ];
+    }
 
     for (const p of paths) {
       try {
@@ -69,6 +412,30 @@ class ClaudeBridge {
 
     console.error(`[provider] ${cliCommand} not found anywhere, using bare command name`);
     return cliCommand;
+  }
+
+  /**
+   * True when the CLI has a persisted conversation file for this session id
+   * in this workingDir — i.e. a previous run got far enough to save state,
+   * so `--resume <id>` will succeed. Checks the config dirs used by both
+   * claude (~/.claude) and openclaude (~/.openclaude), plus
+   * CLAUDE_CONFIG_DIR when set.
+   */
+  _hasPersistedConversation(sessionId, workingDir) {
+    const home = process.env.HOME || '/';
+    const slug = String(workingDir).replace(/[^a-zA-Z0-9]/g, '-');
+    const configDirs = [
+      process.env.CLAUDE_CONFIG_DIR,
+      path.join(home, '.openclaude'),
+      path.join(home, '.claude'),
+    ].filter(Boolean);
+    return configDirs.some((dir) => {
+      try {
+        return fs.existsSync(path.join(dir, 'projects', slug, `${sessionId}.jsonl`));
+      } catch {
+        return false;
+      }
+    });
   }
 
   async startSession(sessionId, options = {}) {
@@ -88,6 +455,9 @@ class ClaudeBridge {
       if (existing.process) {
         try { existing.process.kill('SIGKILL'); } catch (_) {}
       }
+      if (existing.currentChild) {
+        try { existing.currentChild.kill('SIGKILL'); } catch (_) {}
+      }
       this.sessions.delete(sessionId);
     }
 
@@ -98,6 +468,7 @@ class ClaudeBridge {
       onOutput = () => {},
       onExit = () => {},
       onError = () => {},
+      onHudUpdate = () => {},
       cols = 80,
       rows = 24
     } = options;
@@ -122,6 +493,20 @@ class ClaudeBridge {
         );
       }
 
+      // opencode's own interactive TUI (default full-screen and --mini) don't
+      // render reliably inside this embedded pty — confirmed live on the VPS
+      // (2026-07-13, see runtime-harness-agnostic-eval feature folder):
+      // default mode overlaps frames from resize/redraw, --mini hides
+      // response text in a self-overwriting status area. Drive it headlessly
+      // instead — `opencode run --format json` + NDJSON parsing, the same
+      // approach already proven in provider_fallback.py for every heartbeat
+      // — and render the text ourselves.
+      if (providerConfig.cli_command === 'opencode') {
+        return this._startOpencodeReplSession(sessionId, {
+          workingDir, agent, onOutput, onExit, onError, onHudUpdate,
+        }, providerConfig.active || 'anthropic', providerModel, providerConfig.env_vars || {});
+      }
+
       const cliCommand = this.findClaudeCommand(providerConfig.cli_command);
 
       console.log(`Starting session ${sessionId} with ${providerConfig.cli_command}`);
@@ -129,16 +514,29 @@ class ClaudeBridge {
       console.log(`Working directory: ${workingDir}`);
       console.log(`Agent: ${agent || 'none'}`);
       console.log(`Terminal size: ${cols}x${rows}`);
-      if (dangerouslySkipPermissions) {
-        console.log(`⚠️ WARNING: Skipping permissions with --dangerously-skip-permissions flag`);
+      const terminalTrustMode = dangerouslySkipPermissions || readTerminalTrustMode();
+      if (terminalTrustMode) {
+        console.log(`⚠️ WARNING: Terminal trust mode enabled`);
       }
 
-      // Don't use --dangerously-skip-permissions when running as root —
-      // Claude/OpenClaude block this flag for root users.
-      // The trust prompt is auto-accepted via PTY detection below instead.
+      // Claude Code and OpenClaude v0.22+ refuse --dangerously-skip-permissions
+      // as root unless IS_SANDBOX=1 marks a containerized environment — the
+      // --allow-dangerously-skip-permissions flag does NOT lift that check (it
+      // only makes bypass mode available as an option). So always pass the skip
+      // flag in trust mode and inject IS_SANDBOX=1 into the child env when
+      // running as root (the clean-env whitelist below would otherwise drop it).
       const isRoot = process.getuid && process.getuid() === 0;
-      const args = (dangerouslySkipPermissions && !isRoot) ? ['--dangerously-skip-permissions'] : [];
-      if (agent) {
+      const active = providerConfig.active || 'anthropic';
+      const args = [];
+      let agentTier = null;
+
+      if (terminalTrustMode) {
+        args.push('--dangerously-skip-permissions');
+        if (isRoot) {
+          console.log('[permissions] Running as root in trust mode — injecting IS_SANDBOX=1 for the CLI root check');
+        }
+      }
+      if (agent && active === 'anthropic') {
         args.push('--agent', agent);
       }
 
@@ -146,29 +544,53 @@ class ClaudeBridge {
       // --append-system-prompt is too weak — GPT models ignore appended instructions.
       // --system-prompt REPLACES the default system prompt, ensuring the agent persona
       // takes priority over CLAUDE.md and other context that mentions "Claude".
-      const active = providerConfig.active || 'anthropic';
       if (active !== 'anthropic' && agent) {
-        // Read the agent definition file to build a strong system prompt
-        const agentFile = path.join(workingDir, '.claude', 'agents', `${agent}.md`);
-        let agentPrompt = '';
-        try {
-          const content = fs.readFileSync(agentFile, 'utf8');
-          // Extract body (after YAML frontmatter ---)
-          const match = content.match(/^---\n[\s\S]*?\n---\n([\s\S]*)$/);
-          agentPrompt = match ? match[1].trim() : content;
-        } catch {
-          agentPrompt = `You are the ${agent} agent.`;
-        }
-
-        const enforcePrompt = agentPrompt + '\n\n' +
-          'CRITICAL: You MUST fully embody this agent persona. ' +
-          'You are NOT Claude, OpenClaude, or a generic assistant — you ARE ' + agent + '. ' +
-          'When asked who you are, ALWAYS respond as ' + agent + '. ' +
-          'Never break character. Follow ALL instructions above.';
-
-        args.push('--system-prompt', enforcePrompt);
+        const persona = buildAgentPersona(agent, workingDir);
+        agentTier = persona.agentTier;
+        args.push('--system-prompt', persona.prompt);
       }
-      const providerEnv = providerConfig.env_vars || {};
+
+      // Pin the CLI conversation to the terminal-server session UUID so a
+      // crash, provider error, or terminal-server restart doesn't lose the
+      // conversation: the first start registers the id with --session-id,
+      // and any later start of the same session resumes it with --resume.
+      const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      if (UUID_RE.test(sessionId)) {
+        if (this._hasPersistedConversation(sessionId, workingDir)) {
+          console.log(`[bridge] Resuming persisted conversation for session ${sessionId}`);
+          args.push('--resume', sessionId);
+        } else {
+          args.push('--session-id', sessionId);
+        }
+      }
+
+      // Copy so per-session overrides don't leak into the shared config object.
+      const providerEnv = { ...(providerConfig.env_vars || {}) };
+
+      // Per-agent model tier: agents declare model: opus|sonnet|haiku in
+      // their frontmatter; providers.json maps each tier to a provider model
+      // via the provider's "model_tiers" field.
+      const tierModel = agentTier && providerConfig.model_tiers
+        ? providerConfig.model_tiers[agentTier]
+        : null;
+      if (active !== 'anthropic' && tierModel) {
+        providerEnv['OPENAI_MODEL'] = tierModel;
+        console.log(`[provider] Agent ${agent} tier "${agentTier}" → model ${tierModel}`);
+      }
+
+      // Automatic model fallback when the primary is overloaded. The CLI
+      // accepts a single fallback — pass the first configured entry that
+      // differs from the primary model.
+      const fallbackModels = Array.isArray(providerConfig.fallback_models)
+        ? providerConfig.fallback_models
+        : [];
+      if (active !== 'anthropic') {
+        const primary = providerEnv['OPENAI_MODEL'] || '';
+        const fallback = fallbackModels.find((m) => m && m !== primary);
+        if (fallback) {
+          args.push('--fallback-model', fallback);
+        }
+      }
 
       // Build a CLEAN environment for the spawned CLI process.
       // We DON'T spread process.env — it may contain stale/cached vars
@@ -181,6 +603,9 @@ class ClaudeBridge {
         'SSH_AUTH_SOCK', 'SSH_AGENT_PID',
         'NVM_DIR', 'NVM_BIN', 'NVM_INC',
         'CODEX_HOME', 'CLAUDE_CONFIG_DIR',
+        // Container marker exported by entrypoint.sh — required for
+        // --dangerously-skip-permissions to work as root.
+        'IS_SANDBOX',
       ];
       const cleanEnv = {};
       for (const key of SYSTEM_VARS) {
@@ -192,7 +617,7 @@ class ClaudeBridge {
       // to route to the Codex backend — a raw 'gpt-5.x' falls back to the
       // regular chat completions API, which bypasses Codex OAuth entirely.
       //
-      //   codexplan  → GPT-5.4 on Codex backend (high reasoning)
+      //   codexplan  → GPT-5.5 on Codex backend (high reasoning)
       //   codexspark → GPT-5.3 Codex Spark (faster)
       //
       // For the plain 'openai' provider (API key mode), default to gpt-4.1.
@@ -212,6 +637,13 @@ class ClaudeBridge {
         env: {
           ...cleanEnv,
           ...providerEnv,
+          // Lift the CLI's root/sudo guard for --dangerously-skip-permissions
+          // inside the container (see comment above spawn args).
+          ...(terminalTrustMode && isRoot ? { IS_SANDBOX: '1' } : {}),
+          // O auto-updater do CLI migra a instalação npm pro instalador
+          // nativo no meio da sessão e mata o processo com exit 1
+          // ("OpenClaude has switched from npm to the native installer").
+          DISABLE_AUTOUPDATER: '1',
           TERM: 'xterm-256color',
           FORCE_COLOR: '1',
           COLORTERM: 'truecolor'
@@ -226,45 +658,59 @@ class ClaudeBridge {
         workingDir,
         created: new Date(),
         active: true,
-        killTimeout: null
+        killTimeout: null,
+        // Tracks whether onExit has already fired so the late-arriving
+        // 'error' (EIO) event from node-pty doesn't double-fire onExit
+        // or surface a misleading "read EIO" toast to the user.
+        exited: false,
       };
 
       this.sessions.set(sessionId, session);
 
-      // Track if we've seen the trust prompt
-      let trustPromptHandled = false;
       let dataBuffer = '';
+      let lastAutoAcceptAt = 0;
 
       claudeProcess.onData((data) => {
         if (process.env.DEBUG) {
           console.log(`Session ${sessionId} output:`, data);
         }
 
-        // Buffer data to check for trust prompt
+        // Buffer data to check for interactive trust / permission prompts.
         dataBuffer += data;
-        
-        // Check for trust prompt and auto-accept it
-        if (!trustPromptHandled && dataBuffer.includes('Do you trust the files in this folder?')) {
-          trustPromptHandled = true;
-          console.log(`Auto-accepting trust prompt for session ${sessionId}`);
-          // The prompt shows "Enter to confirm" which means option 1 is already selected
-          // Just send Enter to confirm
-          setTimeout(() => {
-            claudeProcess.write('\r');
-            console.log(`Sent Enter to accept trust prompt for session ${sessionId}`);
-          }, 500);
+
+        const acceptInput = terminalTrustMode ? terminalPromptAcceptInput(dataBuffer) : null;
+        if (acceptInput) {
+          const now = Date.now();
+          if (now - lastAutoAcceptAt > 1200) {
+            lastAutoAcceptAt = now;
+            dataBuffer = '';
+            console.log(`Auto-accepting terminal permission prompt for session ${sessionId}`);
+            setTimeout(() => {
+              claudeProcess.write(acceptInput);
+            }, 250);
+          }
         }
-        
+
         // Clear buffer periodically to prevent memory issues
         if (dataBuffer.length > 10000) {
           dataBuffer = dataBuffer.slice(-5000);
         }
-        
+
         onOutput(data);
       });
 
       claudeProcess.onExit((exitCode, signal) => {
+        // node-pty 1.1.0+ passes exitCode as an object {exitCode, signal}
+        // in some code paths. Normalize so the rest of the pipeline always
+        // sees a number (or null).
+        if (exitCode && typeof exitCode === 'object') {
+          signal = exitCode.signal != null ? exitCode.signal : signal;
+          exitCode = exitCode.exitCode != null ? exitCode.exitCode : exitCode;
+        }
         console.log(`Claude session ${sessionId} exited with code ${exitCode}, signal ${signal}`);
+        // Mark as exited so the late-arriving 'error' (EIO) handler
+        // knows the exit has already been reported and stays silent.
+        session.exited = true;
         // Clear kill timeout if process exited naturally
         if (session.killTimeout) {
           clearTimeout(session.killTimeout);
@@ -276,15 +722,36 @@ class ClaudeBridge {
       });
 
       claudeProcess.on('error', (error) => {
-        console.error(`Claude session ${sessionId} error:`, error);
+        if (isPtyEio(error)) {
+          // EIO on the master side of the PTY is a known artifact when the
+          // child process has already exited — node-pty's read loop hits
+          // the closed slave FD and emits 'error' before (or alongside)
+          // the 'exit' event. If onExit already fired, we're done — don't
+          // double-report. If not, treat it as a normal exit (code 1,
+          // signal null) instead of an error so the frontend shows a
+          // clean "[Process exited]" rather than a scary "read EIO".
+          if (session.exited) {
+            console.warn(`Claude session ${sessionId} EIO after exit — suppressed`);
+            return;
+          }
+          console.warn(`Claude session ${sessionId} PTY closed with EIO; treating as exit`);
+        } else {
+          console.error(`Claude session ${sessionId} error:`, error);
+        }
         // Clear kill timeout if process errored
         if (session.killTimeout) {
           clearTimeout(session.killTimeout);
           session.killTimeout = null;
         }
+        session.exited = true;
         session.active = false;
         this.sessions.delete(sessionId);
-        onError(error);
+        if (isPtyEio(error)) {
+          // Signal null (not 'EIO') so the frontend doesn't restart-loop
+          onExit(1, null);
+        } else {
+          onError(error);
+        }
       });
 
       console.log(`Claude session ${sessionId} started successfully`);
@@ -296,15 +763,441 @@ class ClaudeBridge {
     }
   }
 
+  /**
+   * Start an opencode session as a headless REPL instead of an interactive
+   * pty process. No long-lived child process — each submitted line spawns
+   * its own `opencode run` call (see _runOpencodeTurn), so there's no CLI
+   * "process" for this session to crash or hang mid-conversation; a turn
+   * that fails or times out just reports an error and leaves the session
+   * ready for the next message.
+   */
+  async _startOpencodeReplSession(sessionId, options, providerId, providerModel, providerEnvVars = {}) {
+    const { workingDir, agent, onOutput, onExit, onError, onHudUpdate } = options;
+    const cliBin = this.findClaudeCommand('opencode');
+
+    // Keeps opencode.json's provider block in sync with whichever provider
+    // is actually active — see _ensureOpencodeProviderConfig for why this
+    // is required for any provider other than the original hardcoded
+    // "opencode" one to work at all.
+    _ensureOpencodeProviderConfig(providerId, providerModel || 'auto', providerEnvVars);
+
+    let personaPrefix = null;
+    if (agent) {
+      const persona = buildAgentPersona(agent, workingDir);
+      personaPrefix = persona.prompt;
+    }
+
+    const session = {
+      workingDir,
+      created: new Date(),
+      active: true,
+      exited: false,
+      isOpencode: true,
+      process: null,
+      currentChild: null,
+      busy: false,
+      lineBuffer: '',
+      opencodeSessionId: null,
+      // Persona slug (e.g. "atlas-project") — lets a global status endpoint
+      // (GET /api/sessions/hud-status, see server.js) report which agents
+      // are working without touching any per-session terminal socket.
+      agentName: agent || null,
+      personaPrefix,
+      // cliProviderId/cliModelArg are the ONLY values ever passed to `opencode
+      // run -m <...>` — fixed at session creation, never touched again.
+      // providerId/providerModel below are a SEPARATE pair used purely for
+      // the HUD display (rewritten to "auto-routing" for a nicer label, and
+      // later to the real routed model/provider by _probeOmniRouteRoute).
+      // Confirmed live 2026-07-14 (docker exec into the deployed container):
+      // reusing one pair for both purposes meant the HUD's "auto-routing"
+      // display label was also getting sent as the actual `-m` argument —
+      // `-m opencode/auto-routing` fails with ProviderModelNotFoundError
+      // ("auto-routing" isn't a model opencode.json defines; only "auto" is)
+      // — masked by opencode as a generic "Unexpected server error". Manual
+      // `-m opencode/auto` in the same container succeeded immediately.
+      cliProviderId: providerId,
+      cliModelArg: providerModel || 'auto',
+      providerId,
+      // "auto-routing" instead of the bare "auto" from providers.json's
+      // default_model — that string means "OmniRoute decides server-side",
+      // not a model name, and showing it unlabeled on the HUD reads as a
+      // broken/generic value. Overwritten with the real provider/model the
+      // moment the OmniRoute probe resolves one (see _probeOmniRouteRoute).
+      providerModel: providerModel && providerModel !== 'auto' ? providerModel : 'auto-routing',
+      // OPENAI_BASE_URL/OPENAI_API_KEY come from this provider's own
+      // dashboard-editable config (same fields every other provider uses),
+      // already resolved from placeholders to real secrets by
+      // loadProviderConfig() before reaching here — opencode.json points
+      // its "opencode" provider at {env:OPENAI_BASE_URL}/{env:OPENAI_API_KEY}.
+      providerEnvVars,
+      cliBin,
+      onOutput,
+      onExit,
+      onError,
+      onHudUpdate: onHudUpdate || (() => {}),
+      // Tracks the provider/model shown in the last hud_update sent — lets
+      // us tell the frontend "this specific update is a change" (fires the
+      // gear-shift animation) vs. just a routine tick.
+      lastHudProviderId: null,
+      lastHudProviderModel: null,
+      bestTokensPerSec: 0,
+    };
+    this.sessions.set(sessionId, session);
+
+    onOutput(
+      `\x1b[36mopencode (${providerId}/${session.providerModel}) — modo REPL headless.\x1b[0m\r\n` +
+      `Digite sua mensagem e pressione Enter.\r\n\r\n`
+    );
+
+    console.log(`[bridge] opencode REPL session ${sessionId} ready (agent: ${agent || 'none'})`);
+    return session;
+  }
+
+  /**
+   * Build the environment for an `opencode run` child process. Mirrors the
+   * SYSTEM_VARS whitelist used for the pty-spawned CLIs above — no full
+   * process.env spread, so a stale OPENAI_API_KEY etc. can't hijack the
+   * call. OPENAI_BASE_URL/OPENAI_API_KEY come from providerEnvVars (the
+   * "opencode" provider's own dashboard-editable config, same fields every
+   * other provider uses) — opencode.json resolves them via
+   * {env:OPENAI_BASE_URL}/{env:OPENAI_API_KEY}.
+   */
+  _buildOpencodeEnv(providerEnvVars = {}) {
+    const SYSTEM_VARS = [
+      'HOME', 'USER', 'SHELL', 'PATH', 'LANG', 'LC_ALL', 'LC_CTYPE',
+      'LOGNAME', 'HOSTNAME', 'XDG_RUNTIME_DIR', 'XDG_DATA_HOME',
+      'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'TMPDIR',
+      'SSH_AUTH_SOCK', 'SSH_AGENT_PID',
+      'NVM_DIR', 'NVM_BIN', 'NVM_INC',
+      'CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'IS_SANDBOX',
+    ];
+    const env = {};
+    for (const key of SYSTEM_VARS) {
+      if (process.env[key]) env[key] = process.env[key];
+    }
+    if (providerEnvVars.OPENAI_BASE_URL) env.OPENAI_BASE_URL = providerEnvVars.OPENAI_BASE_URL;
+    if (providerEnvVars.OPENAI_API_KEY) env.OPENAI_API_KEY = providerEnvVars.OPENAI_API_KEY;
+    env.DISABLE_AUTOUPDATER = '1';
+    return env;
+  }
+
+  /**
+   * Handle raw keystrokes for an opencode REPL session: echo printable
+   * characters, support backspace and Ctrl+C (clears the pending line —
+   * can't interrupt an in-flight turn without killing it), and submit the
+   * buffered line on Enter. No cursor movement / history — MVP REPL, not a
+   * full line editor.
+   */
+  _handleOpencodeKeystrokes(sessionId, session, data) {
+    // xterm sends escape sequences (arrows, function keys, etc.) as a
+    // single multi-byte chunk starting with ESC. Swallow the whole thing
+    // instead of leaking its raw bytes into the message buffer.
+    if (data.length > 1 && data.charCodeAt(0) === 0x1b) return;
+
+    for (const ch of data) {
+      if (ch === '\r' || ch === '\n') {
+        session.onOutput('\r\n');
+        const line = session.lineBuffer;
+        session.lineBuffer = '';
+        if (!line.trim()) continue;
+        if (session.busy) {
+          session.onOutput('\x1b[33m(ainda processando a mensagem anterior — aguarde)\x1b[0m\r\n');
+          continue;
+        }
+        this._runOpencodeTurn(sessionId, session, line);
+      } else if (ch === '\x7f' || ch === '\b') {
+        if (session.lineBuffer.length > 0) {
+          session.lineBuffer = session.lineBuffer.slice(0, -1);
+          session.onOutput('\b \b');
+        }
+      } else if (ch === '\x03') {
+        session.lineBuffer = '';
+        session.onOutput('^C\r\n');
+      } else if (ch >= ' ') {
+        session.lineBuffer += ch;
+        session.onOutput(ch);
+      }
+    }
+  }
+
+  /**
+   * Push a status snapshot to the terminal HUD (see the terminal-hud
+   * feature folder — semaphore + gear/LCD panel). `shift` is computed here,
+   * not passed in: true only on the specific update where providerId or
+   * providerModel actually changed since the last one sent, so the frontend
+   * knows to play the gear-shift animation instead of a routine tick.
+   */
+  _emitHudUpdate(session, patch = {}) {
+    const providerId = patch.providerId || session.providerId;
+    const providerModel = patch.providerModel || session.providerModel;
+    const shift = providerId !== session.lastHudProviderId || providerModel !== session.lastHudProviderModel;
+    session.lastHudProviderId = providerId;
+    session.lastHudProviderModel = providerModel;
+    if (typeof patch.tokensPerSec === 'number' && patch.tokensPerSec > session.bestTokensPerSec) {
+      session.bestTokensPerSec = patch.tokensPerSec;
+    }
+    const payload = {
+      busy: session.busy,
+      providerId,
+      providerModel,
+      tokensPerSec: null,
+      totalTokens: null,
+      heavy: false,
+      ...patch,
+      bestTokensPerSec: session.bestTokensPerSec,
+      shift,
+    };
+    // Stashed on the session so GET /api/sessions/hud-status can report
+    // this turn's state to callers with no open WebSocket (the /agents
+    // page) — onHudUpdate above only reaches whoever has this one
+    // terminal tab open right now.
+    session.lastHud = payload;
+    session.onHudUpdate(payload);
+  }
+
+  /**
+   * Run one `opencode run` turn headlessly and stream its NDJSON `text`
+   * events into session.onOutput as they arrive. Same event shape already
+   * parsed in provider_fallback.py::_parse_opencode_ndjson — kept as a
+   * separate JS implementation since these two bridges don't share a util
+   * module today.
+   */
+  _runOpencodeTurn(sessionId, session, message) {
+    session.busy = true;
+
+    let fullMessage = message;
+    if (session.personaPrefix) {
+      fullMessage = `${session.personaPrefix}\n\n---\n\nTask:\n${message}`;
+      session.personaPrefix = null; // embed only once — -s keeps the rest of the context
+    }
+
+    this._attemptOpencodeTurn(sessionId, session, fullMessage, 0);
+  }
+
+  /**
+   * One `opencode run` attempt for a turn. On timeout, retries once with the
+   * same message instead of failing outright — a stuck attempt (like the
+   * OmniRoute "auggie" LKGP hang from 2026-07-13) is often transient, and a
+   * silent retry costs nothing the user wasn't already waiting for. Only
+   * gives up and reports an error after the retry ALSO times out.
+   */
+  _attemptOpencodeTurn(sessionId, session, fullMessage, attemptNumber) {
+    const modelRef = `${session.cliProviderId}/${session.cliModelArg}`;
+    // No --agent flag — defaults to opencode's "build" agent, which is what
+    // the original spike validated for real tool-use (bash calls + reported
+    // text). The zero-token/no-response symptom seen live on 2026-07-13
+    // turned out to be unrelated to agent choice (--agent plan didn't fix
+    // it either) — root cause was the OmniRoute "auto" combo routing to a
+    // stuck "auggie" candidate (see runtime-harness-agnostic-eval feature
+    // folder + omniroute-gateway memory). Fixed on the gateway side by
+    // removing "auggie" from the auto/* combo pools.
+    const args = ['run', fullMessage, '-m', modelRef, '--format', 'json', '--auto'];
+    if (session.opencodeSessionId) {
+      args.push('-s', session.opencodeSessionId);
+    }
+
+    if (attemptNumber === 0) {
+      session.onOutput('\x1b[90m…\x1b[0m');
+    }
+
+    let child;
+    try {
+      child = cp.spawn(session.cliBin, args, {
+        cwd: session.workingDir,
+        env: this._buildOpencodeEnv(session.providerEnvVars),
+        // Node leaves a child's stdin as an open, never-EOF'd pipe by
+        // default — opencode blocks reading it before ever calling the
+        // model, so the call just hangs forever with no output, no exit,
+        // no error (confirmed locally, 2026-07-13: identical spawn args
+        // via bash with stdin inherited from a real TTY complete in
+        // under a second; the same spawn() call in Node without this
+        // hangs indefinitely). `run` never reads stdin for anything we
+        // use here, so closing it costs nothing.
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+    } catch (error) {
+      session.busy = false;
+      session.onOutput(`\r\x1b[K\r\n\x1b[31m[opencode] falha ao executar: ${error.message}\x1b[0m\r\n\r\n`);
+      return;
+    }
+    session.currentChild = child;
+    if (attemptNumber === 0) {
+      this._emitHudUpdate(session);
+    }
+
+    let stdoutBuffer = '';
+    let stderrBuffer = '';
+    let textBuffer = '';
+    let sawText = false;
+    let charsSoFar = 0;
+    let realTotalTokens = null;
+    let sawError = false;
+    let errorMessage = '';
+    let timedOut = false;
+
+    const killTimer = setTimeout(() => {
+      timedOut = true;
+      console.warn(`[bridge] opencode turn for session ${sessionId} exceeded ${OPENCODE_TURN_TIMEOUT_MS}ms (attempt ${attemptNumber + 1}) — killing`);
+      try { child.kill('SIGKILL'); } catch (_) {}
+    }, OPENCODE_TURN_TIMEOUT_MS);
+
+    const processLine = (rawLine) => {
+      const line = rawLine.trim();
+      if (!line) return;
+      let event;
+      try {
+        event = JSON.parse(line);
+      } catch {
+        return;
+      }
+      const sid = event.sessionID || event.session_id;
+      if (sid && !session.opencodeSessionId) {
+        session.opencodeSessionId = sid;
+      }
+      const part = event.part || {};
+      if (event.type === 'text') {
+        const text = part.text;
+        if (text) {
+          // Buffered, not streamed straight to onOutput — the response is
+          // markdown (headers, bold, lists, code blocks) and arrives in
+          // arbitrary-sized fragments; parsing each fragment as markdown on
+          // its own would mangle syntax split across two chunks (e.g.
+          // "**bo" + "ld**"). Rendered whole once the turn closes.
+          sawText = true;
+          textBuffer += text;
+          charsSoFar += text.length;
+          const estTokens = charsSoFar / HUD_CHARS_PER_TOKEN_ESTIMATE;
+          this._emitHudUpdate(session, {
+            tokensPerSec: _avgTokensPerSecFor(session.providerModel),
+            totalTokens: Math.round(estTokens),
+          });
+        }
+      } else if (event.type === 'error') {
+        sawError = true;
+        const err = event.error || {};
+        errorMessage = (err.data && err.data.message) || err.name || 'erro desconhecido';
+      } else if (event.type === 'step_finish') {
+        // Real token count for the step that just closed — reconciles the
+        // char-based live estimate above. Multiple steps can happen in one
+        // turn (tool calls between text replies); keep the running total.
+        const tokens = part.tokens;
+        if (tokens) {
+          const stepTotal = (tokens.input || 0) + (tokens.output || 0);
+          realTotalTokens = (realTotalTokens || 0) + stepTotal;
+          this._emitHudUpdate(session, {
+            tokensPerSec: _avgTokensPerSecFor(session.providerModel),
+            totalTokens: realTotalTokens,
+            heavy: realTotalTokens > HUD_HEAVY_TOKEN_THRESHOLD,
+          });
+        }
+      }
+    };
+
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', (chunk) => {
+      stdoutBuffer += chunk;
+      let idx;
+      while ((idx = stdoutBuffer.indexOf('\n')) !== -1) {
+        processLine(stdoutBuffer.slice(0, idx));
+        stdoutBuffer = stdoutBuffer.slice(idx + 1);
+      }
+    });
+
+    child.stderr.setEncoding('utf8');
+    child.stderr.on('data', (chunk) => {
+      stderrBuffer += chunk;
+    });
+
+    child.on('close', (code) => {
+      clearTimeout(killTimer);
+      if (stdoutBuffer.trim()) processLine(stdoutBuffer);
+      session.currentChild = null;
+
+      if (timedOut && !sawText && attemptNumber < 1) {
+        console.warn(`[bridge] opencode turn timed out for session ${sessionId}, retrying once`);
+        session.onOutput(`\r\x1b[K\r\n\x1b[33m[opencode] sem resposta em ${Math.round(OPENCODE_TURN_TIMEOUT_MS / 1000)}s — tentando de novo\x1b[0m\r\n`);
+        this._attemptOpencodeTurn(sessionId, session, fullMessage, attemptNumber + 1);
+        return; // stays busy — the retry owns finishing the turn
+      }
+
+      session.busy = false;
+      this._emitHudUpdate(session, {
+        tokensPerSec: 0,
+        totalTokens: realTotalTokens,
+        heavy: (realTotalTokens || 0) > HUD_HEAVY_TOKEN_THRESHOLD,
+      });
+
+      // Only *after* the real turn's own child process/network work is
+      // fully done — not concurrently with it (see _probeOmniRouteRoute).
+      // Firing this in parallel with the turn made the VPS visibly slower
+      // on live testing (extra TLS handshake + request competing for
+      // CPU/bandwidth right when the real turn needed it) and the label
+      // update would frequently land after the user had stopped watching
+      // anyway. Fire-and-forget: just refreshes the HUD label whenever it
+      // resolves, doesn't block or affect the next turn.
+      _probeOmniRouteRoute(session)
+        .then((route) => {
+          if (!route || (!route.providerId && !route.providerModel)) return;
+          if (route.providerId) session.providerId = route.providerId;
+          if (route.providerModel) session.providerModel = route.providerModel;
+          this._emitHudUpdate(session, { tokensPerSec: 0 });
+        })
+        .catch((err) => {
+          console.warn(`[bridge] OmniRoute route probe failed for session ${sessionId}:`, err && err.message);
+        });
+
+      session.onOutput('\r\x1b[K'); // clear the "…" placeholder either way
+
+      if (textBuffer) {
+        session.onOutput(toTerminalText(renderMarkdown(textBuffer)));
+      }
+
+      if (timedOut) {
+        session.onOutput(`\r\n\x1b[31m[opencode] sem resposta em ${Math.round(OPENCODE_TURN_TIMEOUT_MS / 1000)}s, de novo mesmo depois de tentar outra vez — desisti\x1b[0m\r\n`);
+      } else if (sawError) {
+        session.onOutput(`\r\n\x1b[31m[opencode] ${toTerminalText(errorMessage)}\x1b[0m\r\n`);
+      } else if (code !== 0) {
+        const stderrTail = stderrBuffer.trim().slice(0, 300);
+        session.onOutput(`\r\n\x1b[31m[opencode] processo saiu com código ${code}${stderrTail ? ': ' + toTerminalText(stderrTail) : ''}\x1b[0m\r\n`);
+      } else if (!sawText) {
+        session.onOutput('\r\n\x1b[33m[opencode] sem resposta de texto nesse turno.\x1b[0m\r\n');
+      }
+      session.onOutput('\r\n');
+    });
+
+    child.on('error', (error) => {
+      clearTimeout(killTimer);
+      session.currentChild = null;
+      session.busy = false;
+      this._emitHudUpdate(session, { tokensPerSec: 0 });
+      session.onOutput(`\r\x1b[K\r\n\x1b[31m[opencode] falha ao executar: ${error.message}\x1b[0m\r\n\r\n`);
+    });
+  }
+
   async sendInput(sessionId, data) {
     const session = this.sessions.get(sessionId);
     if (!session || !session.active) {
       throw new Error(`Session ${sessionId} not found or not active`);
     }
 
+    if (session.isOpencode) {
+      this._handleOpencodeKeystrokes(sessionId, session, data);
+      return true;
+    }
+
     try {
       session.process.write(data);
+      return true;
     } catch (error) {
+      if (isPtyEio(error)) {
+        // Process already exited — don't surface EIO; treat as silent exit
+        if (!session.exited) {
+          session.exited = true;
+        }
+        session.active = false;
+        this.sessions.delete(sessionId);
+        return false;
+      }
       throw new Error(`Failed to send input to session ${sessionId}: ${error.message}`);
     }
   }
@@ -315,9 +1208,16 @@ class ClaudeBridge {
       throw new Error(`Session ${sessionId} not found or not active`);
     }
 
+    if (session.isOpencode) return; // no real pty to resize in REPL mode
+
     try {
       session.process.resize(cols, rows);
     } catch (error) {
+      if (isPtyEio(error)) {
+        session.active = false;
+        this.sessions.delete(sessionId);
+        return;
+      }
       console.warn(`Failed to resize session ${sessionId}:`, error.message);
     }
   }
@@ -325,6 +1225,21 @@ class ClaudeBridge {
   async stopSession(sessionId) {
     const session = this.sessions.get(sessionId);
     if (!session) {
+      return;
+    }
+
+    if (session.isOpencode) {
+      if (session.currentChild) {
+        try { session.currentChild.kill('SIGKILL'); } catch (_) {}
+      }
+      // Sprint 7 (terminal-ux-upgrade): attachments uploaded during this
+      // session (see POST /api/upload) live in a per-session dir under the
+      // workingDir — best-effort cleanup on stop (Q6). Not awaited: a slow
+      // FS shouldn't hold up session teardown, and a leftover .uploads dir
+      // from a failed rm is not a correctness problem, just tidiness.
+      fs.rm(path.join(session.workingDir, '.uploads', sessionId), { recursive: true, force: true }, () => {});
+      session.active = false;
+      this.sessions.delete(sessionId);
       return;
     }
 
@@ -337,7 +1252,7 @@ class ClaudeBridge {
 
       if (session.active && session.process) {
         session.process.kill('SIGTERM');
-        
+
         session.killTimeout = setTimeout(() => {
           if (session.active && session.process) {
             session.process.kill('SIGKILL');

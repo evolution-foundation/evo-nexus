@@ -62,6 +62,10 @@ class Capability(str, Enum):
     # Wave 2.1 — full-screen plugin UI pages + writable data
     ui_pages = "ui_pages"
     writable_data = "writable_data"
+    # B2.0 — unauthenticated public pages served by the host (token-bound)
+    public_pages = "public_pages"
+    # B3 — safe uninstall with data preservation and 3-step wizard
+    safe_uninstall = "safe_uninstall"
 
 
 class PluginMcpServer(BaseModel):
@@ -303,6 +307,13 @@ class ReadonlyQuery(BaseModel):
     id: Annotated[str, Field(min_length=1, max_length=100)]
     description: Annotated[str, Field(min_length=1, max_length=500)]
     sql: Annotated[str, Field(min_length=1)]
+    # B2.0: expose this query on the public portal without host auth.
+    # Value is the PluginPublicPage.id that gates access.
+    public_via: Optional[str] = None
+    # B2.0: named SQL parameter in ``sql`` that receives the URL token value.
+    # Required when public_via is set.  The parameter must appear in ``sql``
+    # as :token_param (e.g. ``WHERE magic_link_token = :token``).
+    bind_token_param: Optional[str] = None
 
     @field_validator("id")
     @classmethod
@@ -566,6 +577,14 @@ class PluginWritableResource(BaseModel):
     )
     # Optional JSON Schema for payload validation (jsonschema library)
     json_schema: Optional[WritableResourceJsonSchema] = None
+    # Wave 2.1.x: optional endpoint-level RBAC. When set, only authenticated
+    # users whose ``current_user.role`` is in this list may POST/PUT/DELETE this
+    # resource.  Empty/None means any authenticated user passes (legacy default).
+    # Role 'admin' always passes regardless of the list (super-user override).
+    # Plugins use this to gate writable resources by role without needing a host
+    # PR or app-layer wrapper.  See evonexus-plugin-nutri for split-endpoint
+    # patterns (patients_admin vs patients_clinical).
+    requires_role: Optional[List[Annotated[str, Field(min_length=1, max_length=64)]]] = None
 
     @field_validator("id")
     @classmethod
@@ -583,6 +602,232 @@ class PluginWritableResource(BaseModel):
             raise ValueError(
                 f"WritableResource table '{v}' must match ^[a-z][a-z0-9_]*$"
             )
+        return v
+
+    @field_validator("requires_role")
+    @classmethod
+    def requires_role_pattern(cls, v: Optional[List[str]]) -> Optional[List[str]]:
+        if v is None:
+            return v
+        for role in v:
+            if not re.match(r"^[a-z][a-z0-9-]*$", role):
+                raise ValueError(
+                    f"requires_role entry '{role}' must match ^[a-z][a-z0-9-]*$ (kebab-case)"
+                )
+        return v
+
+
+class PluginPublicPageTokenSource(BaseModel):
+    """Token source declaration for a public page (B2.0).
+
+    The host validates the incoming token against ``column`` in ``table``
+    using a parametric query.  Table must be slug-prefixed (enforced by the
+    PluginManifest validator ``public_pages_tables_slug_prefixed``).
+
+    B2.0 v1 deliberately does NOT support a ``revoked_when`` SQL fragment to
+    prevent SQL injection.  Revocation is the plugin's responsibility: nulling
+    or rotating the token column value causes the next request to 404.
+    """
+
+    # Plugin-owned table containing the token column (validated slug-prefixed)
+    table: Annotated[str, Field(min_length=1, max_length=200)]
+    # Column in ``table`` that holds the token value
+    column: Annotated[str, Field(min_length=1, max_length=100)]
+
+    @field_validator("table")
+    @classmethod
+    def table_identifier(cls, v: str) -> str:
+        if not re.match(r"^[a-z][a-z0-9_]*$", v):
+            raise ValueError(
+                f"token_source.table '{v}' must match ^[a-z][a-z0-9_]*$"
+            )
+        return v
+
+    @field_validator("column")
+    @classmethod
+    def column_identifier(cls, v: str) -> str:
+        if not re.match(r"^[a-z][a-z0-9_]*$", v):
+            raise ValueError(
+                f"token_source.column '{v}' must match ^[a-z][a-z0-9_]*$"
+            )
+        return v
+
+
+class PluginPublicPage(BaseModel):
+    """A public (unauthenticated) page declared in plugin.yaml under public_pages (B2.0).
+
+    The host registers ``/p/{slug}/{route_prefix}/{token}`` as a public route
+    and validates the token against ``token_source.column`` in ``token_source.table``
+    on every request.  Only B2.0 (read-only, no PIN) is supported in v1.
+    B2.1 (PIN + writable + auto_set_columns) is deferred.
+    """
+
+    # Unique identifier within this plugin's public_pages list
+    id: Annotated[str, Field(min_length=1, max_length=100)]
+    # Human-readable label for audit logs and admin UI
+    description: Annotated[str, Field(min_length=1, max_length=500)]
+    # URL prefix segment, without leading/trailing slashes (e.g. "portal")
+    route_prefix: Annotated[str, Field(min_length=1, max_length=100)]
+    # Token source — which plugin table/column the URL token is validated against
+    token_source: PluginPublicPageTokenSource
+    # Plugin JS bundle path (must be under ui/public/)
+    bundle: Annotated[str, Field(min_length=1, max_length=500)]
+    # Web component tag name registered by the bundle
+    custom_element_name: Annotated[str, Field(min_length=1, max_length=200)]
+    # auth_mode: only "token" is supported in B2.0 (B2.1 will add "pin")
+    auth_mode: Literal["token"] = "token"
+    # Rate limit override per page (requests/minute/IP); defaults to global limiter
+    rate_limit_per_ip: Optional[int] = None
+    # Optional action name to write to the audit log on each page view
+    audit_action: Optional[str] = None
+
+    @field_validator("id")
+    @classmethod
+    def id_pattern(cls, v: str) -> str:
+        if not re.match(r"^[a-z0-9_]+$", v):
+            raise ValueError(f"PluginPublicPage id '{v}' must match ^[a-z0-9_]+$")
+        return v
+
+    @field_validator("route_prefix")
+    @classmethod
+    def route_prefix_clean(cls, v: str) -> str:
+        """No leading/trailing slashes; only lowercase alphanum + hyphens."""
+        v = v.strip("/")
+        if not re.match(r"^[a-z0-9][a-z0-9-]*[a-z0-9]$|^[a-z0-9]$", v):
+            raise ValueError(
+                f"route_prefix '{v}' must be lowercase alphanum+hyphens, no slashes"
+            )
+        return v
+
+    @field_validator("bundle")
+    @classmethod
+    def bundle_in_public_subtree(cls, v: str) -> str:
+        """Bundle must live under ui/public/ to prevent leaking authenticated bundles."""
+        if not v.startswith("ui/public/"):
+            raise ValueError(
+                f"PluginPublicPage bundle '{v}' must start with 'ui/public/' "
+                "(authenticated ui_pages bundles are not accessible from public routes)."
+            )
+        ext = Path(v).suffix.lower()
+        if ext not in {".js", ".mjs"}:
+            raise ValueError(
+                f"PluginPublicPage bundle '{v}' must have a .js or .mjs extension."
+            )
+        return v
+
+    @field_validator("custom_element_name")
+    @classmethod
+    def custom_element_name_has_hyphen(cls, v: str) -> str:
+        if "-" not in v:
+            raise ValueError(
+                f"custom_element_name '{v}' must contain at least one hyphen "
+                "(Web Components specification requirement)."
+            )
+        return v
+
+    @field_validator("rate_limit_per_ip")
+    @classmethod
+    def rate_limit_positive(cls, v: Optional[int]) -> Optional[int]:
+        if v is not None and v < 1:
+            raise ValueError("rate_limit_per_ip must be a positive integer")
+        return v
+
+
+class PluginPreUninstallHook(BaseModel):
+    """Pre-uninstall hook declaration (B3 safe_uninstall).
+
+    Executed as a sandboxed subprocess before the uninstall wizard proceeds.
+    The hook must produce a file in ``output_dir`` when ``must_produce_file``
+    is true — if it does not, the uninstall is blocked.
+    """
+
+    # Relative path to the hook script inside the plugin directory
+    script: Annotated[str, Field(min_length=1, max_length=500)]
+    # Output directory pattern (supports {slug} and {timestamp} interpolation)
+    output_dir: Annotated[str, Field(min_length=1, max_length=500)]
+    # Seconds before the subprocess is killed (max 600)
+    timeout_seconds: int = 600
+    # If true, uninstall is blocked when the hook exits cleanly but produces no file
+    must_produce_file: bool = True
+
+    @field_validator("script")
+    @classmethod
+    def script_relative(cls, v: str) -> str:
+        if v.startswith("/") or ".." in v:
+            raise ValueError(
+                f"pre_uninstall_hook.script '{v}' must be relative and must not traverse upward"
+            )
+        return v
+
+    @field_validator("timeout_seconds")
+    @classmethod
+    def timeout_in_range(cls, v: int) -> int:
+        if not 1 <= v <= 600:
+            raise ValueError("timeout_seconds must be between 1 and 600")
+        return v
+
+
+class PluginUserConfirmation(BaseModel):
+    """User confirmation gate for safe_uninstall (B3).
+
+    Defines the checkbox label and the exact phrase the user must type
+    to enable the Uninstall button.  Phrase matching is case-sensitive.
+    """
+
+    checkbox_label: Annotated[str, Field(min_length=1, max_length=1000)]
+    typed_phrase: Annotated[str, Field(min_length=1, max_length=200)]
+
+
+class PluginSafeUninstall(BaseModel):
+    """Safe uninstall declaration for plugins holding regulated data (B3).
+
+    When ``enabled`` is true the host enforces:
+    1. A 3-step wizard (pre-hook → checkbox → typed phrase + ZIP password).
+    2. Preserved tables are NOT dropped and are renamed ``_orphan_{slug}_{table}``.
+    3. Host-entity cascades respect ``preserved_host_entities`` filters.
+    4. Reinstall detects orphaned tables and restores access after SHA256 verify.
+
+    Plugins not declaring this block continue to use the default cascade-DELETE.
+    """
+
+    enabled: bool = False
+    # Human-readable regulatory reason shown to the admin before they confirm
+    reason: Optional[str] = None
+    # Pre-uninstall hook run before the wizard
+    pre_uninstall_hook: Optional[PluginPreUninstallHook] = None
+    # Checkbox + typed phrase gate
+    user_confirmation: Optional[PluginUserConfirmation] = None
+    # Tables that must NOT be dropped on uninstall (renamed to _orphan_{slug}_{table})
+    preserved_tables: List[str] = Field(default_factory=list)
+    # Host-managed entity classes to partially preserve (table → WHERE clause EXCLUDING rows to delete)
+    # Dict mapping host table name to a SQL WHERE expression for rows that SHOULD be preserved.
+    # e.g. {"tickets": "source_plugin = 'nutri' AND linked_resource LIKE 'nutri_patients/%'"}
+    preserved_host_entities: Dict[str, str] = Field(default_factory=dict)
+    # If true, Uninstall button is completely disabled in the UI (for active audit windows, etc.)
+    block_uninstall: bool = False
+
+    @field_validator("preserved_tables")
+    @classmethod
+    def table_names_identifier(cls, v: List[str]) -> List[str]:
+        for name in v:
+            if not re.match(r"^[a-z][a-z0-9_]*$", name):
+                raise ValueError(
+                    f"preserved_tables entry '{name}' must match ^[a-z][a-z0-9_]*$"
+                )
+        return v
+
+    @field_validator("preserved_host_entities")
+    @classmethod
+    def host_entity_tables_known(cls, v: Dict[str, str]) -> Dict[str, str]:
+        _ALLOWED_HOST_TABLES = frozenset({
+            "triggers", "tickets", "goal_tasks", "goals", "projects", "missions"
+        })
+        for table in v:
+            if table not in _ALLOWED_HOST_TABLES:
+                raise ValueError(
+                    f"preserved_host_entities key '{table}' is not a known host entity table. "
+                    f"Allowed: {sorted(_ALLOWED_HOST_TABLES)}"
+                )
         return v
 
 
@@ -654,6 +899,16 @@ class PluginManifest(BaseModel):
     # Each entry declares a named integration with env vars + optional health check.
     # env_vars_needed is kept as deprecated warning-only for backwards compatibility.
     integrations: Optional[List["PluginIntegration"]] = None
+
+    # --- B2.0: Public pages (unauthenticated, token-bound) ---
+    # Declared under public_pages: in plugin.yaml.
+    # Requires Capability.public_pages in capabilities list.
+    public_pages: Optional[List[PluginPublicPage]] = None
+
+    # --- B3: Safe uninstall with data preservation ---
+    # Declared under safe_uninstall: in plugin.yaml.
+    # Requires Capability.safe_uninstall in capabilities list.
+    safe_uninstall: Optional[PluginSafeUninstall] = None
 
     @field_validator("id")
     @classmethod
@@ -799,6 +1054,133 @@ class PluginManifest(BaseModel):
                 )
             seen_ids.add(page.id)
             seen_paths.add(page.path)
+        return self
+
+
+    @model_validator(mode="after")
+    def safe_uninstall_requires_capability(self) -> "PluginManifest":
+        """B3: safe_uninstall block requires Capability.safe_uninstall in capabilities."""
+        if self.safe_uninstall and Capability.safe_uninstall not in self.capabilities:
+            raise ValueError(
+                "safe_uninstall is declared but Capability.safe_uninstall is missing "
+                "from capabilities list."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def safe_uninstall_preserved_tables_slug_prefixed(self) -> "PluginManifest":
+        """B3: preserved_tables must start with {slug_under}."""
+        if not self.safe_uninstall or not self.safe_uninstall.preserved_tables:
+            return self
+        slug_under = self.id.replace("-", "_") + "_"
+        for table in self.safe_uninstall.preserved_tables:
+            if not table.lower().startswith(slug_under):
+                raise ValueError(
+                    f"safe_uninstall.preserved_tables entry '{table}' does not start "
+                    f"with required prefix '{slug_under}'. "
+                    "Preserved tables must be plugin-owned."
+                )
+        return self
+
+    @model_validator(mode="after")
+    def safe_uninstall_enabled_requires_confirmation(self) -> "PluginManifest":
+        """B3: if safe_uninstall.enabled is true, user_confirmation is required."""
+        su = self.safe_uninstall
+        if su and su.enabled and not su.block_uninstall and not su.user_confirmation:
+            raise ValueError(
+                "safe_uninstall.enabled is true but user_confirmation is not declared. "
+                "Admin must confirm with a checkbox + typed phrase."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def readonly_data_no_orphan_table_references(self) -> "PluginManifest":
+        """Vault B3.S4: readonly_data SQL must not reference _orphan_* tables.
+
+        Orphan tables are renamed on uninstall to prevent hostile reinstall from
+        accessing them via readonly_data declarations.
+        """
+        if not self.readonly_data:
+            return self
+        _TABLE_RE = re.compile(
+            r"\b(?:FROM|JOIN)\s+([a-zA-Z_][a-zA-Z0-9_]*)",
+            re.IGNORECASE,
+        )
+        for query in self.readonly_data:
+            tables = _TABLE_RE.findall(query.sql)
+            for table in tables:
+                if table.lower().startswith("_orphan_"):
+                    raise ValueError(
+                        f"ReadonlyQuery '{query.id}' references orphan table '{table}'. "
+                        "Queries must not reference _orphan_* tables — these are preserved "
+                        "from a previous uninstall and are inaccessible under the plugin namespace."
+                    )
+        return self
+
+    @model_validator(mode="after")
+    def public_pages_require_capability(self) -> "PluginManifest":
+        """B2.0: public_pages block requires Capability.public_pages in capabilities."""
+        if self.public_pages and Capability.public_pages not in self.capabilities:
+            raise ValueError(
+                "public_pages is declared but Capability.public_pages is missing "
+                "from capabilities list."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def public_pages_tables_slug_prefixed(self) -> "PluginManifest":
+        """B2.0: token_source.table must start with {slug_under} (same guard as readonly/writable)."""
+        if not self.public_pages:
+            return self
+        slug_under = self.id.replace("-", "_") + "_"
+        for page in self.public_pages:
+            table = page.token_source.table
+            if not table.lower().startswith(slug_under):
+                raise ValueError(
+                    f"PluginPublicPage '{page.id}' token_source.table '{table}' "
+                    f"does not start with required prefix '{slug_under}'. "
+                    "Public page token sources must only reference the plugin's own tables."
+                )
+        return self
+
+    @model_validator(mode="after")
+    def public_pages_ids_unique(self) -> "PluginManifest":
+        """B2.0: public page ids and route_prefixes must be unique within a plugin."""
+        if not self.public_pages:
+            return self
+        seen_ids: set[str] = set()
+        seen_prefixes: set[str] = set()
+        for page in self.public_pages:
+            if page.id in seen_ids:
+                raise ValueError(
+                    f"Duplicate PluginPublicPage id '{page.id}' in public_pages."
+                )
+            if page.route_prefix in seen_prefixes:
+                raise ValueError(
+                    f"Duplicate PluginPublicPage route_prefix '{page.route_prefix}' in public_pages."
+                )
+            seen_ids.add(page.id)
+            seen_prefixes.add(page.route_prefix)
+        return self
+
+    @model_validator(mode="after")
+    def readonly_public_via_references_valid_page(self) -> "PluginManifest":
+        """B2.0: readonly_data[].public_via must reference a declared public_pages[].id."""
+        has_public_via = [q for q in self.readonly_data if q.public_via]
+        if not has_public_via:
+            return self
+        page_ids = {p.id for p in (self.public_pages or [])}
+        for query in has_public_via:
+            if query.public_via not in page_ids:
+                raise ValueError(
+                    f"ReadonlyQuery '{query.id}' references public_via='{query.public_via}' "
+                    "which is not declared in public_pages."
+                )
+            if not query.bind_token_param:
+                raise ValueError(
+                    f"ReadonlyQuery '{query.id}' has public_via set but bind_token_param "
+                    "is missing. The query must declare which SQL parameter receives the token."
+                )
         return self
 
 

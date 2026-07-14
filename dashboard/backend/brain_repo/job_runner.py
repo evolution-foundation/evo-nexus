@@ -55,6 +55,7 @@ _job_lock = threading.Lock()
 JOB_KIND_SYNC = "sync"
 JOB_KIND_MILESTONE = "milestone"
 JOB_KIND_BOOTSTRAP = "bootstrap"
+JOB_KIND_CLONE = "clone"
 JOB_KIND_WATCHER = "watcher"
 
 # Max time a job may hold sync_in_progress before the janitor reclaims it.
@@ -527,6 +528,72 @@ def run_bootstrap_pipeline(
             )
 
 
+def run_clone_pipeline(
+    flask_app,
+    user_id: int,
+    *,
+    token: str,
+    repo_url: str,
+    repo_name: str,
+) -> None:
+    """Clone an existing Brain Repo and persist local_path.
+
+    Connecting an existing repo does not need the initial skeleton bootstrap,
+    but sync still requires a local git working tree under dashboard/data.
+    """
+    from models import BrainRepoConfig, db  # type: ignore[import]
+
+    with _job_lock:
+        error: str | None = None
+        try:
+            workspace = Path(__file__).resolve().parent.parent.parent.parent
+            base_dir = workspace / "dashboard" / "data" / "brain-repos"
+            base_dir.mkdir(parents=True, exist_ok=True)
+            local_path = base_dir / repo_name
+
+            if local_path.exists():
+                shutil.rmtree(local_path, ignore_errors=True)
+
+            from brain_repo import git_ops, manifest  # type: ignore[import]
+
+            git_ops.clone(repo_url, token, local_path)
+            _check_cancel(flask_app, user_id)
+
+            # Existing empty/non-brain repos are accepted: initialize the
+            # skeleton and push it so future detect/restore calls can see it.
+            if not (local_path / ".evo-brain").exists():
+                import subprocess
+
+                subprocess.run(
+                    ["git", "config", "user.name", "EvoNexus"],
+                    cwd=local_path, check=True, capture_output=True, timeout=10,
+                )
+                subprocess.run(
+                    ["git", "config", "user.email", "evonexus@users.noreply.github.com"],
+                    cwd=local_path, check=True, capture_output=True, timeout=10,
+                )
+                manifest.initialize_brain_repo(local_path, {"workspace_name": repo_name})
+                if git_ops.commit_all(local_path, "feat(brain-repo): initialize existing repo"):
+                    pushed, push_err = git_ops.push(local_path, token, with_tags=False)
+                    if not pushed:
+                        error = f"initial brain repo push failed: {push_err}"
+                        return
+
+            with flask_app.app_context():
+                config = BrainRepoConfig.query.filter_by(user_id=user_id).first()
+                if config is not None:
+                    config.local_path = str(local_path)
+                    db.session.commit()
+
+        except JobCancelled:
+            error = "cancelled by user"
+        except Exception as exc:
+            error = f"clone failed: {exc}"
+            log.exception("clone pipeline raised")
+        finally:
+            _release_db_lock(flask_app, user_id, success=error is None, error=error)
+
+
 # ────────────────────────────────────────────────────────────────────────
 # Public enqueue API — what route handlers call.
 # ────────────────────────────────────────────────────────────────────────
@@ -580,6 +647,29 @@ def enqueue_bootstrap(
             "github_username": github_username,
         },
         name=f"brain-repo-bootstrap-{user_id}",
+        daemon=True,
+    )
+    t.start()
+    return True
+
+
+def enqueue_clone(
+    flask_app,
+    user_id: int,
+    *,
+    token: str,
+    repo_url: str,
+    repo_name: str,
+) -> bool:
+    """Spawn daemon thread cloning an existing Brain Repo. Returns False if busy."""
+    if not _acquire_db_lock(flask_app, user_id, JOB_KIND_CLONE):
+        return False
+
+    t = threading.Thread(
+        target=run_clone_pipeline,
+        args=(flask_app, user_id),
+        kwargs={"token": token, "repo_url": repo_url, "repo_name": repo_name},
+        name=f"brain-repo-clone-{user_id}",
         daemon=True,
     )
     t.start()

@@ -748,6 +748,8 @@ export default function Backups() {
   const [config, setConfig] = useState<BackupConfig | null>(null)
   const [loading, setLoading] = useState(true)
   const [jobStatus, setJobStatus] = useState<string>('idle')
+  const [jobKind, setJobKind] = useState<'backup' | 'restore'>('backup')
+  const [jobError, setJobError] = useState<string | null>(null)
   const [showRestoreModal, setShowRestoreModal] = useState<string | null>(null)
   const [restoreMode, setRestoreMode] = useState<'merge' | 'replace'>('merge')
   const [uploading, setUploading] = useState(false)
@@ -836,23 +838,27 @@ export default function Backups() {
     return () => clearInterval(interval)
   }, [config?.brain_repo_configured])
 
-  // Poll job status while running
+  // Poll job status while running — the backend tracks backup and restore
+  // jobs separately, so the poll must ask for the kind that was started.
   useEffect(() => {
     if (jobStatus !== 'running') return
     const interval = setInterval(async () => {
       try {
-        const status = await api.get('/backups/status')
+        const status = await api.get(`/backups/status?type=${jobKind}`)
         if (status.status !== 'running') {
           setJobStatus(status.status)
+          setJobError(status.error || null)
           fetchData()
         }
       } catch {}
     }, 2000)
     return () => clearInterval(interval)
-  }, [jobStatus, fetchData])
+  }, [jobStatus, jobKind, fetchData])
 
   const handleBackup = async (target: 'local' | 's3' = 'local') => {
     try {
+      setJobKind('backup')
+      setJobError(null)
       setJobStatus('running')
       await api.post('/backups', { target })
     } catch (err) {
@@ -965,6 +971,8 @@ export default function Backups() {
 
   const handleRestore = async (filename: string) => {
     try {
+      setJobKind('restore')
+      setJobError(null)
       setJobStatus('running')
       setShowRestoreModal(null)
       await api.post(`/backups/${filename}/restore`, { mode: restoreMode })
@@ -1108,7 +1116,10 @@ export default function Backups() {
       {jobStatus === 'error' && (
         <div className="flex items-center gap-2 px-4 py-3 mb-4 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400 text-sm">
           <AlertCircle size={16} />
-          {t('backups.statusBanner.failed')}
+          <span>
+            {t('backups.statusBanner.failed')}
+            {jobError && <span className="opacity-80"> — {jobError}</span>}
+          </span>
           <button onClick={() => setJobStatus('idle')} className="ml-auto text-xs opacity-60 hover:opacity-100">{t('backups.statusBanner.dismiss')}</button>
         </div>
       )}

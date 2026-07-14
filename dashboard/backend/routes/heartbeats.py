@@ -390,3 +390,50 @@ def reindex_heartbeats():
         return jsonify({"reindexed": len(yaml_cfg.heartbeats)})
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
+
+
+# ── Approval Queue ──────────────────────────────────────────────────────────
+
+@bp.route("/api/approvals")
+def list_approvals():
+    """List pending approval items."""
+    from routes._helpers import WORKSPACE
+    import sys
+    sys.path.insert(0, str(WORKSPACE / "ADWs" / "routines"))
+    from approval_queue import get_pending, get_stats
+
+    return jsonify({
+        "pending": get_pending(),
+        "stats": get_stats(),
+    })
+
+
+@bp.route("/api/approvals/<int:item_id>/approve", methods=["POST"])
+def approve_item(item_id):
+    """Approve a queued item."""
+    from routes._helpers import WORKSPACE
+    import sys
+    sys.path.insert(0, str(WORKSPACE / "ADWs" / "routines"))
+    from approval_queue import approve
+
+    ok = approve(item_id)
+    if not ok:
+        return jsonify({"error": "Item not found or already decided"}), 404
+    return jsonify({"status": "approved", "id": item_id})
+
+
+@bp.route("/api/approvals/<int:item_id>/reject", methods=["POST"])
+def reject_item(item_id):
+    """Reject a queued item."""
+    data = request.get_json() or {}
+    reason = data.get("reason", "")
+
+    from routes._helpers import WORKSPACE
+    import sys
+    sys.path.insert(0, str(WORKSPACE / "ADWs" / "routines"))
+    from approval_queue import reject
+
+    ok = reject(item_id, reason)
+    if not ok:
+        return jsonify({"error": "Item not found or already decided"}), 404
+    return jsonify({"status": "rejected", "id": item_id})

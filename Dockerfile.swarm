@@ -26,14 +26,32 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 ENV PATH="/root/.local/bin:${PATH}"
 
+# Cache-buster: the CI publish workflow builds with cache-from/cache-to
+# type=gha, so without this the block below stays cached forever across CI
+# runs and "@latest" silently freezes at whatever version first built the
+# layer. Passing a build-arg that changes every run (e.g. github.run_id)
+# invalidates this layer and everything after it, forcing a fresh npm/apt
+# install on every stack deploy.
+ARG CACHEBUST=1
+
 # Install Claude Code CLI (default provider)
 RUN npm install -g @anthropic-ai/claude-code
 
-# Install OpenClaude CLI — pinned to @latest which is ≥0.3.0 (the first
-# release with the Codex shortcut endpoint fix that resolves the
-# api.responses.write scope issue). Upstream setup.py also installs @latest
-# so Swarm and VPS behavior stay aligned.
-RUN npm install -g @gitlawb/openclaude@latest
+# Install OpenClaude CLI — pinned to a tested version instead of @latest.
+# Floating @latest meant every Swarm redeploy could silently ship a new CLI
+# release (backoff, error-body, provider-rotation behavior all changed
+# under us across recent releases) without anyone testing it first. Bump
+# this deliberately after validating the new version.
+RUN npm install -g @gitlawb/openclaude@0.23.0
+
+# Install opencode CLI — provider "opencode" (ver opencode.json na raiz
+# do workspace). Pinned pela mesma razão do openclaude acima.
+RUN npm install -g opencode-ai@1.17.18
+
+# sharp — optional peer dep the CLI's own Read tool needs to process image
+# files (photos, reference images, screenshots). Without it, Read on any
+# image fails every time with "image support is not installed".
+RUN npm install -g sharp
 
 # GitHub CLI
 RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
@@ -46,6 +64,10 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
 # Todoist CLI (used by int-todoist skill)
 RUN npm install -g todoist-ts-cli
 
+# Bun — required by Claude Code channel plugins (the telegram channel's
+# start script is `bun install && bun server.ts`)
+RUN npm install -g bun
+
 # Timezone (default America/Sao_Paulo, override via TZ env var)
 ENV TZ=America/Sao_Paulo
 RUN ln -snf /usr/share/zoneinfo/${TZ} /etc/localtime && echo "${TZ}" > /etc/timezone
@@ -54,10 +76,26 @@ WORKDIR /workspace
 
 # Python deps (cache-friendly layer)
 COPY pyproject.toml uv.lock ./
-RUN uv venv .venv && uv sync
+RUN uv venv .venv && uv sync --no-dev
+
+# LiteLLM proxy — fronts NVIDIA NIM with an Anthropic-compatible /v1/messages
+# endpoint so `claude --channels` (Telegram bot) can run without an Anthropic
+# key. Used by scripts/telegram_swarm_entry.sh.
+RUN uv pip install --python .venv/bin/python 'litellm[proxy]'
 
 # Application code — everything else
 COPY . .
+
+# .claude/settings.json ships CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1, which
+# isolates background sub-agents in a git worktree. COPY only brings tracked
+# files, never .git, so /workspace has no repo and every background-agent
+# launch inside the container fails with "not in a git repository and no
+# WorktreeCreate hooks are configured". An empty repo is enough for worktree
+# creation to succeed.
+RUN cd /workspace && git init -q \
+    && git config user.email "bot@evonexus.local" \
+    && git config user.name "EvoNexus" \
+    && git commit -q --allow-empty -m "baseline (image build)"
 
 # Stash first-boot defaults somewhere the bootstrap entrypoint can find them.
 # /workspace/config is a writable volume in Swarm; on first boot entrypoint.sh
@@ -68,6 +106,14 @@ RUN mkdir -p /workspace/_defaults/config \
        fi \
     && if [ -f /workspace/.env.example ]; then \
           cp /workspace/.env.example /workspace/_defaults/.env.example; \
+       fi
+
+# Stash .claude so the entrypoint can re-seed built-ins into the mounted
+# /workspace/.claude volume on every boot (custom-*/plugin-* files persist).
+# agent-memory is excluded — it has its own volume and must never be reset.
+RUN if [ -d /workspace/.claude ]; then \
+          cp -a /workspace/.claude /workspace/_defaults/claude \
+          && rm -rf /workspace/_defaults/claude/agent-memory; \
        fi
 
 # Bootstrap / secrets-to-env / wait-for-config wrapper

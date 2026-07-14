@@ -32,6 +32,30 @@ import {
 import { api } from '../lib/api'
 import { AgentAvatar } from '../components/AgentAvatar'
 
+// Terminal-server URL for the HUD status poll — same proxy pattern as
+// AgentDetail.tsx: go through the dashboard's /terminal proxy in
+// production (CSP blocks direct cross-port fetches), direct port in Vite
+// dev (no proxy mounted there).
+const isViteDev = import.meta.env.DEV
+const TS_HTTP = isViteDev
+  ? `http://${window.location.hostname}:32352`
+  : `${window.location.origin}/terminal`
+
+interface HudSession {
+  sessionId: string
+  agent: string
+  busy: boolean
+  heavy: boolean
+  providerId: string
+  providerModel: string
+  tokensPerSec: number
+}
+
+interface HudAgentStatus {
+  busy: boolean
+  heavy: boolean
+}
+
 type Category = 'business' | 'engineering' | 'custom'
 type EngTier = 'reasoning' | 'execution' | 'speed'
 
@@ -292,7 +316,34 @@ function formatAgentName(name: string): string {
     .join(' ')
 }
 
-function AgentCard({ agent, isRunning }: { agent: Agent; isRunning: boolean }) {
+// 3-dot semaphore mirroring the Terminal HUD's (AgentTerminal.tsx): green
+// idle, yellow working, red heavy context/tokens on the last turn.
+function HudSemaphore({ status }: { status: HudAgentStatus }) {
+  const activeIdx = status.heavy ? 2 : status.busy ? 1 : 0
+  return (
+    <div
+      className="flex items-center gap-1"
+      title={status.heavy ? 'contexto/tokens grande no último turno' : status.busy ? 'trabalhando…' : 'sessão aberta, esperando prompt'}
+    >
+      {(['#22c55e', '#eab308', '#ef4444'] as const).map((color, i) => {
+        const isActive = i === activeIdx
+        return (
+          <span
+            key={color}
+            className="inline-block h-1.5 w-1.5 rounded-full transition-opacity duration-200"
+            style={{
+              backgroundColor: color,
+              opacity: isActive ? 1 : 0.18,
+              boxShadow: isActive ? `0 0 5px ${color}aa` : 'none',
+            }}
+          />
+        )
+      })}
+    </div>
+  )
+}
+
+function AgentCard({ agent, isRunning, hudStatus }: { agent: Agent; isRunning: boolean; hudStatus?: HudAgentStatus }) {
   const meta = getMeta(agent.name, agent)
   const isActive = agent.memory_count > 0
   const tier = getEngineeringTier(agent.name)
@@ -372,6 +423,7 @@ function AgentCard({ agent, isRunning }: { agent: Agent; isRunning: boolean }) {
 
         {/* Status dot + running badge */}
         <div className="flex items-center gap-2">
+          {hudStatus && <HudSemaphore status={hudStatus} />}
           {isRunning && (
             <span className="flex items-center gap-1 rounded-full bg-[#00FFA7]/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-[#00FFA7] border border-[#00FFA7]/20">
               <span className="relative flex h-1.5 w-1.5">
@@ -641,6 +693,7 @@ export default function Agents() {
   const [agents, setAgents] = useState<Agent[]>([])
   const [loading, setLoading] = useState(true)
   const [runningAgents, setRunningAgents] = useState<string[]>([])
+  const [hudSessions, setHudSessions] = useState<HudSession[]>([])
   const [filter, setFilter] = useState<FilterValue>('all')
   const [query, setQuery] = useState('')
   const [recentNames] = useState(getRecentAgents)
@@ -667,6 +720,43 @@ export default function Agents() {
     const interval = setInterval(fetchActive, 5000)
     return () => clearInterval(interval)
   }, [])
+
+  // Poll opencode terminal HUD status every 4 seconds — reflects the same
+  // semaphore shown inside an open terminal tab (see AgentTerminal.tsx),
+  // aggregated here so a superadmin can see who's working without opening
+  // any single terminal. Only opencode sessions report this (see
+  // server.js's /api/sessions/hud-status) — other providers don't track
+  // turn boundaries yet.
+  useEffect(() => {
+    const fetchHud = () => {
+      fetch(`${TS_HTTP}/api/sessions/hud-status`, { credentials: 'include' })
+        .then((r) => r.json())
+        .then((data) => setHudSessions(data.sessions || []))
+        .catch(() => {})
+    }
+    fetchHud()
+    const interval = setInterval(fetchHud, 4000)
+    return () => clearInterval(interval)
+  }, [])
+
+  // One entry per agent with at least one live opencode session — heavy
+  // wins over busy if the agent has multiple sessions in different states.
+  const hudByAgent = useMemo(() => {
+    const map: Record<string, HudAgentStatus> = {}
+    for (const s of hudSessions) {
+      const prev = map[s.agent]
+      map[s.agent] = {
+        busy: (prev?.busy || s.busy),
+        heavy: (prev?.heavy || s.heavy),
+      }
+    }
+    return map
+  }, [hudSessions])
+
+  const workingAgentNames = useMemo(
+    () => Object.entries(hudByAgent).filter(([, st]) => st.busy).map(([name]) => name),
+    [hudByAgent]
+  )
 
   const totalMemories = agents.reduce((sum, a) => sum + a.memory_count, 0)
   const activeCount = agents.filter((a) => a.memory_count > 0).length
@@ -742,6 +832,28 @@ export default function Agents() {
         {/* Stats bar */}
         {!loading && agents.length > 0 && (
           <div className="mt-4 flex items-center gap-6 text-sm">
+            {/* Superadmin-facing summary: exactly how many + which agents
+                have a live opencode terminal session mid-turn right now
+                (see hudByAgent above — sourced from the same semaphore
+                shown inside each terminal tab). Only rendered once at
+                least one agent is actually working, so it doesn't add
+                permanent noise to an otherwise idle dashboard. */}
+            {workingAgentNames.length > 0 && (
+              <div
+                className="flex items-center gap-2"
+                title={`Trabalhando agora: ${workingAgentNames.map(formatAgentName).join(', ')}`}
+              >
+                <span className="relative flex h-2 w-2">
+                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[#eab308] opacity-75" />
+                  <span className="relative inline-flex h-2 w-2 rounded-full bg-[#eab308]" style={{ boxShadow: '0 0 6px rgba(234,179,8,0.6)' }} />
+                </span>
+                <span className="text-[#8b949e]">
+                  <span className="font-medium text-[#e6edf3]">{workingAgentNames.length}</span>{' '}
+                  trabalhando agora:{' '}
+                  <span className="text-[#e6edf3]">{workingAgentNames.map(formatAgentName).join(', ')}</span>
+                </span>
+              </div>
+            )}
             <div className="flex items-center gap-2">
               <span
                 className="inline-block h-2 w-2 rounded-full bg-[#22C55E]"
@@ -903,7 +1015,7 @@ export default function Agents() {
               />
               <div className={gridClass}>
                 {grouped.business.map((agent) => (
-                  <AgentCard key={agent.name} agent={agent} isRunning={isRunning(agent.name)} />
+                  <AgentCard key={agent.name} agent={agent} isRunning={isRunning(agent.name)} hudStatus={hudByAgent[agent.name]} />
                 ))}
               </div>
             </section>
@@ -931,7 +1043,7 @@ export default function Agents() {
                     <SubSectionHeader label={TIER_LABELS[tier]} count={grouped.engineering[tier].length} />
                     <div className={gridClass}>
                       {grouped.engineering[tier].map((agent) => (
-                        <AgentCard key={agent.name} agent={agent} isRunning={isRunning(agent.name)} />
+                        <AgentCard key={agent.name} agent={agent} isRunning={isRunning(agent.name)} hudStatus={hudByAgent[agent.name]} />
                       ))}
                     </div>
                   </div>
@@ -942,7 +1054,7 @@ export default function Agents() {
                   <SubSectionHeader label="Other" count={grouped.engineering.other.length} />
                   <div className={gridClass}>
                     {grouped.engineering.other.map((agent) => (
-                      <AgentCard key={agent.name} agent={agent} isRunning={isRunning(agent.name)} />
+                      <AgentCard key={agent.name} agent={agent} isRunning={isRunning(agent.name)} hudStatus={hudByAgent[agent.name]} />
                     ))}
                   </div>
                 </div>
@@ -960,7 +1072,7 @@ export default function Agents() {
               />
               <div className={gridClass}>
                 {grouped.custom.map((agent) => (
-                  <AgentCard key={agent.name} agent={agent} isRunning={isRunning(agent.name)} />
+                  <AgentCard key={agent.name} agent={agent} isRunning={isRunning(agent.name)} hudStatus={hudByAgent[agent.name]} />
                 ))}
               </div>
             </section>

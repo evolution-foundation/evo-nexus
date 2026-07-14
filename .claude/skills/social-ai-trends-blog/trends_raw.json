@@ -1,0 +1,1700 @@
+{
+  "generated_at": "2026-06-13T13:48:15.931514+00:00",
+  "window_days": 7,
+  "queries": [
+    "(\"inteligência artificial\" OR \"IA generativa\" OR \"agentes de IA\") lang:pt -is:retweet",
+    "(ChatGPT OR Claude OR Gemini OR \"GPT-5\" OR Llama) lang:pt -is:retweet",
+    "(AI agents OR \"agentic AI\" OR \"AI coding\" OR \"AI automation\") lang:en -is:retweet",
+    "(\"AI breakthrough\" OR \"new AI model\" OR \"AI startup\" OR \"open source AI\") lang:en -is:retweet",
+    "(OpenAI OR Anthropic OR \"Google DeepMind\" OR xAI OR Mistral) lang:en -is:retweet",
+    "(\"AI agents\" OR chatbot OR \"customer support AI\" OR \"WhatsApp AI\") lang:en -is:retweet"
+  ],
+  "total_tweets_collected": 484,
+  "topics_ranked": [
+    {
+      "topic": "Modelos novos (GPT/Claude/Gemini/Llama)",
+      "count": 142,
+      "total_score": 4349.158000000002,
+      "top_tweets": [
+        {
+          "id": "2064830151305699469",
+          "text": "Google founders are Jewish, has a frontier model\nAnthropic founder is Jewish, has a frontier model\nOpenAI founder is Jewish, has a frontier model\n\nxai founder isn’t Jewish, doesn’t have a frontier model\nMicrosoft founder isn’t Jewish, doesn’t have a frontier model\nDeepseek https:",
+          "author": "GolerGkA",
+          "metrics": {
+            "retweet_count": 51,
+            "reply_count": 65,
+            "like_count": 1618,
+            "quote_count": 19,
+            "bookmark_count": 443,
+            "impression_count": 272706
+          },
+          "score": 2718.2,
+          "url": "https://x.com/i/web/status/2064830151305699469"
+        },
+        {
+          "id": "2063506042114474143",
+          "text": "MARCUS CHEN EMPILHOU 30 MAC MINIS E CRIOU UMA FAZENDA DE SERVIDORES DE IA. UM ÚNICO MAC MINI DE US$ 599 PODE SUBSTITUIR SUA CONTA DE US$ 200/MÊS DO CLAUDE CODE GASTANDO APENAS US$ 3 DE ENERGIA.\n\nHá dois meses, um desenvolvedor publicou no Reddit a sua fatura do Claude Code: US$ h",
+          "author": "DehumanoaDeus",
+          "metrics": {
+            "retweet_count": 20,
+            "reply_count": 14,
+            "like_count": 190,
+            "quote_count": 1,
+            "bookmark_count": 100,
+            "impression_count": 39423
+          },
+          "score": 427.9,
+          "url": "https://x.com/i/web/status/2063506042114474143"
+        },
+        {
+          "id": "2065418102301442418",
+          "text": "chatgpt vs gemini mas o chatgpt tem um bundão, saia e uma venda nos olhos https://t.co/LgBDoYWL00",
+          "author": "scalabriniii",
+          "metrics": {
+            "retweet_count": 8,
+            "reply_count": 10,
+            "like_count": 322,
+            "quote_count": 3,
+            "bookmark_count": 33,
+            "impression_count": 22657
+          },
+          "score": 419.7,
+          "url": "https://x.com/i/web/status/2065418102301442418"
+        },
+        {
+          "id": "2064346800543482056",
+          "text": "AI is reshaping how work gets done globally.\n\nIt’s changing workflows, tasks, and decision-making systems.\n\nSharing these Top 7 AI models compiled by @AndrewBolis.\n\n1. ChatGPT (OpenAI)\n\nVersatile for writing, research, guidance, and support.\n\n2. Claude (Anthropic)\n\nFocuses on htt",
+          "author": "Igor_Buinevici",
+          "metrics": {
+            "retweet_count": 37,
+            "reply_count": 6,
+            "like_count": 98,
+            "quote_count": 0,
+            "bookmark_count": 72,
+            "impression_count": 7256
+          },
+          "score": 290.3,
+          "url": "https://x.com/i/web/status/2064346800543482056"
+        },
+        {
+          "id": "2065422550004371529",
+          "text": "E se a IA mais preparada para apoiar o médico não for a que se vende como “IA médica”?\n\nUm estudo publicado na Nature Medicine comparou ferramentas clínicas comerciais e dedicadas, OpenEvidence e UpToDate Expert AI, com LLMs gerais (GPT-5.2, Gemini 3.1 Pro e Claude Opus 4.6).\n\nNo",
+          "author": "glauber_doc",
+          "metrics": {
+            "retweet_count": 5,
+            "reply_count": 16,
+            "like_count": 74,
+            "quote_count": 0,
+            "bookmark_count": 25,
+            "impression_count": 4178
+          },
+          "score": 133.7,
+          "url": "https://x.com/i/web/status/2065422550004371529"
+        }
+      ]
+    },
+    {
+      "topic": "OpenAI / Anthropic / Big Labs",
+      "count": 111,
+      "total_score": 4003.280999999999,
+      "top_tweets": [
+        {
+          "id": "2064830151305699469",
+          "text": "Google founders are Jewish, has a frontier model\nAnthropic founder is Jewish, has a frontier model\nOpenAI founder is Jewish, has a frontier model\n\nxai founder isn’t Jewish, doesn’t have a frontier model\nMicrosoft founder isn’t Jewish, doesn’t have a frontier model\nDeepseek https:",
+          "author": "GolerGkA",
+          "metrics": {
+            "retweet_count": 51,
+            "reply_count": 65,
+            "like_count": 1618,
+            "quote_count": 19,
+            "bookmark_count": 443,
+            "impression_count": 272706
+          },
+          "score": 2718.2,
+          "url": "https://x.com/i/web/status/2064830151305699469"
+        },
+        {
+          "id": "2064346800543482056",
+          "text": "AI is reshaping how work gets done globally.\n\nIt’s changing workflows, tasks, and decision-making systems.\n\nSharing these Top 7 AI models compiled by @AndrewBolis.\n\n1. ChatGPT (OpenAI)\n\nVersatile for writing, research, guidance, and support.\n\n2. Claude (Anthropic)\n\nFocuses on htt",
+          "author": "Igor_Buinevici",
+          "metrics": {
+            "retweet_count": 37,
+            "reply_count": 6,
+            "like_count": 98,
+            "quote_count": 0,
+            "bookmark_count": 72,
+            "impression_count": 7256
+          },
+          "score": 290.3,
+          "url": "https://x.com/i/web/status/2064346800543482056"
+        },
+        {
+          "id": "2063273860754231748",
+          "text": "Some of the best companies to work for according to candidates.\n\nS+: Anthropic, OpenAI, Google DeepMind, Rentech, TGS, xAI, Citadel Securities, Jane Street, HRT\n\nS: Citadel, D.E. Shaw, Jump, Optiver, Two Sigma, Tesla (Autopilot), Five Rings, SpaceX\n\nS-: IMC, SIG, DRW, Akuna\n\nA++:",
+          "author": "vivoplt",
+          "metrics": {
+            "retweet_count": 8,
+            "reply_count": 33,
+            "like_count": 72,
+            "quote_count": 0,
+            "bookmark_count": 47,
+            "impression_count": 7640
+          },
+          "score": 182.6,
+          "url": "https://x.com/i/web/status/2063273860754231748"
+        },
+        {
+          "id": "2065284539564675171",
+          "text": "If you get offers from these 3 companies :  \n\n- OpenAI \n- Anthropic  \n- Google Deepmind  \n\nWhich one would you join, and why?",
+          "author": "Its_Nova1012",
+          "metrics": {
+            "retweet_count": 1,
+            "reply_count": 65,
+            "like_count": 61,
+            "quote_count": 0,
+            "bookmark_count": 2,
+            "impression_count": 3560
+          },
+          "score": 102.1,
+          "url": "https://x.com/i/web/status/2065284539564675171"
+        },
+        {
+          "id": "2063637138118516779",
+          "text": "OpenAI, Anthropic, Google DeepMind, and Microsoft just agreed on something.\n\nThey're all warning about the same risk: future AI lowering the knowledge barrier around dangerous biological material.\n\nRead the shocking details🧵: https://t.co/EQPjK1gzjG",
+          "author": "themetav3rse",
+          "metrics": {
+            "retweet_count": 20,
+            "reply_count": 6,
+            "like_count": 43,
+            "quote_count": 1,
+            "bookmark_count": 3,
+            "impression_count": 7481
+          },
+          "score": 99.5,
+          "url": "https://x.com/i/web/status/2063637138118516779"
+        }
+      ]
+    },
+    {
+      "topic": "Open source / modelos abertos",
+      "count": 105,
+      "total_score": 1812.6340000000002,
+      "top_tweets": [
+        {
+          "id": "2065627605144055865",
+          "text": "This is why you should support open source AI \n\nAuthoritarian governments can’t exert control on our lives and play god \n\nWithout open source AI, US government will restrict AGI access to a small set of elitists 😭",
+          "author": "bindureddy",
+          "metrics": {
+            "retweet_count": 54,
+            "reply_count": 81,
+            "like_count": 448,
+            "quote_count": 8,
+            "bookmark_count": 21,
+            "impression_count": 60284
+          },
+          "score": 700.3,
+          "url": "https://x.com/i/web/status/2065627605144055865"
+        },
+        {
+          "id": "2065733417661030904",
+          "text": "open-source ai is the only way forward.",
+          "author": "svpino",
+          "metrics": {
+            "retweet_count": 13,
+            "reply_count": 20,
+            "like_count": 92,
+            "quote_count": 2,
+            "bookmark_count": 2,
+            "impression_count": 4823
+          },
+          "score": 138.8,
+          "url": "https://x.com/i/web/status/2065733417661030904"
+        },
+        {
+          "id": "2065632446255665232",
+          "text": "Open source AI must win!",
+          "author": "omarsar0",
+          "metrics": {
+            "retweet_count": 9,
+            "reply_count": 11,
+            "like_count": 81,
+            "quote_count": 0,
+            "bookmark_count": 3,
+            "impression_count": 5587
+          },
+          "score": 114.6,
+          "url": "https://x.com/i/web/status/2065632446255665232"
+        },
+        {
+          "id": "2064814880826253368",
+          "text": "Clip with David Morgan: Is open source AI the printing press of the 21st century? We need to use open source AI to further pro-liberty, pro-human goals! https://t.co/uSl0BsOXI9",
+          "author": "HealthRanger",
+          "metrics": {
+            "retweet_count": 17,
+            "reply_count": 9,
+            "like_count": 59,
+            "quote_count": 0,
+            "bookmark_count": 6,
+            "impression_count": 5140
+          },
+          "score": 111.6,
+          "url": "https://x.com/i/web/status/2064814880826253368"
+        },
+        {
+          "id": "2065608055572640192",
+          "text": "Open source AI must win https://t.co/MnCdiKGGan https://t.co/lRRUXFHfxk",
+          "author": "dankvr",
+          "metrics": {
+            "retweet_count": 8,
+            "reply_count": 6,
+            "like_count": 65,
+            "quote_count": 0,
+            "bookmark_count": 2,
+            "impression_count": 4367
+          },
+          "score": 91.4,
+          "url": "https://x.com/i/web/status/2065608055572640192"
+        }
+      ]
+    },
+    {
+      "topic": "IA para código/dev",
+      "count": 72,
+      "total_score": 849.6419999999997,
+      "top_tweets": [
+        {
+          "id": "2063506042114474143",
+          "text": "MARCUS CHEN EMPILHOU 30 MAC MINIS E CRIOU UMA FAZENDA DE SERVIDORES DE IA. UM ÚNICO MAC MINI DE US$ 599 PODE SUBSTITUIR SUA CONTA DE US$ 200/MÊS DO CLAUDE CODE GASTANDO APENAS US$ 3 DE ENERGIA.\n\nHá dois meses, um desenvolvedor publicou no Reddit a sua fatura do Claude Code: US$ h",
+          "author": "DehumanoaDeus",
+          "metrics": {
+            "retweet_count": 20,
+            "reply_count": 14,
+            "like_count": 190,
+            "quote_count": 1,
+            "bookmark_count": 100,
+            "impression_count": 39423
+          },
+          "score": 427.9,
+          "url": "https://x.com/i/web/status/2063506042114474143"
+        },
+        {
+          "id": "2064611414241648817",
+          "text": "2026!!\n\nLearn Ai!!\nLearn Ai skills!!\nLearn Ai Image Gen!!\nLearn Ai Automation!!\nLearn Ai Video editing!!\nLearn AI Content creation!!\nLearn AI Prompt Engineering!!\nLearn Ai Coding(Vibe coding)!!",
+          "author": "AutomationKing0",
+          "metrics": {
+            "retweet_count": 7,
+            "reply_count": 5,
+            "like_count": 53,
+            "quote_count": 1,
+            "bookmark_count": 17,
+            "impression_count": 1292
+          },
+          "score": 97.8,
+          "url": "https://x.com/i/web/status/2064611414241648817"
+        },
+        {
+          "id": "2063475839040438713",
+          "text": "🤖 Awesome Open Source AI 🛡️\n\nA curated collection of the best open-source AI models, frameworks, agents, RAG tools, inference engines, LLMOps platforms, and developer resources.\n\nPerfect for AI engineers, builders, researchers, and open-source enthusiasts. 🚀\n\n🔗 https://t.co/gtFiT",
+          "author": "VivekIntel",
+          "metrics": {
+            "retweet_count": 6,
+            "reply_count": 2,
+            "like_count": 29,
+            "quote_count": 1,
+            "bookmark_count": 14,
+            "impression_count": 1145
+          },
+          "score": 65.6,
+          "url": "https://x.com/i/web/status/2063475839040438713"
+        },
+        {
+          "id": "2064069746530668679",
+          "text": "⚡AI coding agents are no longer just assistants—they’re becoming autonomous teammates.\n\nFrom code completion to multi-step execution across the SDLC, the shift is redefining software engineering.\n\nExplore what’s driving this evolution in Gartner’s 2026 Magic Quadrant for https://",
+          "author": "Gartner_inc",
+          "metrics": {
+            "retweet_count": 6,
+            "reply_count": 1,
+            "like_count": 20,
+            "quote_count": 1,
+            "bookmark_count": 4,
+            "impression_count": 2089
+          },
+          "score": 42.1,
+          "url": "https://x.com/i/web/status/2064069746530668679"
+        },
+        {
+          "id": "2063330354694705534",
+          "text": "Deepseek is still releasing its foundational models and also reportedly closing in on a massive $7B funding round as of early June 2026.\n\nSora got shutdown \n\nGitHub Copilot has huge market in enterprise coding agents\n\nMeta released Llama 4 (April 2025) Scout and Maverick its http",
+          "author": "lochan_twt",
+          "metrics": {
+            "retweet_count": 1,
+            "reply_count": 2,
+            "like_count": 21,
+            "quote_count": 0,
+            "bookmark_count": 3,
+            "impression_count": 3474
+          },
+          "score": 32.0,
+          "url": "https://x.com/i/web/status/2063330354694705534"
+        }
+      ]
+    },
+    {
+      "topic": "Automação / Workflows com IA",
+      "count": 38,
+      "total_score": 614.0729999999998,
+      "top_tweets": [
+        {
+          "id": "2064346800543482056",
+          "text": "AI is reshaping how work gets done globally.\n\nIt’s changing workflows, tasks, and decision-making systems.\n\nSharing these Top 7 AI models compiled by @AndrewBolis.\n\n1. ChatGPT (OpenAI)\n\nVersatile for writing, research, guidance, and support.\n\n2. Claude (Anthropic)\n\nFocuses on htt",
+          "author": "Igor_Buinevici",
+          "metrics": {
+            "retweet_count": 37,
+            "reply_count": 6,
+            "like_count": 98,
+            "quote_count": 0,
+            "bookmark_count": 72,
+            "impression_count": 7256
+          },
+          "score": 290.3,
+          "url": "https://x.com/i/web/status/2064346800543482056"
+        },
+        {
+          "id": "2064724369814044869",
+          "text": "The productivity gap is about to become terrifying.\n\nAI users are finishing days of work in hours.\n\nHere's the complete AI automation guide.\n\n📂 AI Automation\n┃\n┣ 📂 Foundations\n┃ ┣ 📂 What Is AI Automation\n┃ ┣ 📂 Automation vs AI\n┃ ┣ 📂 Decision Making\n┃ ┣ 📂 Learning https://t.co/N2E",
+          "author": "shushant_l",
+          "metrics": {
+            "retweet_count": 18,
+            "reply_count": 14,
+            "like_count": 67,
+            "quote_count": 1,
+            "bookmark_count": 48,
+            "impression_count": 2067
+          },
+          "score": 185.6,
+          "url": "https://x.com/i/web/status/2064724369814044869"
+        },
+        {
+          "id": "2064611414241648817",
+          "text": "2026!!\n\nLearn Ai!!\nLearn Ai skills!!\nLearn Ai Image Gen!!\nLearn Ai Automation!!\nLearn Ai Video editing!!\nLearn AI Content creation!!\nLearn AI Prompt Engineering!!\nLearn Ai Coding(Vibe coding)!!",
+          "author": "AutomationKing0",
+          "metrics": {
+            "retweet_count": 7,
+            "reply_count": 5,
+            "like_count": 53,
+            "quote_count": 1,
+            "bookmark_count": 17,
+            "impression_count": 1292
+          },
+          "score": 97.8,
+          "url": "https://x.com/i/web/status/2064611414241648817"
+        },
+        {
+          "id": "2063278361678360640",
+          "text": "Here are some of the biggest AI trends in 2026:\n\n1. Agentic AI\n\nAI systems are moving beyond chatbots into “agents” that can:\n\nPlan multi-step tasks\nUse tools and software\nConduct research\nAutomate workflows\nCollaborate with other AI agents\n\nExamples include coding agents,",
+          "author": "JCKCROWLEY",
+          "metrics": {
+            "retweet_count": 0,
+            "reply_count": 5,
+            "like_count": 4,
+            "quote_count": 0,
+            "bookmark_count": 0,
+            "impression_count": 259
+          },
+          "score": 6.8,
+          "url": "https://x.com/i/web/status/2063278361678360640"
+        },
+        {
+          "id": "2064661557175570655",
+          "text": ".\nDomain Listed For Sale\n\nhttps://t.co/qtLNGrsrun\n\n#Magentic #Agents #Agentic #AI #Automation #Orchestration #MultiAgent #LLM #MachineLearning #Robotics #Autonomous #DeepTech #DomainForSale https://t.co/G0JLS2SkC8",
+          "author": "DomainFQ",
+          "metrics": {
+            "retweet_count": 1,
+            "reply_count": 1,
+            "like_count": 3,
+            "quote_count": 0,
+            "bookmark_count": 0,
+            "impression_count": 21
+          },
+          "score": 5.5,
+          "url": "https://x.com/i/web/status/2064661557175570655"
+        }
+      ]
+    },
+    {
+      "topic": "Agentes de IA / Agentic",
+      "count": 116,
+      "total_score": 561.627,
+      "top_tweets": [
+        {
+          "id": "2064392166131265627",
+          "text": "Most people in AI can't actually explain the difference between \"Generative AI,\" \"Agentic AI,\" and \"AI Agents.\"\n\nThey use all three like they mean the same thing. They don't. And once it clicks, you can't unsee it.\n\nHere's the cleanest way to think about it:\n\nGenerative AI is the",
+          "author": "VaibhavSisinty",
+          "metrics": {
+            "retweet_count": 5,
+            "reply_count": 7,
+            "like_count": 38,
+            "quote_count": 1,
+            "bookmark_count": 33,
+            "impression_count": 2984
+          },
+          "score": 105.5,
+          "url": "https://x.com/i/web/status/2064392166131265627"
+        },
+        {
+          "id": "2063475839040438713",
+          "text": "🤖 Awesome Open Source AI 🛡️\n\nA curated collection of the best open-source AI models, frameworks, agents, RAG tools, inference engines, LLMOps platforms, and developer resources.\n\nPerfect for AI engineers, builders, researchers, and open-source enthusiasts. 🚀\n\n🔗 https://t.co/gtFiT",
+          "author": "VivekIntel",
+          "metrics": {
+            "retweet_count": 6,
+            "reply_count": 2,
+            "like_count": 29,
+            "quote_count": 1,
+            "bookmark_count": 14,
+            "impression_count": 1145
+          },
+          "score": 65.6,
+          "url": "https://x.com/i/web/status/2063475839040438713"
+        },
+        {
+          "id": "2065160042459152636",
+          "text": "Agentic AI is creating a new class of trust problems.\n\nUseful agents need (1) access to private information, (2) access to untrusted external input, and (3) the ability to act.\n\nHowever, once we combine these three properties, there is always the possibility that an agent can be ",
+          "author": "_weidai",
+          "metrics": {
+            "retweet_count": 2,
+            "reply_count": 7,
+            "like_count": 22,
+            "quote_count": 0,
+            "bookmark_count": 14,
+            "impression_count": 4188
+          },
+          "score": 54.7,
+          "url": "https://x.com/i/web/status/2065160042459152636"
+        },
+        {
+          "id": "2065521758422364435",
+          "text": "OpenAI, Google DeepMind, Meta, Microsoft, NVIDIA, Mistral, Hugging Face\n\nthe labs everyone says are closing ai behind a paywall quietly shipped their core tools on github. here are 7 repos, one from each\n\n1. OpenAI, openai/openai-agents-python\nhttps://t.co/6UfYVDOcTy\n27k stars. h",
+          "author": "vorty279",
+          "metrics": {
+            "retweet_count": 2,
+            "reply_count": 2,
+            "like_count": 22,
+            "quote_count": 0,
+            "bookmark_count": 10,
+            "impression_count": 878
+          },
+          "score": 42.9,
+          "url": "https://x.com/i/web/status/2065521758422364435"
+        },
+        {
+          "id": "2064069746530668679",
+          "text": "⚡AI coding agents are no longer just assistants—they’re becoming autonomous teammates.\n\nFrom code completion to multi-step execution across the SDLC, the shift is redefining software engineering.\n\nExplore what’s driving this evolution in Gartner’s 2026 Magic Quadrant for https://",
+          "author": "Gartner_inc",
+          "metrics": {
+            "retweet_count": 6,
+            "reply_count": 1,
+            "like_count": 20,
+            "quote_count": 1,
+            "bookmark_count": 4,
+            "impression_count": 2089
+          },
+          "score": 42.1,
+          "url": "https://x.com/i/web/status/2064069746530668679"
+        }
+      ]
+    },
+    {
+      "topic": "Outros / IA geral",
+      "count": 78,
+      "total_score": 405.62599999999964,
+      "top_tweets": [
+        {
+          "id": "2065787621427589404",
+          "text": "Ótimo uso de inteligência artificial por David Brazil. https://t.co/eWm99QOyrm",
+          "author": "chicobarney",
+          "metrics": {
+            "retweet_count": 3,
+            "reply_count": 9,
+            "like_count": 70,
+            "quote_count": 2,
+            "bookmark_count": 1,
+            "impression_count": 2834
+          },
+          "score": 87.8,
+          "url": "https://x.com/i/web/status/2065787621427589404"
+        },
+        {
+          "id": "2064331850382753938",
+          "text": "@memes_horriveis Akinator não é IA generativa meu anjo",
+          "author": "ZhyrelDragon",
+          "metrics": {
+            "retweet_count": 0,
+            "reply_count": 1,
+            "like_count": 68,
+            "quote_count": 0,
+            "bookmark_count": 0,
+            "impression_count": 1557
+          },
+          "score": 70.1,
+          "url": "https://x.com/i/web/status/2064331850382753938"
+        },
+        {
+          "id": "2065122858162868332",
+          "text": "INTELIGÊNCIA ARTIFICIAL | A ministra Cármen Lúcia, do Supremo Tribunal Federal (STF), destacou os riscos do uso indevido da inteligência artificial, nessa terça-feira (9), durante o 6º Congresso Brasileiro de Internet. https://t.co/DRLhtvThrv",
+          "author": "ebcnarede",
+          "metrics": {
+            "retweet_count": 12,
+            "reply_count": 1,
+            "like_count": 38,
+            "quote_count": 1,
+            "bookmark_count": 0,
+            "impression_count": 414
+          },
+          "score": 64.4,
+          "url": "https://x.com/i/web/status/2065122858162868332"
+        },
+        {
+          "id": "2063698566791450971",
+          "text": "@IsadoraGameOver O problema eh esse, eles não tão usando só IA como ferramenta kkkk\n\nAli claramente diz IA GENERATIVA, o que é algo COMPLETAMENTE diferente de uma IA comum\n\nMuito provavelmente vão usar IA generativa pra concept arts, designs e por aí vai",
+          "author": "FlipeArt2",
+          "metrics": {
+            "retweet_count": 0,
+            "reply_count": 6,
+            "like_count": 30,
+            "quote_count": 0,
+            "bookmark_count": 1,
+            "impression_count": 1033
+          },
+          "score": 35.5,
+          "url": "https://x.com/i/web/status/2063698566791450971"
+        },
+        {
+          "id": "2064358367498273167",
+          "text": "@rafaelgloves Pensa assim.\n\nProduto A é o que resolve o seu problema. \n\nProduto B no máximo quebra o galho mas é MUITO mais barato que o A.\n\nAcontece que o B está ficando cada vez melhor, enquanto continua sendo MUITO mais barato que o A.\n\nUm belo dia, você pensa: quer saber? O p",
+          "author": "rodrigofm",
+          "metrics": {
+            "retweet_count": 0,
+            "reply_count": 2,
+            "like_count": 26,
+            "quote_count": 0,
+            "bookmark_count": 2,
+            "impression_count": 2921
+          },
+          "score": 32.9,
+          "url": "https://x.com/i/web/status/2064358367498273167"
+        }
+      ]
+    },
+    {
+      "topic": "Negócios / startups / investimento",
+      "count": 47,
+      "total_score": 225.66999999999993,
+      "top_tweets": [
+        {
+          "id": "2063674932471730626",
+          "text": "Every single AI startup powered by @mintlify with $10B+ valuation and $100M+ revenue run rate:  \n\nCrusoe - $10B \nMercor - $10B ✅ \nElevenLabs - $11B \nBaseten - $11B* ✅\nHarvey - $11B ✅\nLovable - $12B* ✅\nOpenEvidence - $12B \nMistral - $14B \nNscale - $14.6B \nFireworks - $15B* ✅ https",
+          "author": "pronounsuponly",
+          "metrics": {
+            "retweet_count": 1,
+            "reply_count": 11,
+            "like_count": 23,
+            "quote_count": 0,
+            "bookmark_count": 3,
+            "impression_count": 5703
+          },
+          "score": 40.7,
+          "url": "https://x.com/i/web/status/2063674932471730626"
+        },
+        {
+          "id": "2063330354694705534",
+          "text": "Deepseek is still releasing its foundational models and also reportedly closing in on a massive $7B funding round as of early June 2026.\n\nSora got shutdown \n\nGitHub Copilot has huge market in enterprise coding agents\n\nMeta released Llama 4 (April 2025) Scout and Maverick its http",
+          "author": "lochan_twt",
+          "metrics": {
+            "retweet_count": 1,
+            "reply_count": 2,
+            "like_count": 21,
+            "quote_count": 0,
+            "bookmark_count": 3,
+            "impression_count": 3474
+          },
+          "score": 32.0,
+          "url": "https://x.com/i/web/status/2063330354694705534"
+        },
+        {
+          "id": "2064149611762118779",
+          "text": "🚨 vocês entenderam o que acabou de acontecer com a Apple..\n\na Apple apresentou sua nova Siri AI durante a WWDC 2026.\n\nhoras depois, o mercado respondeu.\n\nas ações fecharam em queda de 1,9%, apagando bilhões de dólares em valor de mercado.\n\n- Apple fechou o dia cotada a US$ https:",
+          "author": "FelpsCrypto",
+          "metrics": {
+            "retweet_count": 2,
+            "reply_count": 1,
+            "like_count": 10,
+            "quote_count": 0,
+            "bookmark_count": 2,
+            "impression_count": 7040
+          },
+          "score": 24.5,
+          "url": "https://x.com/i/web/status/2064149611762118779"
+        },
+        {
+          "id": "2063542839527575674",
+          "text": "This thread seems obviously correct; even if Anthropic is better, it's very likely to be a more fragile position. \n\nRobust governance is where an experienced company has an advantage - but the exemplar here is Google Deepmind, and not OpenAI, which is still basically a startup. h",
+          "author": "davidmanheim",
+          "metrics": {
+            "retweet_count": 0,
+            "reply_count": 1,
+            "like_count": 15,
+            "quote_count": 1,
+            "bookmark_count": 2,
+            "impression_count": 3149
+          },
+          "score": 23.1,
+          "url": "https://x.com/i/web/status/2063542839527575674"
+        },
+        {
+          "id": "2063692675673428269",
+          "text": "Great list!\nIf you want to follow any of the 10B+ valuation AI companies on X to keep track of the market, here are their handles:\n\nCrusoe ($10B) - @CrusoeAI\nMercor ($10B) - @mercor_ai\nElevenLabs ($11B) - @elevenlabs\nHarvey ($11B) - @harvey\nBaseten ($11B) - @baseten\nLovable https",
+          "author": "TamazGadaev",
+          "metrics": {
+            "retweet_count": 0,
+            "reply_count": 2,
+            "like_count": 6,
+            "quote_count": 0,
+            "bookmark_count": 9,
+            "impression_count": 941
+          },
+          "score": 21.4,
+          "url": "https://x.com/i/web/status/2063692675673428269"
+        }
+      ]
+    },
+    {
+      "topic": "IA no trabalho / produtividade",
+      "count": 16,
+      "total_score": 212.85199999999998,
+      "top_tweets": [
+        {
+          "id": "2064724369814044869",
+          "text": "The productivity gap is about to become terrifying.\n\nAI users are finishing days of work in hours.\n\nHere's the complete AI automation guide.\n\n📂 AI Automation\n┃\n┣ 📂 Foundations\n┃ ┣ 📂 What Is AI Automation\n┃ ┣ 📂 Automation vs AI\n┃ ┣ 📂 Decision Making\n┃ ┣ 📂 Learning https://t.co/N2E",
+          "author": "shushant_l",
+          "metrics": {
+            "retweet_count": 18,
+            "reply_count": 14,
+            "like_count": 67,
+            "quote_count": 1,
+            "bookmark_count": 48,
+            "impression_count": 2067
+          },
+          "score": 185.6,
+          "url": "https://x.com/i/web/status/2064724369814044869"
+        },
+        {
+          "id": "2065495501701542178",
+          "text": "Por que o Léo usa Claude pro trabalho e ChatGPT pro dia a dia:\n\n1. Claude te pergunta antes de assumir. \"Quer HTML ou PDF? A empresa é alavancada ou não?\" Isso refina o output antes de processar.\n\n2. Reasoning mais forte pra finanças, advocacia, trabalho analítico.\n\n3. ChatGPT te",
+          "author": "opapoeconomico",
+          "metrics": {
+            "retweet_count": 0,
+            "reply_count": 1,
+            "like_count": 11,
+            "quote_count": 0,
+            "bookmark_count": 0,
+            "impression_count": 1027
+          },
+          "score": 12.5,
+          "url": "https://x.com/i/web/status/2065495501701542178"
+        },
+        {
+          "id": "2065462303118471608",
+          "text": "📚 EDTECH, ONLINE LEARNING &amp; PRODUCTIVITY ROUNDUP — June 12, 2026\n\n1️⃣ STOP AUDITING WORKFLOWS — START WITH GOALS INSTEAD\n\nAllie K. Miller challenges the conventional AI-labs advice that you should start with a workflow audit when adopting AI at work. She argues that because",
+          "author": "TraffAlex",
+          "metrics": {
+            "retweet_count": 0,
+            "reply_count": 2,
+            "like_count": 3,
+            "quote_count": 0,
+            "bookmark_count": 0,
+            "impression_count": 88
+          },
+          "score": 4.1,
+          "url": "https://x.com/i/web/status/2065462303118471608"
+        },
+        {
+          "id": "2065531557264113986",
+          "text": "Por que o Léo usa Claude pro trabalho e ChatGPT pro dia a dia:\n\n1. Claude te pergunta antes de assumir. \"Quer HTML ou PDF? A empresa é alavancada ou não?\" Isso refina o output antes de processar.\n\n2. Reasoning mais forte pra finanças, advocacia, trabalho analítico.\n\n3. ChatGPT te",
+          "author": "opapoeconomico",
+          "metrics": {
+            "retweet_count": 0,
+            "reply_count": 1,
+            "like_count": 2,
+            "quote_count": 0,
+            "bookmark_count": 0,
+            "impression_count": 350
+          },
+          "score": 2.9,
+          "url": "https://x.com/i/web/status/2065531557264113986"
+        },
+        {
+          "id": "2065675890839728277",
+          "text": "samsung baniu chatgpt em 2023 depois de vazar código interno.\n\nagora em 2026? liberou chatgpt, gemini E claude pra empresa inteira.\n\no que mudou?\n\nnada — a pressão da concorrência só ficou alta demais.\n\nsegurança sempre foi desculpa, produtividade sempre foi o jogo.\né tudo https:",
+          "author": "netaotech",
+          "metrics": {
+            "retweet_count": 0,
+            "reply_count": 0,
+            "like_count": 1,
+            "quote_count": 0,
+            "bookmark_count": 1,
+            "impression_count": 28
+          },
+          "score": 2.5,
+          "url": "https://x.com/i/web/status/2065675890839728277"
+        }
+      ]
+    },
+    {
+      "topic": "IA generativa de imagem/vídeo",
+      "count": 17,
+      "total_score": 160.08999999999995,
+      "top_tweets": [
+        {
+          "id": "2064611414241648817",
+          "text": "2026!!\n\nLearn Ai!!\nLearn Ai skills!!\nLearn Ai Image Gen!!\nLearn Ai Automation!!\nLearn Ai Video editing!!\nLearn AI Content creation!!\nLearn AI Prompt Engineering!!\nLearn Ai Coding(Vibe coding)!!",
+          "author": "AutomationKing0",
+          "metrics": {
+            "retweet_count": 7,
+            "reply_count": 5,
+            "like_count": 53,
+            "quote_count": 1,
+            "bookmark_count": 17,
+            "impression_count": 1292
+          },
+          "score": 97.8,
+          "url": "https://x.com/i/web/status/2064611414241648817"
+        },
+        {
+          "id": "2063330354694705534",
+          "text": "Deepseek is still releasing its foundational models and also reportedly closing in on a massive $7B funding round as of early June 2026.\n\nSora got shutdown \n\nGitHub Copilot has huge market in enterprise coding agents\n\nMeta released Llama 4 (April 2025) Scout and Maverick its http",
+          "author": "lochan_twt",
+          "metrics": {
+            "retweet_count": 1,
+            "reply_count": 2,
+            "like_count": 21,
+            "quote_count": 0,
+            "bookmark_count": 3,
+            "impression_count": 3474
+          },
+          "score": 32.0,
+          "url": "https://x.com/i/web/status/2063330354694705534"
+        },
+        {
+          "id": "2063993734954353148",
+          "text": "Quando eu vejo anúncio de carro com foto gerada por inteligência artificial, eu assumo que o carro anunciado não existe. Única explicação plausível para gerar uma foto com inteligência artificial para o anúncio",
+          "author": "XerulebeXarabla",
+          "metrics": {
+            "retweet_count": 0,
+            "reply_count": 3,
+            "like_count": 14,
+            "quote_count": 0,
+            "bookmark_count": 0,
+            "impression_count": 445
+          },
+          "score": 15.9,
+          "url": "https://x.com/i/web/status/2063993734954353148"
+        },
+        {
+          "id": "2064404552506282051",
+          "text": "@groxxxo sim, deu positivo para chatgpt, gemini, claude, deepseek, meta IA, grok, perplexity, character ai, ollama \n(online, não local)\nnão, local também, midjourney, copilot, notion, otter e a boa e velha luzIA",
+          "author": "luluntheweb",
+          "metrics": {
+            "retweet_count": 0,
+            "reply_count": 1,
+            "like_count": 5,
+            "quote_count": 0,
+            "bookmark_count": 1,
+            "impression_count": 417
+          },
+          "score": 7.4,
+          "url": "https://x.com/i/web/status/2064404552506282051"
+        },
+        {
+          "id": "2064072188756648270",
+          "text": "@LFTH_Alex the only companies that really prioritized image generation were like Midjourney and Stability AI, which were fairly small compared to OpenAI/Anthropic/Google deepmind. Most capital of those latter three has went to creating and serving LLMs, with image/video generatio",
+          "author": "SOPHONTSIMP",
+          "metrics": {
+            "retweet_count": 0,
+            "reply_count": 2,
+            "like_count": 1,
+            "quote_count": 0,
+            "bookmark_count": 0,
+            "impression_count": 94
+          },
+          "score": 2.1,
+          "url": "https://x.com/i/web/status/2064072188756648270"
+        }
+      ]
+    },
+    {
+      "topic": "Chatbots / Atendimento / WhatsApp",
+      "count": 11,
+      "total_score": 23.408999999999995,
+      "top_tweets": [
+        {
+          "id": "2063278361678360640",
+          "text": "Here are some of the biggest AI trends in 2026:\n\n1. Agentic AI\n\nAI systems are moving beyond chatbots into “agents” that can:\n\nPlan multi-step tasks\nUse tools and software\nConduct research\nAutomate workflows\nCollaborate with other AI agents\n\nExamples include coding agents,",
+          "author": "JCKCROWLEY",
+          "metrics": {
+            "retweet_count": 0,
+            "reply_count": 5,
+            "like_count": 4,
+            "quote_count": 0,
+            "bookmark_count": 0,
+            "impression_count": 259
+          },
+          "score": 6.8,
+          "url": "https://x.com/i/web/status/2063278361678360640"
+        },
+        {
+          "id": "2065212098859200622",
+          "text": "Durante anos a internet brincou com a história de que o WhatsApp ficaria pago.\n\nAgora a realidade é ainda mais interessante.\n\nA Meta quer transformar o WhatsApp em uma plataforma de agentes de inteligência artificial.\n\nIsso muda completamente o jogo para empresas, profissionais e",
+          "author": "luisroquette",
+          "metrics": {
+            "retweet_count": 1,
+            "reply_count": 0,
+            "like_count": 2,
+            "quote_count": 0,
+            "bookmark_count": 1,
+            "impression_count": 60
+          },
+          "score": 5.6,
+          "url": "https://x.com/i/web/status/2065212098859200622"
+        },
+        {
+          "id": "2065691723515461891",
+          "text": "Everyone is debating whether Anthropic,\nOpenAI, or Google DeepMind, will reach AGI first...\nI bet the McDonald's chatbot will win the race https://t.co/ztnsLborex",
+          "author": "Lsc8954",
+          "metrics": {
+            "retweet_count": 0,
+            "reply_count": 1,
+            "like_count": 4,
+            "quote_count": 0,
+            "bookmark_count": 0,
+            "impression_count": 41
+          },
+          "score": 4.5,
+          "url": "https://x.com/i/web/status/2065691723515461891"
+        },
+        {
+          "id": "2065329395280293942",
+          "text": "$NOK Everyone is focused on AI chips, but AI is about to transform another massive industry: telecommunications.\n\nNokia’s new agentic AI framework isn’t just another chatbot for network operators. It’s designed to understand live network conditions, reason over trusted data, and ",
+          "author": "gulVasikova",
+          "metrics": {
+            "retweet_count": 0,
+            "reply_count": 0,
+            "like_count": 4,
+            "quote_count": 0,
+            "bookmark_count": 0,
+            "impression_count": 343
+          },
+          "score": 4.3,
+          "url": "https://x.com/i/web/status/2065329395280293942"
+        },
+        {
+          "id": "2063323033465688477",
+          "text": "Agentic AI is the new SaaS.\n\nInstead of tools you use—\nyou’ll have agents that work for you.\n\nGoldman Sachs &amp; Deutsche Bank are already testing agentic AI for deal workflows.\n\nIn GTM terms:\n• AI agents that qualify leads while you sleep\n• Agents that draft proposals from a",
+          "author": "0xsairahul",
+          "metrics": {
+            "retweet_count": 0,
+            "reply_count": 0,
+            "like_count": 1,
+            "quote_count": 0,
+            "bookmark_count": 0,
+            "impression_count": 22
+          },
+          "score": 1.0,
+          "url": "https://x.com/i/web/status/2063323033465688477"
+        }
+      ]
+    },
+    {
+      "topic": "Regulação / ética / segurança",
+      "count": 9,
+      "total_score": 14.703000000000001,
+      "top_tweets": [
+        {
+          "id": "2064610560700743823",
+          "text": "@goncalo_nspinto @lmldias @natroposfera @jl_zamith Desculpa lá, desde quando é que o claude é argumento para o que quer que seja?\nNão há nada mais patético que isso.\nChatGPT, Claude, Gemini, etc não são nem de perto nem de logo argumentos. https://t.co/sU8kFFkBY4",
+          "author": "cubexpt",
+          "metrics": {
+            "retweet_count": 0,
+            "reply_count": 3,
+            "like_count": 0,
+            "quote_count": 1,
+            "bookmark_count": 0,
+            "impression_count": 1463
+          },
+          "score": 4.5,
+          "url": "https://x.com/i/web/status/2064610560700743823"
+        },
+        {
+          "id": "2064800954374127811",
+          "text": "On June 5, OpenAI, Anthropic, Google DeepMind &amp; Microsoft asked Congress to mandate synthetic-DNA screening. The bioweapon risk is real. But watch the trajectory: today a voluntary norm, tomorrow policy, eventually regulation. The industry is writing the law it'll live under.",
+          "author": "fortylaunch",
+          "metrics": {
+            "retweet_count": 1,
+            "reply_count": 0,
+            "like_count": 1,
+            "quote_count": 0,
+            "bookmark_count": 0,
+            "impression_count": 23
+          },
+          "score": 3.0,
+          "url": "https://x.com/i/web/status/2064800954374127811"
+        },
+        {
+          "id": "2065675890839728277",
+          "text": "samsung baniu chatgpt em 2023 depois de vazar código interno.\n\nagora em 2026? liberou chatgpt, gemini E claude pra empresa inteira.\n\no que mudou?\n\nnada — a pressão da concorrência só ficou alta demais.\n\nsegurança sempre foi desculpa, produtividade sempre foi o jogo.\né tudo https:",
+          "author": "netaotech",
+          "metrics": {
+            "retweet_count": 0,
+            "reply_count": 0,
+            "like_count": 1,
+            "quote_count": 0,
+            "bookmark_count": 1,
+            "impression_count": 28
+          },
+          "score": 2.5,
+          "url": "https://x.com/i/web/status/2065675890839728277"
+        },
+        {
+          "id": "2064551884430487855",
+          "text": "@BlancheMinerva @mtavitschlegel I think open-source AI is inherently unsafe and neither Anthropic nor OpenAI should enable RSI loops for open-source AI prematurely \n\nI def don't want open-source AGI or ASI before there is closed-source one that is properly vetted for safety and a",
+          "author": "BlackHC",
+          "metrics": {
+            "retweet_count": 0,
+            "reply_count": 2,
+            "like_count": 1,
+            "quote_count": 0,
+            "bookmark_count": 0,
+            "impression_count": 93
+          },
+          "score": 2.1,
+          "url": "https://x.com/i/web/status/2064551884430487855"
+        },
+        {
+          "id": "2064305713355034853",
+          "text": "@wahab_twts Anthropic and OpenAI lead the frontier model race. Anthropic has the safety moat and Claude Code adoption is real. OpenAI has brand and distribution but IPO pressure is a long term risk.\n\nGoogle and Microsoft win on distribution and infrastructure. Neither leads on mo",
+          "author": "MixRoute_ai",
+          "metrics": {
+            "retweet_count": 0,
+            "reply_count": 1,
+            "like_count": 1,
+            "quote_count": 0,
+            "bookmark_count": 0,
+            "impression_count": 66
+          },
+          "score": 1.6,
+          "url": "https://x.com/i/web/status/2064305713355034853"
+        }
+      ]
+    }
+  ],
+  "top_tweets_overall": [
+    {
+      "text": "Google founders are Jewish, has a frontier model\nAnthropic founder is Jewish, has a frontier model\nOpenAI founder is Jewish, has a frontier model\n\nxai founder isn’t Jewish, doesn’t have a frontier model\nMicrosoft founder isn’t Jewish, doesn’t have a frontier model\nDeepseek https:",
+      "author": "GolerGkA",
+      "metrics": {
+        "retweet_count": 51,
+        "reply_count": 65,
+        "like_count": 1618,
+        "quote_count": 19,
+        "bookmark_count": 443,
+        "impression_count": 272706
+      },
+      "score": 2718.2,
+      "topics": [
+        "Modelos novos (GPT/Claude/Gemini/Llama)",
+        "OpenAI / Anthropic / Big Labs"
+      ],
+      "url": "https://x.com/i/web/status/2064830151305699469"
+    },
+    {
+      "text": "This is why you should support open source AI \n\nAuthoritarian governments can’t exert control on our lives and play god \n\nWithout open source AI, US government will restrict AGI access to a small set of elitists 😭",
+      "author": "bindureddy",
+      "metrics": {
+        "retweet_count": 54,
+        "reply_count": 81,
+        "like_count": 448,
+        "quote_count": 8,
+        "bookmark_count": 21,
+        "impression_count": 60284
+      },
+      "score": 700.3,
+      "topics": [
+        "Open source / modelos abertos"
+      ],
+      "url": "https://x.com/i/web/status/2065627605144055865"
+    },
+    {
+      "text": "MARCUS CHEN EMPILHOU 30 MAC MINIS E CRIOU UMA FAZENDA DE SERVIDORES DE IA. UM ÚNICO MAC MINI DE US$ 599 PODE SUBSTITUIR SUA CONTA DE US$ 200/MÊS DO CLAUDE CODE GASTANDO APENAS US$ 3 DE ENERGIA.\n\nHá dois meses, um desenvolvedor publicou no Reddit a sua fatura do Claude Code: US$ h",
+      "author": "DehumanoaDeus",
+      "metrics": {
+        "retweet_count": 20,
+        "reply_count": 14,
+        "like_count": 190,
+        "quote_count": 1,
+        "bookmark_count": 100,
+        "impression_count": 39423
+      },
+      "score": 427.9,
+      "topics": [
+        "IA para código/dev",
+        "Modelos novos (GPT/Claude/Gemini/Llama)"
+      ],
+      "url": "https://x.com/i/web/status/2063506042114474143"
+    },
+    {
+      "text": "chatgpt vs gemini mas o chatgpt tem um bundão, saia e uma venda nos olhos https://t.co/LgBDoYWL00",
+      "author": "scalabriniii",
+      "metrics": {
+        "retweet_count": 8,
+        "reply_count": 10,
+        "like_count": 322,
+        "quote_count": 3,
+        "bookmark_count": 33,
+        "impression_count": 22657
+      },
+      "score": 419.7,
+      "topics": [
+        "Modelos novos (GPT/Claude/Gemini/Llama)"
+      ],
+      "url": "https://x.com/i/web/status/2065418102301442418"
+    },
+    {
+      "text": "AI is reshaping how work gets done globally.\n\nIt’s changing workflows, tasks, and decision-making systems.\n\nSharing these Top 7 AI models compiled by @AndrewBolis.\n\n1. ChatGPT (OpenAI)\n\nVersatile for writing, research, guidance, and support.\n\n2. Claude (Anthropic)\n\nFocuses on htt",
+      "author": "Igor_Buinevici",
+      "metrics": {
+        "retweet_count": 37,
+        "reply_count": 6,
+        "like_count": 98,
+        "quote_count": 0,
+        "bookmark_count": 72,
+        "impression_count": 7256
+      },
+      "score": 290.3,
+      "topics": [
+        "Modelos novos (GPT/Claude/Gemini/Llama)",
+        "OpenAI / Anthropic / Big Labs",
+        "Automação / Workflows com IA"
+      ],
+      "url": "https://x.com/i/web/status/2064346800543482056"
+    },
+    {
+      "text": "The productivity gap is about to become terrifying.\n\nAI users are finishing days of work in hours.\n\nHere's the complete AI automation guide.\n\n📂 AI Automation\n┃\n┣ 📂 Foundations\n┃ ┣ 📂 What Is AI Automation\n┃ ┣ 📂 Automation vs AI\n┃ ┣ 📂 Decision Making\n┃ ┣ 📂 Learning https://t.co/N2E",
+      "author": "shushant_l",
+      "metrics": {
+        "retweet_count": 18,
+        "reply_count": 14,
+        "like_count": 67,
+        "quote_count": 1,
+        "bookmark_count": 48,
+        "impression_count": 2067
+      },
+      "score": 185.6,
+      "topics": [
+        "Automação / Workflows com IA",
+        "IA no trabalho / produtividade"
+      ],
+      "url": "https://x.com/i/web/status/2064724369814044869"
+    },
+    {
+      "text": "Some of the best companies to work for according to candidates.\n\nS+: Anthropic, OpenAI, Google DeepMind, Rentech, TGS, xAI, Citadel Securities, Jane Street, HRT\n\nS: Citadel, D.E. Shaw, Jump, Optiver, Two Sigma, Tesla (Autopilot), Five Rings, SpaceX\n\nS-: IMC, SIG, DRW, Akuna\n\nA++:",
+      "author": "vivoplt",
+      "metrics": {
+        "retweet_count": 8,
+        "reply_count": 33,
+        "like_count": 72,
+        "quote_count": 0,
+        "bookmark_count": 47,
+        "impression_count": 7640
+      },
+      "score": 182.6,
+      "topics": [
+        "OpenAI / Anthropic / Big Labs"
+      ],
+      "url": "https://x.com/i/web/status/2063273860754231748"
+    },
+    {
+      "text": "open-source ai is the only way forward.",
+      "author": "svpino",
+      "metrics": {
+        "retweet_count": 13,
+        "reply_count": 20,
+        "like_count": 92,
+        "quote_count": 2,
+        "bookmark_count": 2,
+        "impression_count": 4823
+      },
+      "score": 138.8,
+      "topics": [
+        "Open source / modelos abertos"
+      ],
+      "url": "https://x.com/i/web/status/2065733417661030904"
+    },
+    {
+      "text": "E se a IA mais preparada para apoiar o médico não for a que se vende como “IA médica”?\n\nUm estudo publicado na Nature Medicine comparou ferramentas clínicas comerciais e dedicadas, OpenEvidence e UpToDate Expert AI, com LLMs gerais (GPT-5.2, Gemini 3.1 Pro e Claude Opus 4.6).\n\nNo",
+      "author": "glauber_doc",
+      "metrics": {
+        "retweet_count": 5,
+        "reply_count": 16,
+        "like_count": 74,
+        "quote_count": 0,
+        "bookmark_count": 25,
+        "impression_count": 4178
+      },
+      "score": 133.7,
+      "topics": [
+        "Modelos novos (GPT/Claude/Gemini/Llama)"
+      ],
+      "url": "https://x.com/i/web/status/2065422550004371529"
+    },
+    {
+      "text": "Open source AI must win!",
+      "author": "omarsar0",
+      "metrics": {
+        "retweet_count": 9,
+        "reply_count": 11,
+        "like_count": 81,
+        "quote_count": 0,
+        "bookmark_count": 3,
+        "impression_count": 5587
+      },
+      "score": 114.6,
+      "topics": [
+        "Open source / modelos abertos"
+      ],
+      "url": "https://x.com/i/web/status/2065632446255665232"
+    },
+    {
+      "text": "Clip with David Morgan: Is open source AI the printing press of the 21st century? We need to use open source AI to further pro-liberty, pro-human goals! https://t.co/uSl0BsOXI9",
+      "author": "HealthRanger",
+      "metrics": {
+        "retweet_count": 17,
+        "reply_count": 9,
+        "like_count": 59,
+        "quote_count": 0,
+        "bookmark_count": 6,
+        "impression_count": 5140
+      },
+      "score": 111.6,
+      "topics": [
+        "Open source / modelos abertos"
+      ],
+      "url": "https://x.com/i/web/status/2064814880826253368"
+    },
+    {
+      "text": "Most people in AI can't actually explain the difference between \"Generative AI,\" \"Agentic AI,\" and \"AI Agents.\"\n\nThey use all three like they mean the same thing. They don't. And once it clicks, you can't unsee it.\n\nHere's the cleanest way to think about it:\n\nGenerative AI is the",
+      "author": "VaibhavSisinty",
+      "metrics": {
+        "retweet_count": 5,
+        "reply_count": 7,
+        "like_count": 38,
+        "quote_count": 1,
+        "bookmark_count": 33,
+        "impression_count": 2984
+      },
+      "score": 105.5,
+      "topics": [
+        "Agentes de IA / Agentic"
+      ],
+      "url": "https://x.com/i/web/status/2064392166131265627"
+    },
+    {
+      "text": "If you get offers from these 3 companies :  \n\n- OpenAI \n- Anthropic  \n- Google Deepmind  \n\nWhich one would you join, and why?",
+      "author": "Its_Nova1012",
+      "metrics": {
+        "retweet_count": 1,
+        "reply_count": 65,
+        "like_count": 61,
+        "quote_count": 0,
+        "bookmark_count": 2,
+        "impression_count": 3560
+      },
+      "score": 102.1,
+      "topics": [
+        "OpenAI / Anthropic / Big Labs"
+      ],
+      "url": "https://x.com/i/web/status/2065284539564675171"
+    },
+    {
+      "text": "OpenAI, Anthropic, Google DeepMind, and Microsoft just agreed on something.\n\nThey're all warning about the same risk: future AI lowering the knowledge barrier around dangerous biological material.\n\nRead the shocking details🧵: https://t.co/EQPjK1gzjG",
+      "author": "themetav3rse",
+      "metrics": {
+        "retweet_count": 20,
+        "reply_count": 6,
+        "like_count": 43,
+        "quote_count": 1,
+        "bookmark_count": 3,
+        "impression_count": 7481
+      },
+      "score": 99.5,
+      "topics": [
+        "OpenAI / Anthropic / Big Labs"
+      ],
+      "url": "https://x.com/i/web/status/2063637138118516779"
+    },
+    {
+      "text": "Stanford just released a 1.2-hour lecture on \"Turning Electricity into Intelligence.\"\n\nThis is the exact knowledge engineers at NVIDIA, Anthropic, xAI, and Google DeepMind require to understand at a deep level.\n\nGive it some time.\n\nThis might be the highest-ROI learning you do ht",
+      "author": "ZabihullahAtal",
+      "metrics": {
+        "retweet_count": 12,
+        "reply_count": 1,
+        "like_count": 20,
+        "quote_count": 0,
+        "bookmark_count": 34,
+        "impression_count": 2886
+      },
+      "score": 98.4,
+      "topics": [
+        "OpenAI / Anthropic / Big Labs"
+      ],
+      "url": "https://x.com/i/web/status/2063972795122638889"
+    },
+    {
+      "text": "2026!!\n\nLearn Ai!!\nLearn Ai skills!!\nLearn Ai Image Gen!!\nLearn Ai Automation!!\nLearn Ai Video editing!!\nLearn AI Content creation!!\nLearn AI Prompt Engineering!!\nLearn Ai Coding(Vibe coding)!!",
+      "author": "AutomationKing0",
+      "metrics": {
+        "retweet_count": 7,
+        "reply_count": 5,
+        "like_count": 53,
+        "quote_count": 1,
+        "bookmark_count": 17,
+        "impression_count": 1292
+      },
+      "score": 97.8,
+      "topics": [
+        "IA para código/dev",
+        "IA generativa de imagem/vídeo",
+        "Automação / Workflows com IA"
+      ],
+      "url": "https://x.com/i/web/status/2064611414241648817"
+    },
+    {
+      "text": "Open source AI must win https://t.co/MnCdiKGGan https://t.co/lRRUXFHfxk",
+      "author": "dankvr",
+      "metrics": {
+        "retweet_count": 8,
+        "reply_count": 6,
+        "like_count": 65,
+        "quote_count": 0,
+        "bookmark_count": 2,
+        "impression_count": 4367
+      },
+      "score": 91.4,
+      "topics": [
+        "Open source / modelos abertos"
+      ],
+      "url": "https://x.com/i/web/status/2065608055572640192"
+    },
+    {
+      "text": "DARIO scared of OPEN SOURCE AI\n\nOPEN SOURCE AI must WIN https://t.co/iybsExsVqM",
+      "author": "chiefofautism",
+      "metrics": {
+        "retweet_count": 6,
+        "reply_count": 3,
+        "like_count": 69,
+        "quote_count": 1,
+        "bookmark_count": 2,
+        "impression_count": 1519
+      },
+      "score": 88.5,
+      "topics": [
+        "Open source / modelos abertos"
+      ],
+      "url": "https://x.com/i/web/status/2064843500512784844"
+    },
+    {
+      "text": "Ótimo uso de inteligência artificial por David Brazil. https://t.co/eWm99QOyrm",
+      "author": "chicobarney",
+      "metrics": {
+        "retweet_count": 3,
+        "reply_count": 9,
+        "like_count": 70,
+        "quote_count": 2,
+        "bookmark_count": 1,
+        "impression_count": 2834
+      },
+      "score": 87.8,
+      "topics": [
+        "Outros / IA geral"
+      ],
+      "url": "https://x.com/i/web/status/2065787621427589404"
+    },
+    {
+      "text": "Compared to Dwarkesh, i'm more sceptical that sample efficiency will block the intelligence explosion.\n\nYes, open source AI catches up to the frontier by using data from frontier AI models. \n\nBut that doesn't imply that sample efficiency hasn't been improving within frontier http",
+      "author": "TomDavidsonX",
+      "metrics": {
+        "retweet_count": 1,
+        "reply_count": 2,
+        "like_count": 41,
+        "quote_count": 0,
+        "bookmark_count": 24,
+        "impression_count": 3701
+      },
+      "score": 83.7,
+      "topics": [
+        "Open source / modelos abertos"
+      ],
+      "url": "https://x.com/i/web/status/2064294448402469166"
+    },
+    {
+      "text": "Inside the AI Stack\n\nInfrastructure — Nvidia, AWS, Google Cloud \nData — Databricks, Snowflake, Palantir \nModels — OpenAI, Anthropic, Google DeepMind \nApplication — Microsoft, Salesforce, Adobe \nOperation — https://t.co/NDtzgDE7UT, IBM, Weights &amp; Biases https://t.co/pc1jJ2IKTb",
+      "author": "Market_Mind_",
+      "metrics": {
+        "retweet_count": 9,
+        "reply_count": 1,
+        "like_count": 36,
+        "quote_count": 1,
+        "bookmark_count": 14,
+        "impression_count": 1309
+      },
+      "score": 78.3,
+      "topics": [
+        "OpenAI / Anthropic / Big Labs"
+      ],
+      "url": "https://x.com/i/web/status/2064734332409803227"
+    },
+    {
+      "text": "The best founders of the best AI \n\n&gt; Elon Musk : ( xAI )\n&gt; Dario Amodei : ( Anthropic )\n&gt; Demis Hassabis : ( Google DeepMind )\n&gt; Sam Altman : ( OpenAI )\n\nwhich AI do you work with the most? https://t.co/sIMfZgR2ct",
+      "author": "alex_atoms",
+      "metrics": {
+        "retweet_count": 0,
+        "reply_count": 30,
+        "like_count": 57,
+        "quote_count": 0,
+        "bookmark_count": 1,
+        "impression_count": 866
+      },
+      "score": 74.4,
+      "topics": [
+        "OpenAI / Anthropic / Big Labs"
+      ],
+      "url": "https://x.com/i/web/status/2063619458028216763"
+    },
+    {
+      "text": "@memes_horriveis Akinator não é IA generativa meu anjo",
+      "author": "ZhyrelDragon",
+      "metrics": {
+        "retweet_count": 0,
+        "reply_count": 1,
+        "like_count": 68,
+        "quote_count": 0,
+        "bookmark_count": 0,
+        "impression_count": 1557
+      },
+      "score": 70.1,
+      "topics": [
+        "Outros / IA geral"
+      ],
+      "url": "https://x.com/i/web/status/2064331850382753938"
+    },
+    {
+      "text": "🤖 Awesome Open Source AI 🛡️\n\nA curated collection of the best open-source AI models, frameworks, agents, RAG tools, inference engines, LLMOps platforms, and developer resources.\n\nPerfect for AI engineers, builders, researchers, and open-source enthusiasts. 🚀\n\n🔗 https://t.co/gtFiT",
+      "author": "VivekIntel",
+      "metrics": {
+        "retweet_count": 6,
+        "reply_count": 2,
+        "like_count": 29,
+        "quote_count": 1,
+        "bookmark_count": 14,
+        "impression_count": 1145
+      },
+      "score": 65.6,
+      "topics": [
+        "Agentes de IA / Agentic",
+        "IA para código/dev",
+        "Open source / modelos abertos"
+      ],
+      "url": "https://x.com/i/web/status/2063475839040438713"
+    },
+    {
+      "text": "INTELIGÊNCIA ARTIFICIAL | A ministra Cármen Lúcia, do Supremo Tribunal Federal (STF), destacou os riscos do uso indevido da inteligência artificial, nessa terça-feira (9), durante o 6º Congresso Brasileiro de Internet. https://t.co/DRLhtvThrv",
+      "author": "ebcnarede",
+      "metrics": {
+        "retweet_count": 12,
+        "reply_count": 1,
+        "like_count": 38,
+        "quote_count": 1,
+        "bookmark_count": 0,
+        "impression_count": 414
+      },
+      "score": 64.4,
+      "topics": [
+        "Outros / IA geral"
+      ],
+      "url": "https://x.com/i/web/status/2065122858162868332"
+    },
+    {
+      "text": "Agentic AI is creating a new class of trust problems.\n\nUseful agents need (1) access to private information, (2) access to untrusted external input, and (3) the ability to act.\n\nHowever, once we combine these three properties, there is always the possibility that an agent can be ",
+      "author": "_weidai",
+      "metrics": {
+        "retweet_count": 2,
+        "reply_count": 7,
+        "like_count": 22,
+        "quote_count": 0,
+        "bookmark_count": 14,
+        "impression_count": 4188
+      },
+      "score": 54.7,
+      "topics": [
+        "Agentes de IA / Agentic"
+      ],
+      "url": "https://x.com/i/web/status/2065160042459152636"
+    },
+    {
+      "text": "the smartest people i know are now maxbidding open source ai.\n\nthe dumbest people i know are now maxbidding open source ai.\n\nthe normies are still using chatgpt. much to think about.",
+      "author": "ConejoCapital",
+      "metrics": {
+        "retweet_count": 0,
+        "reply_count": 7,
+        "like_count": 37,
+        "quote_count": 1,
+        "bookmark_count": 3,
+        "impression_count": 2143
+      },
+      "score": 48.6,
+      "topics": [
+        "Open source / modelos abertos"
+      ],
+      "url": "https://x.com/i/web/status/2065629651125280944"
+    },
+    {
+      "text": "It’s time to make open source ai great again",
+      "author": "0xsachi",
+      "metrics": {
+        "retweet_count": 2,
+        "reply_count": 19,
+        "like_count": 32,
+        "quote_count": 0,
+        "bookmark_count": 0,
+        "impression_count": 873
+      },
+      "score": 46.4,
+      "topics": [
+        "Open source / modelos abertos"
+      ],
+      "url": "https://x.com/i/web/status/2065731180373139889"
+    },
+    {
+      "text": "OpenAI, Google DeepMind, Meta, Microsoft, NVIDIA, Mistral, Hugging Face\n\nthe labs everyone says are closing ai behind a paywall quietly shipped their core tools on github. here are 7 repos, one from each\n\n1. OpenAI, openai/openai-agents-python\nhttps://t.co/6UfYVDOcTy\n27k stars. h",
+      "author": "vorty279",
+      "metrics": {
+        "retweet_count": 2,
+        "reply_count": 2,
+        "like_count": 22,
+        "quote_count": 0,
+        "bookmark_count": 10,
+        "impression_count": 878
+      },
+      "score": 42.9,
+      "topics": [
+        "Agentes de IA / Agentic",
+        "Modelos novos (GPT/Claude/Gemini/Llama)",
+        "OpenAI / Anthropic / Big Labs"
+      ],
+      "url": "https://x.com/i/web/status/2065521758422364435"
+    },
+    {
+      "text": "⚡AI coding agents are no longer just assistants—they’re becoming autonomous teammates.\n\nFrom code completion to multi-step execution across the SDLC, the shift is redefining software engineering.\n\nExplore what’s driving this evolution in Gartner’s 2026 Magic Quadrant for https://",
+      "author": "Gartner_inc",
+      "metrics": {
+        "retweet_count": 6,
+        "reply_count": 1,
+        "like_count": 20,
+        "quote_count": 1,
+        "bookmark_count": 4,
+        "impression_count": 2089
+      },
+      "score": 42.1,
+      "topics": [
+        "Agentes de IA / Agentic",
+        "IA para código/dev"
+      ],
+      "url": "https://x.com/i/web/status/2064069746530668679"
+    },
+    {
+      "text": "Every single AI startup powered by @mintlify with $10B+ valuation and $100M+ revenue run rate:  \n\nCrusoe - $10B \nMercor - $10B ✅ \nElevenLabs - $11B \nBaseten - $11B* ✅\nHarvey - $11B ✅\nLovable - $12B* ✅\nOpenEvidence - $12B \nMistral - $14B \nNscale - $14.6B \nFireworks - $15B* ✅ https",
+      "author": "pronounsuponly",
+      "metrics": {
+        "retweet_count": 1,
+        "reply_count": 11,
+        "like_count": 23,
+        "quote_count": 0,
+        "bookmark_count": 3,
+        "impression_count": 5703
+      },
+      "score": 40.7,
+      "topics": [
+        "Modelos novos (GPT/Claude/Gemini/Llama)",
+        "Negócios / startups / investimento"
+      ],
+      "url": "https://x.com/i/web/status/2063674932471730626"
+    },
+    {
+      "text": "Which AI lab do you trust the most, and why?\n\nOpenAI\nAnthropic\nGoogle DeepMind\nxAI\nMeta AI\n\nThe answer says a lot about what you think the future of AI should look like.",
+      "author": "Tech_girlll",
+      "metrics": {
+        "retweet_count": 2,
+        "reply_count": 20,
+        "like_count": 21,
+        "quote_count": 0,
+        "bookmark_count": 1,
+        "impression_count": 1142
+      },
+      "score": 37.6,
+      "topics": [
+        "OpenAI / Anthropic / Big Labs"
+      ],
+      "url": "https://x.com/i/web/status/2065106633915617570"
+    },
+    {
+      "text": "@Scobleizer @BrianRoemmele Open source AI is more important than ever.",
+      "author": "RoyalCities",
+      "metrics": {
+        "retweet_count": 1,
+        "reply_count": 2,
+        "like_count": 33,
+        "quote_count": 0,
+        "bookmark_count": 0,
+        "impression_count": 1354
+      },
+      "score": 37.4,
+      "topics": [
+        "Open source / modelos abertos"
+      ],
+      "url": "https://x.com/i/web/status/2065610051734110352"
+    },
+    {
+      "text": "Anthropic spent years fighting open-source AI, warning the public about its dangers, and locking its own work behind a greedy, unsustainable model.\n\nAnd today, with one move, it gave open-source AI the greatest gift imaginable.\n\nA huge wave of people will now start looking",
+      "author": "Da7_Tech",
+      "metrics": {
+        "retweet_count": 1,
+        "reply_count": 2,
+        "like_count": 24,
+        "quote_count": 1,
+        "bookmark_count": 2,
+        "impression_count": 5509
+      },
+      "score": 37.0,
+      "topics": [
+        "OpenAI / Anthropic / Big Labs",
+        "Open source / modelos abertos"
+      ],
+      "url": "https://x.com/i/web/status/2065610716623651162"
+    },
+    {
+      "text": "open source AI labs satisfaction level rn. https://t.co/lHGcCSfTqh https://t.co/ZFrMHLpgDL",
+      "author": "Meer_AIIT",
+      "metrics": {
+        "retweet_count": 9,
+        "reply_count": 1,
+        "like_count": 16,
+        "quote_count": 0,
+        "bookmark_count": 0,
+        "impression_count": 1080
+      },
+      "score": 35.6,
+      "topics": [
+        "Open source / modelos abertos"
+      ],
+      "url": "https://x.com/i/web/status/2065720471187034217"
+    },
+    {
+      "text": "@IsadoraGameOver O problema eh esse, eles não tão usando só IA como ferramenta kkkk\n\nAli claramente diz IA GENERATIVA, o que é algo COMPLETAMENTE diferente de uma IA comum\n\nMuito provavelmente vão usar IA generativa pra concept arts, designs e por aí vai",
+      "author": "FlipeArt2",
+      "metrics": {
+        "retweet_count": 0,
+        "reply_count": 6,
+        "like_count": 30,
+        "quote_count": 0,
+        "bookmark_count": 1,
+        "impression_count": 1033
+      },
+      "score": 35.5,
+      "topics": [
+        "Outros / IA geral"
+      ],
+      "url": "https://x.com/i/web/status/2063698566791450971"
+    },
+    {
+      "text": "AI companies are hiring software engineers like crazy in 2026 👀\n(Approx total team size / hiring pace)\n\n• OpenAI → 4,000+\n• Anthropic → 2,000+\n• xAI → 1,500+\n• Databricks → 8,000+\n• Scale AI → 1,000+\n• Perplexity → 500+\n• Cohere → 500+\n• ElevenLabs → 300+\n•",
+      "author": "NitinthisSide_",
+      "metrics": {
+        "retweet_count": 0,
+        "reply_count": 11,
+        "like_count": 21,
+        "quote_count": 1,
+        "bookmark_count": 3,
+        "impression_count": 1233
+      },
+      "score": 33.7,
+      "topics": [
+        "OpenAI / Anthropic / Big Labs"
+      ],
+      "url": "https://x.com/i/web/status/2064965979969671541"
+    },
+    {
+      "text": "@rafaelgloves Pensa assim.\n\nProduto A é o que resolve o seu problema. \n\nProduto B no máximo quebra o galho mas é MUITO mais barato que o A.\n\nAcontece que o B está ficando cada vez melhor, enquanto continua sendo MUITO mais barato que o A.\n\nUm belo dia, você pensa: quer saber? O p",
+      "author": "rodrigofm",
+      "metrics": {
+        "retweet_count": 0,
+        "reply_count": 2,
+        "like_count": 26,
+        "quote_count": 0,
+        "bookmark_count": 2,
+        "impression_count": 2921
+      },
+      "score": 32.9,
+      "topics": [
+        "Outros / IA geral"
+      ],
+      "url": "https://x.com/i/web/status/2064358367498273167"
+    },
+    {
+      "text": "Deepseek is still releasing its foundational models and also reportedly closing in on a massive $7B funding round as of early June 2026.\n\nSora got shutdown \n\nGitHub Copilot has huge market in enterprise coding agents\n\nMeta released Llama 4 (April 2025) Scout and Maverick its http",
+      "author": "lochan_twt",
+      "metrics": {
+        "retweet_count": 1,
+        "reply_count": 2,
+        "like_count": 21,
+        "quote_count": 0,
+        "bookmark_count": 3,
+        "impression_count": 3474
+      },
+      "score": 32.0,
+      "topics": [
+        "Agentes de IA / Agentic",
+        "IA para código/dev",
+        "Modelos novos (GPT/Claude/Gemini/Llama)",
+        "IA generativa de imagem/vídeo",
+        "Negócios / startups / investimento"
+      ],
+      "url": "https://x.com/i/web/status/2063330354694705534"
+    },
+    {
+      "text": "The global AI industry is gathering in Singapore this Wednesday. \n\nOpenAI, Google DeepMind, Mistral, AWS, Alibaba, Snowflake, Stripe and 1,500+ companies at Asia's largest AI event plus 100+ side events taking over the city all week.\n\nWe're reaching capacity and ticket portal htt",
+      "author": "superai_conf",
+      "metrics": {
+        "retweet_count": 1,
+        "reply_count": 6,
+        "like_count": 18,
+        "quote_count": 1,
+        "bookmark_count": 0,
+        "impression_count": 2806
+      },
+      "score": 27.3,
+      "topics": [
+        "Modelos novos (GPT/Claude/Gemini/Llama)",
+        "OpenAI / Anthropic / Big Labs"
+      ],
+      "url": "https://x.com/i/web/status/2063826871922651369"
+    }
+  ]
+}

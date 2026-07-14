@@ -7,8 +7,8 @@ import {
   LayoutDashboard, Bot, Clock, Zap, Layout, Calendar, CalendarClock,
   Brain, Plug, DollarSign, FolderOpen, Cpu,
   Monitor, Users, ScrollText, LogOut, Menu, X, Shield, BookOpen, Library, Database,
-  ArrowUpCircle, ChevronDown, Webhook, HardDriveDownload, Settings, Share2, Heart, Target, Ticket, Activity, Package,
-  Puzzle, Terminal,
+  ArrowUpCircle, ChevronDown, Webhook, HardDriveDownload, Settings, Share2, Heart, Target, Activity, Package,
+  Puzzle, Terminal, Columns3,
 } from 'lucide-react'
 import {
   getAllPluginSidebarGroups,
@@ -60,7 +60,7 @@ const navGroups: NavGroup[] = [
       { to: '/heartbeats', labelKey: 'heartbeats', icon: Heart, resource: 'heartbeats' },
       { to: '/activity', labelKey: 'activity', icon: Activity, resource: 'scheduler' },
       { to: '/goals', labelKey: 'goals', icon: Target, resource: 'goals' },
-      { to: '/topics', labelKey: 'issues', icon: Ticket, resource: 'tickets' },
+      { to: '/kanban', labelKey: 'kanban', icon: Columns3, resource: 'tickets' },
       { to: '/templates', labelKey: 'templates', icon: Layout, resource: 'templates' },
     ],
   },
@@ -229,7 +229,7 @@ export default function Sidebar() {
 
         <div
           className={`overflow-hidden transition-all duration-200 ease-in-out ${
-            group.collapsible && isCollapsed ? 'max-h-0 opacity-0' : 'max-h-96 opacity-100'
+            group.collapsible && isCollapsed ? 'max-h-0 opacity-0' : 'max-h-[720px] opacity-100'
           }`}
         >
           <div className="flex flex-col gap-0.5">
@@ -289,7 +289,7 @@ export default function Sidebar() {
               )}
               <div
                 className={`overflow-hidden transition-all duration-200 ease-in-out ${
-                  group.collapsible !== false && isCollapsed ? 'max-h-0 opacity-0' : 'max-h-96 opacity-100'
+                  group.collapsible !== false && isCollapsed ? 'max-h-0 opacity-0' : 'max-h-[720px] opacity-100'
                 }`}
               >
                 <div className="flex flex-col gap-0.5">

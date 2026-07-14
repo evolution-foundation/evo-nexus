@@ -7,7 +7,10 @@ import SecurityScanSection, { type ScanVerdict, type ScanResult } from './Securi
 interface PreviewResult {
   manifest: Record<string, unknown>
   warnings: string[]
-  conflicts?: Record<string, unknown>
+  // Backend returns conflicts as a list of human-readable strings (not a dict).
+  // See plugin_loader.PluginInstaller.preview() — each blocker is a string
+  // appended to result["conflicts"].
+  conflicts?: string[]
 }
 
 interface Props {
@@ -140,7 +143,9 @@ export default function PluginInstallModal({ onClose, onInstalled }: Props) {
 
   const manifest = preview?.manifest ?? {}
   const warnings = preview?.warnings ?? []
-  const conflicts = preview?.conflicts ? Object.keys(preview.conflicts) : []
+  const conflicts: string[] = Array.isArray(preview?.conflicts)
+    ? (preview!.conflicts as string[]).filter((c): c is string => typeof c === 'string' && c.length > 0)
+    : []
 
   // Install button is amber for WARN, normal green otherwise
   const installBtnClass =
@@ -338,7 +343,11 @@ export default function PluginInstallModal({ onClose, onInstalled }: Props) {
                   <p className="text-xs font-medium text-red-400 mb-1 flex items-center gap-1.5">
                     <AlertTriangle size={12} /> {t('plugins.conflicts')}
                   </p>
-                  <p className="text-xs text-red-300/80">{conflicts.join(', ')}</p>
+                  <ul className="space-y-0.5 list-disc list-inside">
+                    {conflicts.map((c, i) => (
+                      <li key={i} className="text-xs text-red-300/80">{c}</li>
+                    ))}
+                  </ul>
                 </div>
               )}
 

@@ -30,7 +30,38 @@ def _mempalace_available():
         return False, None
 
 
+# Fontes seedadas no primeiro uso — as memórias do workspace e dos agentes
+# são o motivo de existir da base (recall semântico após /clear). O usuário
+# pode remover/adicionar pela UI normalmente; o seed só acontece quando
+# sources.json ainda não existe.
+DEFAULT_SOURCES = [
+    ("memory", "Memória do workspace", "memoria"),
+    (".claude/agent-memory", "Memória dos agentes", "agentes"),
+    ("workspace/development", "Artefatos de desenvolvimento", "desenvolvimento"),
+]
+
+
+def _seed_default_sources():
+    now = datetime.now(timezone.utc).isoformat()
+    sources = []
+    for rel, label, wing in DEFAULT_SOURCES:
+        path = (WORKSPACE / rel).resolve()
+        if path.is_dir():
+            sources.append({
+                "path": str(path),
+                "label": label,
+                "wing": wing,
+                "added_at": now,
+                "last_indexed": None,
+            })
+    if sources:
+        _save_sources(sources)
+    return sources
+
+
 def _load_sources():
+    if not SOURCES_FILE.exists():
+        return _seed_default_sources()
     try:
         return json.loads(SOURCES_FILE.read_text(encoding="utf-8"))
     except Exception:
@@ -45,8 +76,18 @@ def _save_sources(sources):
 def _get_mining_status():
     try:
         status = json.loads(MINING_STATUS_FILE.read_text(encoding="utf-8"))
-        # Check if process is still alive
         pid = status.get("pid")
+        # O worker publica phase="done" antes de sair — o check de PID sozinho
+        # não basta: o child exitado vira zumbi (ninguém dá wait()) e
+        # os.kill(pid, 0) segue passando, prendendo a UI em "in progress".
+        if status.get("phase") in ("done", "error"):
+            if pid:
+                try:
+                    os.waitpid(pid, os.WNOHANG)  # reap do zumbi (best-effort)
+                except (OSError, ChildProcessError):
+                    pass
+            MINING_STATUS_FILE.unlink(missing_ok=True)
+            return None
         if pid:
             try:
                 os.kill(pid, 0)

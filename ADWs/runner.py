@@ -45,6 +45,39 @@ def _parse_usage(json_result: dict) -> dict:
     }
 
 
+def _agent_prompt(agent: str | None) -> str:
+    """Return agent persona text without YAML frontmatter."""
+    if not agent:
+        return ""
+    agent_file = WORKSPACE / ".claude" / "agents" / f"{agent}.md"
+    try:
+        content = agent_file.read_text(encoding="utf-8")
+    except OSError:
+        return f"You are the {agent} agent."
+    if content.startswith("---"):
+        parts = content.split("---", 2)
+        if len(parts) == 3:
+            content = parts[2]
+    for marker in ("\n# Persistent Agent Memory", "\n## MEMORY.md"):
+        if marker in content:
+            content = content.split(marker, 1)[0]
+    return content.strip()
+
+
+def _embed_agent_for_openclaude(prompt: str, agent: str | None) -> str:
+    """OpenClaude can misparse --agent frontmatter; embed persona in prompt."""
+    persona = _agent_prompt(agent)
+    if not persona:
+        return prompt
+    return (
+        f"{persona}\n\n"
+        f"CRITICAL: You MUST fully embody this agent persona. "
+        f"You are NOT Claude, OpenClaude, or a generic assistant — you ARE {agent}. "
+        f"Never break character. Follow ALL instructions above.\n\n"
+        f"---\n\nTask:\n{prompt}"
+    )
+
+
 def _save_metrics(log_name, duration, returncode, agent, stdout, usage=None):
     """Save accumulated metrics per routine in metrics.json."""
     metrics_file = LOGS_DIR / "metrics.json"
@@ -70,6 +103,8 @@ def _save_metrics(log_name, duration, returncode, agent, stdout, usage=None):
     m["avg_seconds"] = round(m["total_seconds"] / m["runs"], 1)
     m["last_run"] = datetime.now().isoformat()
     m["agent"] = agent or "none"
+    m["last_returncode"] = returncode
+    m["last_success"] = returncode == 0
 
     if returncode == 0:
         m["successes"] += 1
@@ -127,13 +162,16 @@ def _log_to_file(log_name, prompt, stdout, stderr, returncode, duration, usage=N
 _ALLOWED_CLI_COMMANDS = frozenset({"claude", "openclaude"})
 
 
-def _spawn_cli(cli_command: str, prompt: str, agent: str | None, provider_env: dict) -> subprocess.Popen:
+def _spawn_cli(cli_command: str, prompt: str, agent: str | None, provider_env: dict, max_turns: int) -> subprocess.Popen:
     """Spawn a CLI process using only hardcoded command strings.
 
     Uses a dictionary lookup so that the subprocess argument is always
     a static string, satisfying semgrep/opengrep subprocess injection rules.
     """
-    base_args = ["--print", "--dangerously-skip-permissions", "--output-format", "json"]
+    base_args = ["--print", "--max-turns", str(max_turns), "--dangerously-skip-permissions", "--output-format", "json"]
+    if cli_command == "openclaude":
+        prompt = _embed_agent_for_openclaude(prompt, agent)
+        agent = None
     if agent:
         base_args.extend(["--agent", agent])
     base_args.append(prompt)
@@ -195,7 +233,7 @@ def _get_provider_config() -> tuple[str, dict]:
         return "claude", {}
 
 
-def run_claude(prompt: str, log_name: str = "unnamed", timeout: int = 600, agent: str = None) -> dict:
+def run_claude(prompt: str, log_name: str = "unnamed", timeout: int = 600, agent: str = None, max_turns: int = 10) -> dict:
     """
     Execute AI CLI (claude or openclaude) with streaming output.
 
@@ -207,6 +245,7 @@ def run_claude(prompt: str, log_name: str = "unnamed", timeout: int = 600, agent
         log_name: Name for logs
         timeout: Timeout in seconds
         agent: Agent name (.claude/agents/*.md) — if None, runs without agent
+        max_turns: Maximum CLI tool-use turns before stopping the run
     """
     cli_command, provider_env = _get_provider_config()
 
@@ -214,13 +253,83 @@ def run_claude(prompt: str, log_name: str = "unnamed", timeout: int = 600, agent
         agent_label = f"@{agent}"
     else:
         agent_label = ""
+
+    use_fallback = os.environ.get("ADW_PROVIDER_FALLBACK", "1").lower() not in (
+        "0", "false", "no",
+    )
+    if use_fallback:
+        try:
+            sys.path.insert(0, str(WORKSPACE / "dashboard" / "backend"))
+            from provider_fallback import invoke_with_fallback
+
+            provider_label = "[fallback]"
+            console.print(f"  [step]▶[/step] {log_name} [dim]{agent_label} {provider_label}[/dim]", end="")
+            start_time = datetime.now()
+            result = invoke_with_fallback(
+                prompt=prompt,
+                max_turns=max_turns,
+                timeout_seconds=timeout,
+                agent=agent or "",
+            )
+            duration = (datetime.now() - start_time).total_seconds()
+            stdout = result.get("output", "") or ""
+            stderr = result.get("error", "") or ""
+            success = result.get("status") == "success"
+
+            usage = None
+            if result.get("tokens_in") is not None or result.get("tokens_out") is not None or result.get("cost_usd") is not None:
+                usage = {
+                    "input_tokens": result.get("tokens_in") or 0,
+                    "output_tokens": result.get("tokens_out") or 0,
+                    "cache_creation_tokens": result.get("cache_creation_tokens") or 0,
+                    "cache_read_tokens": result.get("cache_read_tokens") or 0,
+                    "cost_usd": result.get("cost_usd") or 0,
+                }
+
+            result_text = stdout
+            try:
+                json_result = json.loads(stdout)
+                usage = usage or _parse_usage(json_result)
+                result_text = json_result.get("result", stdout)
+            except (json.JSONDecodeError, TypeError, AttributeError):
+                pass
+
+            full_prompt = f"[agent:{agent}] {prompt}" if agent else prompt
+            returncode = 0 if success else 1
+            _log_to_file(log_name, full_prompt, result_text, stderr, returncode, duration, usage)
+            _save_metrics(log_name, duration, returncode, agent, result_text, usage)
+
+            model_info = f" | {result.get('provider_id')}:{result.get('model')}" if result.get("provider_id") else ""
+            if success:
+                cost_str = ""
+                if usage:
+                    tokens_total = usage["input_tokens"] + usage["output_tokens"]
+                    cost_str = f" | {tokens_total:,}tok | ${usage['cost_usd']:.2f}"
+                console.print(f"\r  [success]✓[/success] {log_name} [dim]({duration:.0f}s{cost_str}{model_info})[/dim]")
+            else:
+                console.print(f"\r  [error]✗[/error] {log_name} [dim](fallback exhausted, {duration:.0f}s{model_info})[/dim]")
+                if stderr:
+                    for err_line in stderr.strip().splitlines()[:3]:
+                        console.print(f"    [error]{err_line}[/error]")
+
+            return {
+                "success": success,
+                "stdout": result_text,
+                "stderr": stderr,
+                "returncode": returncode,
+                "duration": duration,
+                "usage": usage,
+            }
+        except Exception as e:
+            console.print(f"\r  [warning]⚠[/warning] {log_name} [dim](fallback unavailable: {e}; using active provider)[/dim]")
+
     provider_label = f"[{cli_command}]" if cli_command != "claude" else ""
     console.print(f"  [step]▶[/step] {log_name} [dim]{agent_label} {provider_label}[/dim]", end="")
 
     start_time = datetime.now()
 
     try:
-        process = _spawn_cli(cli_command, prompt, agent, provider_env)
+        process = _spawn_cli(cli_command, prompt, agent, provider_env, max_turns)
 
         stdout_lines = []
         line_count = 0

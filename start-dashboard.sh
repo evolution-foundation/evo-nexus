@@ -75,6 +75,36 @@ EOF
     fi
 fi
 
+# Whatever the restore produced, force the first-run flags — a backup taken
+# from a half-initialized run leaves claude stuck at the theme picker or at
+# the /workspace trust dialog. Without the trust flag every heartbeat's
+# `claude` subprocess ignores .claude/settings.json permissions and fails
+# with "this workspace has not been trusted". (Same patch as
+# telegram_swarm_entry.sh, but via python3 — this image has no jq.)
+python3 - <<'EOF' || echo "[start-dashboard] WARNING: could not patch /root/.claude.json flags"
+import json
+
+path = "/root/.claude.json"
+with open(path) as f:
+    cfg = json.load(f)
+
+cfg.setdefault("theme", "dark")
+cfg["hasCompletedOnboarding"] = True
+cfg["hasSeenWelcome"] = True
+cfg["bypassPermissionsModeAccepted"] = True
+project = cfg.setdefault("projects", {}).setdefault("/workspace", {})
+project["hasTrustDialogAccepted"] = True
+project["hasCompletedProjectOnboarding"] = True
+
+with open(path, "w") as f:
+    json.dump(cfg, f, indent=2)
+EOF
+
+# The container runs as root; Claude Code refuses --dangerously-skip-
+# permissions as root unless it knows it's inside a sandboxed container.
+# Heartbeat subprocesses (heartbeat_runner/provider_fallback) inherit this.
+export IS_SANDBOX=1
+
 # Start terminal-server in the background
 node /workspace/dashboard/terminal-server/bin/server.js --port "${TERMINAL_PORT}" &
 TERMINAL_PID=$!
