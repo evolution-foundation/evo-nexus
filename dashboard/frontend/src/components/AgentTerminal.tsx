@@ -3,6 +3,7 @@ import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import '@xterm/xterm/css/xterm.css'
+import TerminalHudPanel from './TerminalHudPanel'
 
 interface AgentTerminalProps {
   agent: string
@@ -73,6 +74,21 @@ const CC_WEB_WS = override
 
 type Status = 'connecting' | 'ready' | 'starting' | 'running' | 'error' | 'exited'
 
+// Terminal HUD (see workspace/development/features/terminal-hud) — only
+// populated for opencode REPL sessions; claude/openclaude (pty-interactive)
+// sessions never send 'hud_update', so this stays null for them and the
+// semaphore/gear panel just doesn't render.
+interface HudState {
+  busy: boolean
+  heavy: boolean
+  providerId: string
+  providerModel: string
+  tokensPerSec: number
+  totalTokens: number | null
+  bestTokensPerSec: number
+  shift: boolean
+}
+
 function isEioMessage(message: unknown) {
   return /\bEIO\b|read EIO|write EIO/i.test(String(message || ''))
 }
@@ -86,6 +102,23 @@ export default function AgentTerminal({ agent, sessionId: externalSessionId, wor
   const pingRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const [status, setStatus] = useState<Status>('connecting')
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
+  const [hud, setHud] = useState<HudState | null>(null)
+  // opencode REPL sessions get a dedicated input bar below (see render) —
+  // xterm becomes output-only for them so typed keys never reach the
+  // onData forwarder below and the two input paths can't double-process a
+  // keystroke (that's what broke typing the first time this was tried).
+  // Ref because onData is registered once at mount and would otherwise
+  // only ever see the null `hud` from that first render (stale closure).
+  const isOpencodeRef = useRef(false)
+  const [inputValue, setInputValue] = useState('')
+  // Mirrors `status` for the onData closure below, which is registered once
+  // on mount and would otherwise only ever see the 'connecting' status from
+  // that first render (React state, not a ref, doesn't update in a stale
+  // closure).
+  const statusRef = useRef<Status>('connecting')
+  useEffect(() => {
+    statusRef.current = status
+  }, [status])
 
   // Mount xterm once
   useEffect(() => {
@@ -163,10 +196,35 @@ export default function AgentTerminal({ agent, sessionId: externalSessionId, wor
     // alternative.
     const AUTO_REPLY_RE = /^\x1b\[(\?|>)[0-9;]*[a-zA-Z]$|^\x1b\[[0-9;]*[nRct]$/
     term.onData((data) => {
+      // opencode sessions type into the dedicated input bar instead (see
+      // render) — xterm here is output-only for them.
+      if (isOpencodeRef.current) return
       if (AUTO_REPLY_RE.test(data)) return
-      if (wsRef.current?.readyState === WebSocket.OPEN) {
-        wsRef.current.send(JSON.stringify({ type: 'input', data }))
+      const ws = wsRef.current
+      if (!ws || ws.readyState !== WebSocket.OPEN) return
+
+      // The CLI process can die mid-session (provider crash, exit 1, etc.)
+      // without the user noticing beyond the small status badge. Forwarding
+      // raw keystrokes to a dead PTY used to just vanish — the server has
+      // nothing to write them to. Treat "user typed something" as an
+      // implicit restart request instead of a dead end.
+      if (statusRef.current === 'exited' || statusRef.current === 'error') {
+        statusRef.current = 'starting'
+        setStatus('starting')
+        term!.write('\r\n\x1b[33m[Restarting agent]\x1b[0m\r\n')
+        ws.send(JSON.stringify({
+          type: 'start_claude',
+          options: {
+            dangerouslySkipPermissions: true,
+            agent,
+            cols: term!.cols,
+            rows: term!.rows,
+          },
+        }))
+        return
       }
+
+      ws.send(JSON.stringify({ type: 'input', data }))
     })
 
     return () => {
@@ -204,6 +262,8 @@ export default function AgentTerminal({ agent, sessionId: externalSessionId, wor
     async function run() {
       setStatus('connecting')
       setErrorMsg(null)
+      isOpencodeRef.current = false
+      setHud(null)
       term!.clear()
 
       // 1) Use provided sessionId or find-or-create for this agent
@@ -356,6 +416,19 @@ export default function AgentTerminal({ agent, sessionId: externalSessionId, wor
             break
           case 'pong':
             break
+          case 'hud_update':
+            isOpencodeRef.current = true
+            setHud({
+              busy: !!msg.busy,
+              heavy: !!msg.heavy,
+              providerId: msg.providerId || '',
+              providerModel: msg.providerModel || '',
+              tokensPerSec: typeof msg.tokensPerSec === 'number' ? msg.tokensPerSec : 0,
+              totalTokens: typeof msg.totalTokens === 'number' ? msg.totalTokens : null,
+              bestTokensPerSec: typeof msg.bestTokensPerSec === 'number' ? msg.bestTokensPerSec : 0,
+              shift: !!msg.shift,
+            })
+            break
         }
       }
 
@@ -462,8 +535,91 @@ export default function AgentTerminal({ agent, sessionId: externalSessionId, wor
         )}
       </div>
 
+      {/* Dashboard row (car-panel HUD, Sprint 3) — own row instead of
+          crammed into the 32px status bar above, so the LCD readout has
+          real width to work with instead of truncating provider/model. */}
+      {hud && (
+        <div className="flex-shrink-0 flex items-center gap-2 px-4 py-1.5 border-b border-[#21262d] bg-[#0d1117]">
+          <TerminalHudPanel hud={hud} accentColor={accentColor} />
+
+          {/* Semaphore (Sprint 2): 3 fixed lights, only the active one
+              lit — green=waiting for a prompt, yellow=working,
+              red=last completed turn was heavy (>20k tokens). Priority
+              red > yellow > green when both could apply (a heavy turn
+              just finished right as a new one starts). Always visible,
+              including on mobile. */}
+          <div className="ml-auto flex items-center gap-1" title={
+            hud.heavy ? 'contexto/tokens grande no último turno'
+              : hud.busy ? 'trabalhando…'
+              : 'esperando prompt'
+          }>
+            {(['#22c55e', '#eab308', '#ef4444'] as const).map((color, i) => {
+              const activeIdx = hud.heavy ? 2 : hud.busy ? 1 : 0
+              const isActive = i === activeIdx
+              return (
+                <span
+                  key={color}
+                  className="inline-block h-1.5 w-1.5 rounded-full transition-opacity duration-200"
+                  style={{
+                    backgroundColor: color,
+                    opacity: isActive ? 1 : 0.18,
+                    boxShadow: isActive ? `0 0 5px ${color}aa` : 'none',
+                  }}
+                />
+              )
+            })}
+          </div>
+        </div>
+      )}
+
       {/* xterm */}
       <div ref={containerRef} className="flex-1 min-h-0 px-4 py-3 bg-[#0C111D]" />
+
+      {/* Dedicated input bar (opencode sessions only, i.e. hud !== null) —
+          keeps what you type visually separate from the AI's streamed
+          response instead of both sharing the same scrollback, which read
+          as confusing (couldn't tell where your line ended and the reply
+          began). xterm above is output-only for these sessions — see the
+          isOpencodeRef guard in the onData handler. */}
+      {hud && (
+        <form
+          onSubmit={(e) => {
+            e.preventDefault()
+            const text = inputValue.trim()
+            if (!text) return
+            const ws = wsRef.current
+            if (!ws || ws.readyState !== WebSocket.OPEN) return
+            // One WS message with the whole line + newline — the server's
+            // opencode keystroke handler iterates char-by-char and submits
+            // on \n either way, so this is equivalent to typing it out.
+            ws.send(JSON.stringify({ type: 'input', data: text + '\n' }))
+            setInputValue('')
+          }}
+          className="flex-shrink-0 flex items-end gap-2 border-t border-[#21262d] bg-[#0d1117] px-3 py-2"
+        >
+          <textarea
+            value={inputValue}
+            onChange={(e) => setInputValue(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault()
+                e.currentTarget.form?.requestSubmit()
+              }
+            }}
+            placeholder="Digite sua mensagem… (Shift+Enter para nova linha)"
+            rows={1}
+            className="flex-1 resize-none rounded-md border border-[#21262d] bg-[#0a0e14] px-3 py-1.5 text-[13px] leading-normal text-[#e6edf3] placeholder:text-[#4b5563] outline-none focus:border-[#3a4256]"
+          />
+          <button
+            type="submit"
+            disabled={!inputValue.trim() || hud.busy}
+            className="flex-shrink-0 rounded-md px-3 py-1.5 text-[12px] font-medium transition-opacity disabled:opacity-40"
+            style={{ background: accentColor, color: '#04120a' }}
+          >
+            Enviar
+          </button>
+        </form>
+      )}
     </div>
   )
 }
