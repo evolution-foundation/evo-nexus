@@ -124,25 +124,38 @@ fi
 # default) as blank lines — first boot copies that verbatim into
 # $CONFIG_DIR/.env (step 2 above). Docker sets the real value on the
 # container BEFORE this script runs, but sourcing .env here with `set -a`
-# blindly re-exports every line in it, including the blank one, silently
-# clobbering the correct value with an empty string. Every Bearer-token API
-# call then hit "Authentication required" — not because the token was wrong,
-# but because the server-side value had already been erased by the time
-# Flask read it, while `docker exec ... printenv` (a fresh process, never
-# ran this script) still showed the real one, which made it look like a
-# token mismatch instead of an overwrite. Fix: snapshot secrets Docker may
-# have injected, source .env, then restore any that .env blanked out —
-# non-empty file values still win (so the Providers/Settings UI can update
-# them), only genuinely empty ones are prevented from erasing a real value.
-_DASHBOARD_API_TOKEN_PRE="${DASHBOARD_API_TOKEN:-}"
+# blindly re-exports every line in it, including blank ones, silently
+# clobbering correct values with an empty string. DASHBOARD_API_TOKEN doing
+# this broke every Bearer-token API call with "Authentication required" —
+# not because the token was wrong, but because the server-side value had
+# already been erased by the time Flask read it, while `docker exec ...
+# printenv` (a fresh process, never ran this script) still showed the real
+# one, which made it look like a token mismatch instead of an overwrite.
+# DASHBOARD_API_USER has the same blank-in-.env.example /
+# set-in-stack shape (lower severity — it has a documented "first admin"
+# fallback — but the same silent-clobber risk if the stack ever pins a
+# specific user). Generalized fix: snapshot every exported var Docker may
+# have injected, source .env, then restore any that ended up empty when
+# they weren't before — non-empty file values still win (so the
+# Providers/Settings UI can update them), only genuinely empty ones are
+# prevented from erasing a real value. Covers the whole class, not just
+# the two instances found so far.
+declare -A _PRE_ENV
+while IFS= read -r _name; do
+    _PRE_ENV["$_name"]="${!_name}"
+done < <(compgen -e)
+
 set -a
 # shellcheck disable=SC1091
 . "$CONFIG_DIR/.env" 2>/dev/null || true
 set +a
-if [ -z "${DASHBOARD_API_TOKEN:-}" ] && [ -n "$_DASHBOARD_API_TOKEN_PRE" ]; then
-    export DASHBOARD_API_TOKEN="$_DASHBOARD_API_TOKEN_PRE"
-fi
-unset _DASHBOARD_API_TOKEN_PRE
+
+for _name in "${!_PRE_ENV[@]}"; do
+    if [ -z "${!_name:-}" ] && [ -n "${_PRE_ENV[$_name]}" ]; then
+        export "$_name=${_PRE_ENV[$_name]}"
+    fi
+done
+unset _PRE_ENV _name
 
 # --- 6. Optional: _FILE env vars (explicit Docker Secrets pattern) ---------
 for file_var in $(compgen -A variable | grep -E '_FILE$' || true); do
