@@ -241,10 +241,21 @@ def _load_routines_from_yaml(schedule, config_path: Path, is_plugin: bool = Fals
             _monthly_routines = monthly
 
     except Exception as e:
-        if is_plugin:
-            print(f"  Warning: Failed to load plugin routines from {config_path}: {e}")
-        else:
-            raise
+        # Confirmed live 2026-07-14: a single bad indent in config/routines.yaml
+        # (invalid YAML) raised here and propagated all the way up through
+        # setup_schedule() -> main(), crashing the scheduler process before it
+        # ever reached its run loop — before ANY routine, including the
+        # hardcoded core ones registered earlier in setup_schedule(), could
+        # fire. If the container restart-loops on the same broken file, every
+        # routine goes silent indefinitely with no error visible anywhere
+        # except scheduler logs. Never crash the whole process over the
+        # custom-routines file — log loudly and keep going with whatever
+        # loaded successfully (core routines are registered before this call,
+        # so they're unaffected either way).
+        source = "core config" if not is_plugin else f"plugin routines from {config_path}"
+        print(f"  ERROR: Failed to load {source} ({config_path}): {e}", flush=True)
+        print(f"  Scheduler continuing WITHOUT these routines — fix {config_path} and "
+              f"send SIGHUP (or restart) to reload.", flush=True)
 
 
 def _load_disabled_routines() -> dict[str, set]:
