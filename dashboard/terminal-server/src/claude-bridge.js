@@ -138,8 +138,11 @@ async function _probeOmniRouteRoute(session) {
     const realProvider = resp.headers.get('x-omniroute-provider');
     if (!realModel && !realProvider) return null;
     return { providerId: realProvider || null, providerModel: realModel || null };
-  } catch (_) {
-    return null; // cosmetic HUD data only — never let a probe failure affect the real turn
+  } catch (err) {
+    // Cosmetic HUD data only — logged for diagnosability, never lets a
+    // probe failure affect the real turn.
+    console.warn('[bridge] OmniRoute route probe request failed:', err && err.message);
+    return null;
   } finally {
     clearTimeout(timer);
   }
@@ -942,17 +945,6 @@ class ClaudeBridge {
     session.currentChild = child;
     if (attemptNumber === 0) {
       this._emitHudUpdate(session);
-      // Fire-and-forget: resolves independently of this turn (see
-      // _probeOmniRouteRoute) and just refreshes the HUD label once it
-      // lands, whether that's before or after the turn itself closes.
-      _probeOmniRouteRoute(session)
-        .then((route) => {
-          if (!route || (!route.providerId && !route.providerModel)) return;
-          if (route.providerId) session.providerId = route.providerId;
-          if (route.providerModel) session.providerModel = route.providerModel;
-          this._emitHudUpdate(session, { tokensPerSec: _avgTokensPerSecFor(session.providerModel) });
-        })
-        .catch(() => {});
     }
 
     let stdoutBuffer = '';
@@ -1056,6 +1048,26 @@ class ClaudeBridge {
         totalTokens: realTotalTokens,
         heavy: (realTotalTokens || 0) > HUD_HEAVY_TOKEN_THRESHOLD,
       });
+
+      // Only *after* the real turn's own child process/network work is
+      // fully done — not concurrently with it (see _probeOmniRouteRoute).
+      // Firing this in parallel with the turn made the VPS visibly slower
+      // on live testing (extra TLS handshake + request competing for
+      // CPU/bandwidth right when the real turn needed it) and the label
+      // update would frequently land after the user had stopped watching
+      // anyway. Fire-and-forget: just refreshes the HUD label whenever it
+      // resolves, doesn't block or affect the next turn.
+      _probeOmniRouteRoute(session)
+        .then((route) => {
+          if (!route || (!route.providerId && !route.providerModel)) return;
+          if (route.providerId) session.providerId = route.providerId;
+          if (route.providerModel) session.providerModel = route.providerModel;
+          this._emitHudUpdate(session, { tokensPerSec: 0 });
+        })
+        .catch((err) => {
+          console.warn(`[bridge] OmniRoute route probe failed for session ${sessionId}:`, err && err.message);
+        });
+
       session.onOutput('\r\x1b[K'); // clear the "…" placeholder either way
 
       if (textBuffer) {
