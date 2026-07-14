@@ -8,7 +8,7 @@ import {
   FileCode, Terminal as TermIcon, CheckCircle2,
   Paperclip, X, File as FileIcon, ImageIcon, Upload,
   Ticket as TicketIcon, Plus, ShieldAlert, Check, Ban,
-  Pencil, Copy, FileText, Edit2,
+  Pencil, Copy, FileText, Edit2, Mic, Loader2,
 } from 'lucide-react'
 
 interface SkillItem {
@@ -106,6 +106,74 @@ export default function AgentChat({ agent, sessionId, accentColor = '#00FFA7', e
   const pingRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const dragCounterRef = useRef(0)
   const subagentToolRef = useRef<{ toolName: string; toolUseId: string; input: string; parentToolUseId: string } | null>(null)
+
+  // Mic (terminal-ux-upgrade Sprint 6, moved here from the raw Terminal —
+  // this chat UI already has a working input row + attach button, so the
+  // mic reuses the same POST /api/transcribe proxy (Sprint 5) and drops the
+  // transcribed text into the same `input` state as typing would.
+  type MicState = 'idle' | 'recording' | 'transcribing'
+  const [micState, setMicState] = useState<MicState>('idle')
+  const [micError, setMicError] = useState<string | null>(null)
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
+  const audioChunksRef = useRef<Blob[]>([])
+
+  useEffect(() => {
+    return () => {
+      try {
+        mediaRecorderRef.current?.stream.getTracks().forEach((t) => t.stop())
+      } catch {
+        // stream may already be stopped/released — nothing to clean up
+      }
+    }
+  }, [])
+
+  async function toggleRecording() {
+    if (micState === 'recording') {
+      mediaRecorderRef.current?.stop()
+      return
+    }
+    if (micState === 'transcribing') return
+    setMicError(null)
+    let stream: MediaStream
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+    } catch (e) {
+      const name = e instanceof DOMException ? e.name : ''
+      setMicError(name === 'NotAllowedError' ? 'Permissão de microfone negada' : 'Não foi possível acessar o microfone')
+      return
+    }
+    const mr = new MediaRecorder(stream)
+    audioChunksRef.current = []
+    mr.ondataavailable = (e) => {
+      if (e.data.size > 0) audioChunksRef.current.push(e.data)
+    }
+    mr.onstop = async () => {
+      stream.getTracks().forEach((t) => t.stop())
+      setMicState('transcribing')
+      const blob = new Blob(audioChunksRef.current, { type: mr.mimeType || 'audio/webm' })
+      try {
+        const res = await fetch(`${TS_HTTP}/api/transcribe`, {
+          method: 'POST',
+          headers: { 'Content-Type': blob.type || 'audio/webm' },
+          body: blob,
+        })
+        const data = await res.json().catch(() => null)
+        if (!res.ok) throw new Error((data && data.error) || `HTTP ${res.status}`)
+        const text = ((data && data.text) || '').trim()
+        if (text) {
+          setInput((prev) => (prev ? `${prev} ${text}` : text))
+          inputRef.current?.focus()
+        }
+      } catch (e) {
+        setMicError(e instanceof Error ? e.message : 'Falha ao transcrever áudio')
+      } finally {
+        setMicState('idle')
+      }
+    }
+    mediaRecorderRef.current = mr
+    mr.start()
+    setMicState('recording')
+  }
 
   // Auto-dismiss global notifications when the user opens this session
   useEffect(() => {
@@ -1374,6 +1442,28 @@ export default function AgentChat({ agent, sessionId, accentColor = '#00FFA7', e
               }}
             />
 
+            {/* Mic button (Sprint 6) */}
+            <button
+              type="button"
+              onClick={toggleRecording}
+              disabled={micState === 'transcribing'}
+              title={
+                micState === 'recording' ? 'Parar gravação' :
+                micState === 'transcribing' ? 'Transcrevendo…' : 'Gravar áudio'
+              }
+              className={`flex-shrink-0 flex items-center justify-center w-7 h-7 rounded-lg transition-colors mb-0.5 ${
+                micState === 'recording'
+                  ? 'text-[#ef4444] bg-[#ef4444]/15'
+                  : micState === 'transcribing'
+                  ? 'cursor-wait text-[#4b5563]'
+                  : 'text-[#667085] hover:text-[#e6edf3] hover:bg-[#21262d]'
+              }`}
+            >
+              {micState === 'transcribing'
+                ? <Loader2 size={14} className="animate-spin" />
+                : <Mic size={14} />}
+            </button>
+
             {/* Textarea */}
             <textarea
               ref={inputRef}
@@ -1416,6 +1506,9 @@ export default function AgentChat({ agent, sessionId, accentColor = '#00FFA7', e
               </button>
             )}
           </div>
+          {micError && (
+            <div className="mt-1 text-[10px] text-[#ef4444]">{micError}</div>
+          )}
           </div>{/* end input row wrapper (relative) */}
         </div>
 
