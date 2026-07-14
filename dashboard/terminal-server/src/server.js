@@ -16,6 +16,25 @@ function isEioError(error) {
   return error?.code === 'EIO' || /\bEIO\b|read EIO|write EIO/i.test(message);
 }
 
+// Sprint 7 (terminal-ux-upgrade): attachment upload limits (Q6 default).
+const UPLOAD_MAX_BYTES = 20 * 1024 * 1024;
+const UPLOAD_MIME_ALLOWLIST = new Set([
+  'image/png', 'image/jpeg', 'image/webp', 'image/gif',
+  'application/pdf', 'text/plain', 'text/markdown', 'text/csv',
+  'application/json', 'application/octet-stream',
+]);
+
+// Strips any path components and anything outside a safe charset — the
+// filename comes from a query param (user-controlled), so this is the one
+// line standing between it and a path-traversal write (`../../etc/passwd`
+// etc.). path.basename() alone drops directories; the regex replace then
+// drops everything that isn't alphanumeric/dot/dash/underscore.
+function sanitizeUploadFilename(name) {
+  const base = path.basename(String(name || 'arquivo'));
+  const cleaned = base.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 120);
+  return cleaned || 'arquivo';
+}
+
 class TerminalServer {
   constructor(options = {}) {
     this.port = options.port || 32352;
@@ -30,6 +49,15 @@ class TerminalServer {
       Number.isFinite(gcMinutes) && gcMinutes >= 0 ? gcMinutes * 60 * 1000 : (15 * 60 * 1000)
     );
     this.autoSaveIntervalMs = options.autoSaveIntervalMs ?? 30000;
+
+    // Guard-rails de memória: cada PTY claude/openclaude consome 200-400MB.
+    // Sem teto, abas demais derrubam o container por OOM (limite da stack).
+    const maxActive = parseInt(process.env.TERMINAL_MAX_ACTIVE_SESSIONS || '', 10);
+    this.maxActiveSessions = options.maxActiveSessions
+      ?? (Number.isFinite(maxActive) && maxActive > 0 ? maxActive : 4);
+    const detachedMin = parseFloat(process.env.TERMINAL_DETACHED_TTL_MINUTES || '');
+    this.detachedTtlMs = options.detachedTtlMs
+      ?? (Number.isFinite(detachedMin) && detachedMin >= 0 ? detachedMin * 60 * 1000 : 30 * 60 * 1000);
 
     this.app = express();
     this.claudeSessions = new Map();
@@ -88,7 +116,44 @@ class TerminalServer {
 
     this.sessionGcInterval = setInterval(() => {
       void this.purgeStaleSessions();
+      void this.reapDetachedSessions();
     }, this.sessionGcIntervalMs);
+  }
+
+  /**
+   * Recolhe PTYs ativos que estão sem nenhum viewer conectado E sem produzir
+   * output há mais de detachedTtlMs. Fechar a aba do navegador não mata o
+   * processo (de propósito, permite reconectar) — sem este reaper cada aba
+   * aberta/fechada deixa um claude de 200-400MB vivo até o OOM do container.
+   * A sessão continua no store (buffer preservado) e pode ser reiniciada.
+   */
+  async reapDetachedSessions() {
+    if (this.detachedTtlMs <= 0) return { reaped: 0 };
+    const now = Date.now();
+    let reaped = 0;
+    for (const [sessionId, session] of this.claudeSessions.entries()) {
+      if (!session.active) continue;
+      const viewers = session.connections instanceof Set
+        ? session.connections.size
+        : (Array.isArray(session.connections) ? session.connections.length : 0);
+      if (viewers > 0) continue;
+      // Só recolhe PTYs de terminal — sessões de chat não seguram processo.
+      const pty = this.claudeBridge.getSession(sessionId);
+      if (!pty || !pty.active) continue;
+      const lastTouch = new Date(session.lastActivity || session.created || 0).getTime();
+      if (!Number.isFinite(lastTouch) || (now - lastTouch) <= this.detachedTtlMs) continue;
+
+      reaped += 1;
+      console.log(`[session-gc] Reaping detached idle session ${sessionId} (sem viewer há ${Math.round((now - lastTouch) / 60000)}min)`);
+      try {
+        await this.claudeBridge.stopSession(sessionId);
+      } catch (error) {
+        if (this.dev) console.warn(`Failed to reap session ${sessionId}:`, error.message);
+      }
+      session.active = false;
+    }
+    if (reaped > 0) await this.saveSessionsToDisk();
+    return { reaped };
   }
 
   async saveSessionsToDisk() {
@@ -390,6 +455,121 @@ class TerminalServer {
       res.json({ sessions });
     });
 
+    // Aggregate HUD status across every live opencode REPL session — lets
+    // the /agents page show "N agentes trabalhando agora" and which ones,
+    // without opening any individual terminal tab. Only opencode sessions
+    // carry busy/heavy telemetry today (see claude-bridge.js's
+    // _emitHudUpdate) — native claude/openclaude PTY sessions don't track
+    // turn boundaries, so they're left out rather than reported as a
+    // meaningless always-false busy flag.
+    this.app.get('/api/sessions/hud-status', (req, res) => {
+      const sessions = [];
+      for (const [id, s] of this.claudeBridge.sessions.entries()) {
+        if (!s.isOpencode || !s.active || !s.agentName) continue;
+        const hud = s.lastHud || {};
+        sessions.push({
+          sessionId: id,
+          agent: s.agentName,
+          busy: !!s.busy,
+          heavy: !!hud.heavy,
+          providerId: s.providerId,
+          providerModel: s.providerModel,
+          tokensPerSec: typeof hud.tokensPerSec === 'number' ? hud.tokensPerSec : 0,
+        });
+      }
+      res.json({ sessions });
+    });
+
+    // Sprint 5 (terminal-ux-upgrade): audio -> text, proxied server-side so
+    // GROQ_API_KEY never reaches the browser. Body is the raw audio blob
+    // (whatever MIME the MediaRecorder produced — webm/opus in every
+    // Chromium/Firefox build that matters here); express.raw() is scoped to
+    // this one route only, the rest of the app keeps using express.json().
+    // No multer/form-data dependency needed — Node 22 has FormData/Blob/
+    // fetch as globals, sufficient for this single outbound multipart call.
+    this.app.post(
+      '/api/transcribe',
+      express.raw({ type: '*/*', limit: '25mb' }),
+      async (req, res) => {
+        const apiKey = process.env.GROQ_API_KEY;
+        if (!apiKey) {
+          return res.status(503).json({ error: 'GROQ_API_KEY não configurada no terminal-server.' });
+        }
+        const audio = req.body;
+        if (!Buffer.isBuffer(audio) || audio.length === 0) {
+          return res.status(400).json({ error: 'Corpo da requisição vazio — envie o áudio como binário.' });
+        }
+        try {
+          const form = new FormData();
+          const mime = req.headers['content-type'] || 'audio/webm';
+          form.append('file', new Blob([audio], { type: mime }), 'audio.webm');
+          form.append('model', 'whisper-large-v3-turbo');
+
+          const groqRes = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${apiKey}` },
+            body: form,
+          });
+          const data = await groqRes.json().catch(() => null);
+          if (!groqRes.ok) {
+            // Groq's error payload is safe to relay — it never echoes the
+            // key back. Logged without the key too (apiKey never touches
+            // console.* in this handler).
+            console.warn(`[transcribe] Groq returned ${groqRes.status}:`, data);
+            return res.status(502).json({ error: (data && data.error && data.error.message) || `Groq respondeu ${groqRes.status}` });
+          }
+          res.json({ text: (data && data.text) || '' });
+        } catch (error) {
+          console.error('[transcribe] falha ao chamar Groq:', error.message);
+          res.status(502).json({ error: 'Falha ao transcrever o áudio.' });
+        }
+      }
+    );
+
+    // Sprint 7 (terminal-ux-upgrade): attach a photo/document to a prompt.
+    // Reuses the raw-body pattern from /api/transcribe (Sprint 5) — a
+    // single-file binary body, no multer/multipart parsing needed. Saves
+    // under a per-session dir inside the session's own workingDir (never
+    // outside it) so the opencode agent can reference the path directly in
+    // its prompt; cleaned up on session stop (see claude-bridge.js
+    // stopSession, Q6). Best-effort: whether the agent's own Read tool
+    // actually picks up an image (vs. a text document) depends on the
+    // underlying model's multimodal support — not something this endpoint
+    // can guarantee, only the file being there for it to try.
+    this.app.post(
+      '/api/upload',
+      express.raw({ type: '*/*', limit: '20mb' }),
+      async (req, res) => {
+        const sessionId = String(req.query.sessionId || '');
+        const session = sessionId && this.claudeBridge.sessions.get(sessionId);
+        if (!session || !session.active) {
+          return res.status(404).json({ error: 'Sessão não encontrada ou inativa.' });
+        }
+        const file = req.body;
+        if (!Buffer.isBuffer(file) || file.length === 0) {
+          return res.status(400).json({ error: 'Arquivo vazio.' });
+        }
+        if (file.length > UPLOAD_MAX_BYTES) {
+          return res.status(413).json({ error: `Arquivo excede o limite de ${UPLOAD_MAX_BYTES / 1024 / 1024}MB.` });
+        }
+        const mime = String(req.headers['content-type'] || '').split(';')[0].trim();
+        if (mime && !UPLOAD_MIME_ALLOWLIST.has(mime)) {
+          return res.status(415).json({ error: `Tipo de arquivo não permitido: ${mime}` });
+        }
+        const filename = sanitizeUploadFilename(req.query.filename);
+        const dir = path.join(session.workingDir, '.uploads', sessionId);
+        try {
+          await fs.promises.mkdir(dir, { recursive: true });
+          const destPath = path.join(dir, `${Date.now()}-${filename}`);
+          await fs.promises.writeFile(destPath, file);
+          res.json({ path: destPath, filename });
+        } catch (error) {
+          console.error('[upload] falha ao salvar arquivo:', error.message);
+          res.status(500).json({ error: 'Falha ao salvar o arquivo.' });
+        }
+      }
+    );
+
     // Create a NEW session for an agent (always creates, never reuses)
     this.app.post('/api/sessions/create', (req, res) => {
       const { agentName, workingDir } = req.body;
@@ -644,6 +824,17 @@ class TerminalServer {
                 message: 'Agent is not running in this session. Please start an agent first.',
               });
             }
+          } else if (session && !session.active) {
+            // The CLI process already died (crash, provider error, etc.) —
+            // without this, typing into a dead session silently vanished:
+            // the client kept sending 'input' with nothing telling it the
+            // PTY was gone, so the user saw no feedback at all ("send a
+            // prompt and nothing happens"). Tell the client explicitly so
+            // it can offer/trigger a restart instead of a dead end.
+            this.sendToWebSocket(wsInfo.ws, {
+              type: 'error',
+              message: 'Session has exited. Restart the agent to continue.',
+            });
           }
         }
         break;
@@ -942,6 +1133,10 @@ class TerminalServer {
       outputBuffer: session.outputBuffer.slice(-200),
       chatHistory,
       ticketId: session.ticketId || null,
+      // Sprint 4 (terminal-ux-upgrade): when attaching to an already-active
+      // session, no 'claude_started' broadcast follows — this is the only
+      // message that tells the frontend which input mode to use.
+      isOpencode: !!this.claudeBridge.sessions.get(claudeSessionId)?.isOpencode,
     });
 
     if (this.dev) console.log(`WebSocket ${wsId} joined session ${claudeSessionId}`);
@@ -976,11 +1171,29 @@ class TerminalServer {
       // through reverse proxies like Traefik). The session is already
       // running — replay the buffer and tell the client it's attached
       // instead of surfacing a misleading error toast.
-      this.sendToWebSocket(wsInfo.ws, { type: 'claude_started', sessionId: wsInfo.claudeSessionId });
+      this.sendToWebSocket(wsInfo.ws, {
+        type: 'claude_started',
+        sessionId: wsInfo.claudeSessionId,
+        // Sprint 4 (terminal-ux-upgrade): tells the frontend whether to
+        // route typing through the dedicated input bar (opencode REPL,
+        // line-based) or raw xterm keystrokes (claude/openclaude PTY,
+        // needs arrows/Ctrl-C/interactive TUI).
+        isOpencode: !!this.claudeBridge.sessions.get(wsInfo.claudeSessionId)?.isOpencode,
+      });
       return;
     }
 
     const sessionId = wsInfo.claudeSessionId;
+
+    // Teto de PTYs simultâneos — proteção contra OOM do container.
+    const activePtys = Array.from(this.claudeSessions.values()).filter((s) => s.active).length;
+    if (activePtys >= this.maxActiveSessions) {
+      this.sendToWebSocket(wsInfo.ws, {
+        type: 'error',
+        message: `Limite de ${this.maxActiveSessions} sessões ativas atingido — encerre uma sessão/aba antes de iniciar outra. (Ajustável via TERMINAL_MAX_ACTIVE_SESSIONS; sessões ociosas sem aba aberta são recolhidas automaticamente.)`,
+      });
+      return;
+    }
 
     try {
       // Ensure agent name from session is passed even if options don't include it
@@ -995,6 +1208,9 @@ class TerminalServer {
         onOutput: (data) => {
           const currentSession = this.claudeSessions.get(sessionId);
           if (!currentSession) return;
+          // Output conta como atividade — o reaper de sessões destacadas só
+          // recolhe PTYs parados E sem viewer.
+          currentSession.lastActivity = new Date();
           currentSession.outputBuffer.push(data);
           if (currentSession.outputBuffer.length > currentSession.maxBufferSize) {
             currentSession.outputBuffer.shift();
@@ -1018,6 +1234,12 @@ class TerminalServer {
             this.broadcastToSession(sessionId, { type: 'error', message: error.message });
           }
         },
+        onHudUpdate: (hud) => {
+          // terminal-hud feature: semaphore + gear/LCD panel. opencode REPL
+          // sessions only (claude-bridge.js's onHudUpdate is a no-op for the
+          // pty-interactive claude/openclaude path).
+          this.broadcastToSession(sessionId, { type: 'hud_update', ...hud });
+        },
       });
 
       session.active = true;
@@ -1026,7 +1248,11 @@ class TerminalServer {
       session.lastActivity = new Date();
       if (!session.sessionStartTime) session.sessionStartTime = new Date();
 
-      this.broadcastToSession(sessionId, { type: 'claude_started', sessionId });
+      this.broadcastToSession(sessionId, {
+        type: 'claude_started',
+        sessionId,
+        isOpencode: !!this.claudeBridge.sessions.get(sessionId)?.isOpencode,
+      });
     } catch (error) {
       if (isEioError(error)) {
         session.active = false;

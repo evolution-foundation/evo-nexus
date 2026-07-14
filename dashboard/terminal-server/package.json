@@ -17,6 +17,8 @@
     "@anthropic-ai/claude-agent-sdk": "0.2.119",
     "cors": "^2.8.5",
     "express": "^4.19.2",
+    "marked": "^15.0.12",
+    "marked-terminal": "^7.3.0",
     "node-pty": "^1.0.0",
     "uuid": "^10.0.0",
     "ws": "^8.18.0"
