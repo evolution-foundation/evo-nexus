@@ -16,6 +16,25 @@ function isEioError(error) {
   return error?.code === 'EIO' || /\bEIO\b|read EIO|write EIO/i.test(message);
 }
 
+// Sprint 7 (terminal-ux-upgrade): attachment upload limits (Q6 default).
+const UPLOAD_MAX_BYTES = 20 * 1024 * 1024;
+const UPLOAD_MIME_ALLOWLIST = new Set([
+  'image/png', 'image/jpeg', 'image/webp', 'image/gif',
+  'application/pdf', 'text/plain', 'text/markdown', 'text/csv',
+  'application/json', 'application/octet-stream',
+]);
+
+// Strips any path components and anything outside a safe charset — the
+// filename comes from a query param (user-controlled), so this is the one
+// line standing between it and a path-traversal write (`../../etc/passwd`
+// etc.). path.basename() alone drops directories; the regex replace then
+// drops everything that isn't alphanumeric/dot/dash/underscore.
+function sanitizeUploadFilename(name) {
+  const base = path.basename(String(name || 'arquivo'));
+  const cleaned = base.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 120);
+  return cleaned || 'arquivo';
+}
+
 class TerminalServer {
   constructor(options = {}) {
     this.port = options.port || 32352;
@@ -460,6 +479,96 @@ class TerminalServer {
       }
       res.json({ sessions });
     });
+
+    // Sprint 5 (terminal-ux-upgrade): audio -> text, proxied server-side so
+    // GROQ_API_KEY never reaches the browser. Body is the raw audio blob
+    // (whatever MIME the MediaRecorder produced — webm/opus in every
+    // Chromium/Firefox build that matters here); express.raw() is scoped to
+    // this one route only, the rest of the app keeps using express.json().
+    // No multer/form-data dependency needed — Node 22 has FormData/Blob/
+    // fetch as globals, sufficient for this single outbound multipart call.
+    this.app.post(
+      '/api/transcribe',
+      express.raw({ type: '*/*', limit: '25mb' }),
+      async (req, res) => {
+        const apiKey = process.env.GROQ_API_KEY;
+        if (!apiKey) {
+          return res.status(503).json({ error: 'GROQ_API_KEY não configurada no terminal-server.' });
+        }
+        const audio = req.body;
+        if (!Buffer.isBuffer(audio) || audio.length === 0) {
+          return res.status(400).json({ error: 'Corpo da requisição vazio — envie o áudio como binário.' });
+        }
+        try {
+          const form = new FormData();
+          const mime = req.headers['content-type'] || 'audio/webm';
+          form.append('file', new Blob([audio], { type: mime }), 'audio.webm');
+          form.append('model', 'whisper-large-v3-turbo');
+
+          const groqRes = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${apiKey}` },
+            body: form,
+          });
+          const data = await groqRes.json().catch(() => null);
+          if (!groqRes.ok) {
+            // Groq's error payload is safe to relay — it never echoes the
+            // key back. Logged without the key too (apiKey never touches
+            // console.* in this handler).
+            console.warn(`[transcribe] Groq returned ${groqRes.status}:`, data);
+            return res.status(502).json({ error: (data && data.error && data.error.message) || `Groq respondeu ${groqRes.status}` });
+          }
+          res.json({ text: (data && data.text) || '' });
+        } catch (error) {
+          console.error('[transcribe] falha ao chamar Groq:', error.message);
+          res.status(502).json({ error: 'Falha ao transcrever o áudio.' });
+        }
+      }
+    );
+
+    // Sprint 7 (terminal-ux-upgrade): attach a photo/document to a prompt.
+    // Reuses the raw-body pattern from /api/transcribe (Sprint 5) — a
+    // single-file binary body, no multer/multipart parsing needed. Saves
+    // under a per-session dir inside the session's own workingDir (never
+    // outside it) so the opencode agent can reference the path directly in
+    // its prompt; cleaned up on session stop (see claude-bridge.js
+    // stopSession, Q6). Best-effort: whether the agent's own Read tool
+    // actually picks up an image (vs. a text document) depends on the
+    // underlying model's multimodal support — not something this endpoint
+    // can guarantee, only the file being there for it to try.
+    this.app.post(
+      '/api/upload',
+      express.raw({ type: '*/*', limit: '20mb' }),
+      async (req, res) => {
+        const sessionId = String(req.query.sessionId || '');
+        const session = sessionId && this.claudeBridge.sessions.get(sessionId);
+        if (!session || !session.active) {
+          return res.status(404).json({ error: 'Sessão não encontrada ou inativa.' });
+        }
+        const file = req.body;
+        if (!Buffer.isBuffer(file) || file.length === 0) {
+          return res.status(400).json({ error: 'Arquivo vazio.' });
+        }
+        if (file.length > UPLOAD_MAX_BYTES) {
+          return res.status(413).json({ error: `Arquivo excede o limite de ${UPLOAD_MAX_BYTES / 1024 / 1024}MB.` });
+        }
+        const mime = String(req.headers['content-type'] || '').split(';')[0].trim();
+        if (mime && !UPLOAD_MIME_ALLOWLIST.has(mime)) {
+          return res.status(415).json({ error: `Tipo de arquivo não permitido: ${mime}` });
+        }
+        const filename = sanitizeUploadFilename(req.query.filename);
+        const dir = path.join(session.workingDir, '.uploads', sessionId);
+        try {
+          await fs.promises.mkdir(dir, { recursive: true });
+          const destPath = path.join(dir, `${Date.now()}-${filename}`);
+          await fs.promises.writeFile(destPath, file);
+          res.json({ path: destPath, filename });
+        } catch (error) {
+          console.error('[upload] falha ao salvar arquivo:', error.message);
+          res.status(500).json({ error: 'Falha ao salvar o arquivo.' });
+        }
+      }
+    );
 
     // Create a NEW session for an agent (always creates, never reuses)
     this.app.post('/api/sessions/create', (req, res) => {
@@ -1024,6 +1133,10 @@ class TerminalServer {
       outputBuffer: session.outputBuffer.slice(-200),
       chatHistory,
       ticketId: session.ticketId || null,
+      // Sprint 4 (terminal-ux-upgrade): when attaching to an already-active
+      // session, no 'claude_started' broadcast follows — this is the only
+      // message that tells the frontend which input mode to use.
+      isOpencode: !!this.claudeBridge.sessions.get(claudeSessionId)?.isOpencode,
     });
 
     if (this.dev) console.log(`WebSocket ${wsId} joined session ${claudeSessionId}`);
@@ -1058,7 +1171,15 @@ class TerminalServer {
       // through reverse proxies like Traefik). The session is already
       // running — replay the buffer and tell the client it's attached
       // instead of surfacing a misleading error toast.
-      this.sendToWebSocket(wsInfo.ws, { type: 'claude_started', sessionId: wsInfo.claudeSessionId });
+      this.sendToWebSocket(wsInfo.ws, {
+        type: 'claude_started',
+        sessionId: wsInfo.claudeSessionId,
+        // Sprint 4 (terminal-ux-upgrade): tells the frontend whether to
+        // route typing through the dedicated input bar (opencode REPL,
+        // line-based) or raw xterm keystrokes (claude/openclaude PTY,
+        // needs arrows/Ctrl-C/interactive TUI).
+        isOpencode: !!this.claudeBridge.sessions.get(wsInfo.claudeSessionId)?.isOpencode,
+      });
       return;
     }
 
@@ -1127,7 +1248,11 @@ class TerminalServer {
       session.lastActivity = new Date();
       if (!session.sessionStartTime) session.sessionStartTime = new Date();
 
-      this.broadcastToSession(sessionId, { type: 'claude_started', sessionId });
+      this.broadcastToSession(sessionId, {
+        type: 'claude_started',
+        sessionId,
+        isOpencode: !!this.claudeBridge.sessions.get(sessionId)?.isOpencode,
+      });
     } catch (error) {
       if (isEioError(error)) {
         session.active = false;

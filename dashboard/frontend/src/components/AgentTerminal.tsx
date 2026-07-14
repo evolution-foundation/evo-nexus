@@ -4,6 +4,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import '@xterm/xterm/css/xterm.css'
 import TerminalHudPanel from './TerminalHudPanel'
+import { Mic, Loader2, Paperclip } from 'lucide-react'
 
 interface AgentTerminalProps {
   agent: string
@@ -112,6 +113,175 @@ export default function AgentTerminal({ agent, sessionId: externalSessionId, wor
     statusRef.current = status
   }, [status])
 
+  // Sprint 4 (terminal-ux-upgrade): opencode REPL sessions are line-based —
+  // typing goes through a dedicated input bar instead of raw xterm
+  // keystrokes, so a streamed response can never overwrite what the user is
+  // mid-typing. claude/openclaude PTY sessions (arrows, Ctrl-C, interactive
+  // TUI) are untouched — they keep using term.onData directly. The server
+  // tells us which mode via `session_joined`/`claude_started`'s
+  // `isOpencode` flag.
+  const [isOpencode, setIsOpencode] = useState(false)
+  const isOpencodeRef = useRef(false)
+  const [inputValue, setInputValue] = useState('')
+  const inputBarRef = useRef<HTMLTextAreaElement>(null)
+
+  // Shared by the raw xterm.onData path (PTY sessions) and the dedicated
+  // input bar (opencode sessions) — both need the same "dead session ->
+  // treat typing as a restart request" affordance. Rebuilt every render (no
+  // dep array) so it always closes over the current `agent` prop, same as
+  // the inline handler it replaces used to via render-time closure.
+  const sendOrRestartRef = useRef<(data: string) => void>(() => {})
+  useEffect(() => {
+    sendOrRestartRef.current = (data: string) => {
+      const ws = wsRef.current
+      const term = termRef.current
+      if (!ws || ws.readyState !== WebSocket.OPEN) return
+      if (statusRef.current === 'exited' || statusRef.current === 'error') {
+        statusRef.current = 'starting'
+        setStatus('starting')
+        term?.write('\r\n\x1b[33m[Restarting agent]\x1b[0m\r\n')
+        ws.send(JSON.stringify({
+          type: 'start_claude',
+          options: {
+            dangerouslySkipPermissions: true,
+            agent,
+            cols: term?.cols,
+            rows: term?.rows,
+          },
+        }))
+        return
+      }
+      ws.send(JSON.stringify({ type: 'input', data }))
+    }
+  })
+
+  useEffect(() => {
+    if (isOpencode && status === 'running') {
+      inputBarRef.current?.focus()
+    }
+  }, [isOpencode, status])
+
+  function handleInputBarKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault()
+      const line = inputValue
+      if (!line.trim()) return
+      setInputValue('')
+      sendOrRestartRef.current(line + '\n')
+    }
+  }
+
+  // Sprint 6 (terminal-ux-upgrade): mic button — records via MediaRecorder,
+  // sends the blob to the Sprint 5 backend proxy, appends the transcribed
+  // text into the same input bar the user would otherwise type into (never
+  // auto-sent — the user still reviews/edits before hitting Enter).
+  type MicState = 'idle' | 'recording' | 'transcribing'
+  const [micState, setMicState] = useState<MicState>('idle')
+  const [micError, setMicError] = useState<string | null>(null)
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
+  const audioChunksRef = useRef<Blob[]>([])
+
+  useEffect(() => {
+    // Stop any in-flight recording if the component unmounts (tab closed
+    // mid-recording) — leaving the mic stream open would keep the
+    // browser's recording indicator lit for a dead component.
+    return () => {
+      try {
+        mediaRecorderRef.current?.stream.getTracks().forEach((t) => t.stop())
+      } catch {
+        // stream may already be stopped/released — nothing to clean up
+      }
+    }
+  }, [])
+
+  async function toggleRecording() {
+    if (micState === 'recording') {
+      mediaRecorderRef.current?.stop()
+      return
+    }
+    if (micState === 'transcribing') return
+    setMicError(null)
+    let stream: MediaStream
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+    } catch (e) {
+      const name = e instanceof DOMException ? e.name : ''
+      setMicError(name === 'NotAllowedError' ? 'Permissão de microfone negada' : 'Não foi possível acessar o microfone')
+      return
+    }
+    const mr = new MediaRecorder(stream)
+    audioChunksRef.current = []
+    mr.ondataavailable = (e) => {
+      if (e.data.size > 0) audioChunksRef.current.push(e.data)
+    }
+    mr.onstop = async () => {
+      stream.getTracks().forEach((t) => t.stop())
+      setMicState('transcribing')
+      const blob = new Blob(audioChunksRef.current, { type: mr.mimeType || 'audio/webm' })
+      try {
+        const res = await fetch(`${CC_WEB_HTTP}/api/transcribe`, {
+          method: 'POST',
+          headers: { 'Content-Type': blob.type || 'audio/webm' },
+          body: blob,
+        })
+        const data = await res.json().catch(() => null)
+        if (!res.ok) throw new Error((data && data.error) || `HTTP ${res.status}`)
+        const text = ((data && data.text) || '').trim()
+        if (text) {
+          setInputValue((prev) => (prev ? `${prev} ${text}` : text))
+          inputBarRef.current?.focus()
+        }
+      } catch (e) {
+        setMicError(e instanceof Error ? e.message : 'Falha ao transcrever áudio')
+      } finally {
+        setMicState('idle')
+      }
+    }
+    mediaRecorderRef.current = mr
+    mr.start()
+    setMicState('recording')
+  }
+
+  // Sprint 7 (terminal-ux-upgrade): attach a photo/document. Uploads to the
+  // Sprint 5/7 backend endpoint and drops a path mention into the same
+  // input bar the user reviews before sending — never auto-sent. Whether
+  // the agent actually reads the file (especially images) depends on its
+  // own tool-use and the model's multimodal support; this only guarantees
+  // the file is there for it to try.
+  type AttachState = 'idle' | 'uploading'
+  const [attachState, setAttachState] = useState<AttachState>('idle')
+  const [attachError, setAttachError] = useState<string | null>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
+  async function handleFileSelected(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    if (!file) return
+    const sessionId = sessionIdRef.current
+    if (!sessionId) return
+    setAttachError(null)
+    setAttachState('uploading')
+    try {
+      const res = await fetch(
+        `${CC_WEB_HTTP}/api/upload?sessionId=${encodeURIComponent(sessionId)}&filename=${encodeURIComponent(file.name)}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': file.type || 'application/octet-stream' },
+          body: file,
+        }
+      )
+      const data = await res.json().catch(() => null)
+      if (!res.ok) throw new Error((data && data.error) || `HTTP ${res.status}`)
+      const mention = `[anexo: ${data.path}]`
+      setInputValue((prev) => (prev ? `${prev} ${mention}` : mention))
+      inputBarRef.current?.focus()
+    } catch (e) {
+      setAttachError(e instanceof Error ? e.message : 'Falha ao enviar anexo')
+    } finally {
+      setAttachState('idle')
+    }
+  }
+
   // Mount xterm once
   useEffect(() => {
     if (!containerRef.current) return
@@ -188,32 +358,12 @@ export default function AgentTerminal({ agent, sessionId: externalSessionId, wor
     // alternative.
     const AUTO_REPLY_RE = /^\x1b\[(\?|>)[0-9;]*[a-zA-Z]$|^\x1b\[[0-9;]*[nRct]$/
     term.onData((data) => {
+      // opencode REPL sessions: typing goes through the dedicated input bar
+      // (see handleInputBarKeyDown), not raw xterm keystrokes — the xterm
+      // pane is output-only for these sessions.
+      if (isOpencodeRef.current) return
       if (AUTO_REPLY_RE.test(data)) return
-      const ws = wsRef.current
-      if (!ws || ws.readyState !== WebSocket.OPEN) return
-
-      // The CLI process can die mid-session (provider crash, exit 1, etc.)
-      // without the user noticing beyond the small status badge. Forwarding
-      // raw keystrokes to a dead PTY used to just vanish — the server has
-      // nothing to write them to. Treat "user typed something" as an
-      // implicit restart request instead of a dead end.
-      if (statusRef.current === 'exited' || statusRef.current === 'error') {
-        statusRef.current = 'starting'
-        setStatus('starting')
-        term!.write('\r\n\x1b[33m[Restarting agent]\x1b[0m\r\n')
-        ws.send(JSON.stringify({
-          type: 'start_claude',
-          options: {
-            dangerouslySkipPermissions: true,
-            agent,
-            cols: term!.cols,
-            rows: term!.rows,
-          },
-        }))
-        return
-      }
-
-      ws.send(JSON.stringify({ type: 'input', data }))
+      sendOrRestartRef.current(data)
     })
 
     return () => {
@@ -326,6 +476,8 @@ export default function AgentTerminal({ agent, sessionId: externalSessionId, wor
         switch (msg.type) {
           case 'session_joined': {
             reconnectAttempts = 0
+            isOpencodeRef.current = !!msg.isOpencode
+            setIsOpencode(!!msg.isOpencode)
             // On reconnect the server replays the whole buffer — clear
             // first so it doesn't duplicate what's already on screen.
             if (isReconnect) term!.clear()
@@ -365,6 +517,8 @@ export default function AgentTerminal({ agent, sessionId: externalSessionId, wor
             term!.write(msg.data)
             break
           case 'claude_started':
+            isOpencodeRef.current = !!msg.isOpencode
+            setIsOpencode(!!msg.isOpencode)
             setStatus('running')
             // resize after start
             {
@@ -513,8 +667,7 @@ export default function AgentTerminal({ agent, sessionId: externalSessionId, wor
         </span>
         {hud && (
           <div className="ml-auto flex items-center gap-2">
-            {/* Gear/LCD panel (Sprint 3) — hidden below `sm`, mobile-first:
-                the semaphore alone is enough on a narrow phone screen. */}
+            {/* Gear/LCD panel (Sprint 3) */}
             <TerminalHudPanel hud={hud} accentColor={accentColor} />
 
             {/* Semaphore (Sprint 2): 3 fixed lights, only the active one
@@ -556,8 +709,77 @@ export default function AgentTerminal({ agent, sessionId: externalSessionId, wor
         )}
       </div>
 
-      {/* xterm */}
+      {/* xterm — output only for opencode sessions (Sprint 4) */}
       <div ref={containerRef} className="flex-1 min-h-0 px-4 py-3 bg-[#0C111D]" />
+
+      {/* Dedicated input bar (Sprint 4) — opencode REPL sessions only.
+          Fixed at the bottom via flex-shrink-0, a separate DOM element from
+          the xterm output pane above, so a streamed response can never
+          write over what's being typed here. */}
+      {isOpencode && (
+        <div className="flex-shrink-0 border-t border-[#21262d] bg-[#0d1117] px-3 py-2">
+          <div className="flex items-end gap-2">
+            <textarea
+              ref={inputBarRef}
+              value={inputValue}
+              onChange={(e) => setInputValue(e.target.value)}
+              onKeyDown={handleInputBarKeyDown}
+              placeholder={
+                micState === 'recording' ? 'gravando…' :
+                micState === 'transcribing' ? 'transcrevendo…' :
+                hud?.busy ? 'processando…' : 'digite e Enter para enviar (Shift+Enter quebra linha)'
+              }
+              rows={1}
+              className="flex-1 resize-none rounded-md border border-[#21262d] bg-[#0C111D] px-3 py-2 font-mono text-[13px] leading-snug text-[#e6edf3] placeholder:text-[#4b5563] focus:outline-none focus:ring-1 focus:ring-[#00FFA7]/50"
+            />
+            <button
+              type="button"
+              onClick={toggleRecording}
+              disabled={micState === 'transcribing'}
+              title={
+                micState === 'recording' ? 'Parar gravação' :
+                micState === 'transcribing' ? 'Transcrevendo…' : 'Gravar áudio'
+              }
+              className={`flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-md border transition-colors ${
+                micState === 'recording'
+                  ? 'border-[#ef4444] bg-[#ef4444]/15 text-[#ef4444]'
+                  : micState === 'transcribing'
+                  ? 'cursor-wait border-[#21262d] bg-[#0C111D] text-[#4b5563]'
+                  : 'border-[#21262d] bg-[#0C111D] text-[#8b949e] hover:border-[#30363d] hover:text-[#e6edf3]'
+              }`}
+            >
+              {micState === 'transcribing'
+                ? <Loader2 size={15} className="animate-spin" />
+                : <Mic size={15} />}
+            </button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/png,image/jpeg,image/webp,image/gif,application/pdf,text/plain,text/markdown,text/csv,application/json"
+              className="hidden"
+              onChange={handleFileSelected}
+            />
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={attachState === 'uploading'}
+              title={attachState === 'uploading' ? 'Enviando anexo…' : 'Anexar foto ou documento'}
+              className={`flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-md border transition-colors ${
+                attachState === 'uploading'
+                  ? 'cursor-wait border-[#21262d] bg-[#0C111D] text-[#4b5563]'
+                  : 'border-[#21262d] bg-[#0C111D] text-[#8b949e] hover:border-[#30363d] hover:text-[#e6edf3]'
+              }`}
+            >
+              {attachState === 'uploading'
+                ? <Loader2 size={15} className="animate-spin" />
+                : <Paperclip size={15} />}
+            </button>
+          </div>
+          {(micError || attachError) && (
+            <div className="mt-1 text-[10px] text-[#ef4444]">{micError || attachError}</div>
+          )}
+        </div>
+      )}
     </div>
   )
 }

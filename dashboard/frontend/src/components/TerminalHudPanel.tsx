@@ -62,17 +62,17 @@ function useGear(providerId: string, providerModel: string, shift: boolean) {
 export default function TerminalHudPanel({ hud, accentColor }: Props) {
   const gear = useGear(hud.providerId, hud.providerModel, hud.shift)
   const settleTick = useSettleTick(hud.busy)
+  // Sprint 3 (terminal-ux-upgrade): tokensPerSec is now a fixed
+  // typical-throughput baseline per model (see claude-bridge.js's
+  // _avgTokensPerSecFor), not a live-measured instantaneous rate — so
+  // there's no meaningful "personal best" to flag anymore (every tick
+  // trivially equals the baseline). The PB badge that used to compare
+  // against bestTokensPerSec is gone; the number just reads as "médio".
   const speed = Math.max(0, Math.round(hud.tokensPerSec))
-  const isPb = hud.bestTokensPerSec > 0 && speed >= Math.round(hud.bestTokensPerSec) && speed > 0
 
   return (
     <div
-      // Mobile-first: hidden below the `sm` breakpoint — on a narrow phone
-      // screen the terminal itself is the content that matters, this is a
-      // desktop-width extra. The semaphore (AgentTerminal's own dots) stays
-      // visible at every width; this panel is the "more room available"
-      // upgrade.
-      className="hidden sm:flex items-center gap-2 rounded-md border border-[#21262d] bg-[#0a0e14] px-2 py-1"
+      className="flex items-center gap-2 rounded-md border border-[#21262d] bg-[#0a0e14] px-2 py-1"
       title={`${hud.providerId}/${hud.providerModel}`}
     >
       {/* Gear indicator — digital 7-segment-ish look via a plain monospace
@@ -114,7 +114,7 @@ export default function TerminalHudPanel({ hud, accentColor }: Props) {
           className="text-[10px] font-bold tabular-nums inline-block"
           style={{ animation: 'terminal-hud-needle-settle 320ms cubic-bezier(0.34, 1.56, 0.64, 1)' }}
         >
-          {speed} tok/s{isPb && <span className="ml-1 text-[8px] font-normal opacity-80">PB</span>}
+          {speed} tok/s <span className="text-[8px] font-normal opacity-60">méd</span>
         </span>
       </div>
 

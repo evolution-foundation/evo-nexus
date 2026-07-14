@@ -98,6 +98,62 @@ const OPENCODE_TURN_TIMEOUT_MS = 600_000;
 // real usage patterns are observed.
 const HUD_HEAVY_TOKEN_THRESHOLD = 20_000;
 
+// Sprint 2 (terminal-ux-upgrade): OmniRoute picks the real backing
+// provider/model server-side when the configured model is "auto" — the
+// `opencode run --format json` NDJSON schema validated live on 2026-07-12
+// (see provider_fallback.py::_parse_opencode_ndjson) only carries
+// tokens/cost on step_finish, no provider/model field. Two live probes on
+// 2026-07-14 against the real gateway (both "auto" and a concrete model)
+// errored server-side before any text/step_finish arrived, so this couldn't
+// be re-confirmed either way. Kept defensive and forward-compatible: if a
+// future opencode version (or this gateway) starts emitting one of these
+// field names, it gets picked up automatically with no code change; until
+// then this is a silent no-op and the HUD falls back to the resolved model
+// config (never the bare "auto" string — see session.providerModel init).
+function _extractRealProviderModel(event, part) {
+  const providerId = event.providerID || event.provider || part.providerID || part.provider;
+  const providerModel = event.modelID || event.model || part.modelID || part.model;
+  if (!providerId && !providerModel) return null;
+  return { providerId: providerId || null, providerModel: providerModel || null };
+}
+
+// Sprint 3 (terminal-ux-upgrade): the tok/s figure used to be recomputed
+// live from chars-streamed-so-far ÷ elapsed-time on every 'text' fragment,
+// which swings wildly early in a turn (a 3-char fragment after 40ms reads
+// as a nonsense instantaneous rate) — that's the "varia demais" the HUD
+// needle was chasing. Replaced with a fixed typical-throughput-per-model
+// baseline: stable during a turn, changes only when the model changes.
+// totalTokens (the real step_finish count) stays live/accurate — only the
+// speed readout is now a constant. Matched by substring against whatever
+// providerModel string is active, since it may be the config's raw model
+// id ("auto-routing") or a real model name if Sprint 2 ever recovers one.
+const MODEL_AVG_TOKENS_PER_SEC = {
+  'opus': 35,
+  'sonnet': 55,
+  'haiku': 95,
+  'fable': 70,
+  'gpt-5': 60,
+  'gpt-4': 70,
+  'gemini': 65,
+  'deepseek': 50,
+  'glm': 45,
+  'qwen': 55,
+  'kimi': 50,
+  'nemotron': 45,
+  'minimax': 55,
+  'grok': 60,
+  'pickle': 60,
+};
+const DEFAULT_AVG_TOKENS_PER_SEC = 50;
+
+function _avgTokensPerSecFor(providerModel) {
+  const m = (providerModel || '').toLowerCase();
+  for (const key in MODEL_AVG_TOKENS_PER_SEC) {
+    if (m.includes(key)) return MODEL_AVG_TOKENS_PER_SEC[key];
+  }
+  return DEFAULT_AVG_TOKENS_PER_SEC;
+}
+
 // ~4 chars/token is the usual rough English/Portuguese estimate — opencode
 // doesn't stream incremental token counts, only a total per completed step,
 // so this is what drives the live tokens/s readout while a turn is still
@@ -639,7 +695,12 @@ class ClaudeBridge {
       agentName: agent || null,
       personaPrefix,
       providerId,
-      providerModel: providerModel || 'auto',
+      // "auto-routing" instead of the bare "auto" from providers.json's
+      // default_model — that string means "OmniRoute decides server-side",
+      // not a model name, and showing it unlabeled on the HUD reads as a
+      // broken/generic value. Overwritten with the real provider/model the
+      // moment one is seen in the NDJSON (see _extractRealProviderModel).
+      providerModel: providerModel && providerModel !== 'auto' ? providerModel : 'auto-routing',
       // OPENAI_BASE_URL/OPENAI_API_KEY come from this provider's own
       // dashboard-editable config (same fields every other provider uses),
       // already resolved from placeholders to real secrets by
@@ -847,7 +908,6 @@ class ClaudeBridge {
     let sawText = false;
     let charsSoFar = 0;
     let realTotalTokens = null;
-    const turnStartedAt = Date.now();
     let sawError = false;
     let errorMessage = '';
     let timedOut = false;
@@ -871,8 +931,17 @@ class ClaudeBridge {
       if (sid && !session.opencodeSessionId) {
         session.opencodeSessionId = sid;
       }
+      const part = event.part || {};
+      const realRoute = _extractRealProviderModel(event, part);
+      if (realRoute) {
+        // Real backing provider/model surfaced this turn — persist on the
+        // session so it survives past this one hud_update tick (matches
+        // providerId/providerModel init pattern above).
+        if (realRoute.providerId) session.providerId = realRoute.providerId;
+        if (realRoute.providerModel) session.providerModel = realRoute.providerModel;
+      }
       if (event.type === 'text') {
-        const text = event.part && event.part.text;
+        const text = part.text;
         if (text) {
           // Buffered, not streamed straight to onOutput — the response is
           // markdown (headers, bold, lists, code blocks) and arrives in
@@ -882,11 +951,11 @@ class ClaudeBridge {
           sawText = true;
           textBuffer += text;
           charsSoFar += text.length;
-          const elapsedSec = (Date.now() - turnStartedAt) / 1000;
           const estTokens = charsSoFar / HUD_CHARS_PER_TOKEN_ESTIMATE;
           this._emitHudUpdate(session, {
-            tokensPerSec: elapsedSec > 0 ? estTokens / elapsedSec : 0,
+            tokensPerSec: _avgTokensPerSecFor(session.providerModel),
             totalTokens: Math.round(estTokens),
+            ...(realRoute || {}),
           });
         }
       } else if (event.type === 'error') {
@@ -897,15 +966,15 @@ class ClaudeBridge {
         // Real token count for the step that just closed — reconciles the
         // char-based live estimate above. Multiple steps can happen in one
         // turn (tool calls between text replies); keep the running total.
-        const tokens = event.part && event.part.tokens;
+        const tokens = part.tokens;
         if (tokens) {
           const stepTotal = (tokens.input || 0) + (tokens.output || 0);
           realTotalTokens = (realTotalTokens || 0) + stepTotal;
-          const elapsedSec = (Date.now() - turnStartedAt) / 1000;
           this._emitHudUpdate(session, {
-            tokensPerSec: elapsedSec > 0 ? realTotalTokens / elapsedSec : 0,
+            tokensPerSec: _avgTokensPerSecFor(session.providerModel),
             totalTokens: realTotalTokens,
             heavy: realTotalTokens > HUD_HEAVY_TOKEN_THRESHOLD,
+            ...(realRoute || {}),
           });
         }
       }
@@ -1030,6 +1099,12 @@ class ClaudeBridge {
       if (session.currentChild) {
         try { session.currentChild.kill('SIGKILL'); } catch (_) {}
       }
+      // Sprint 7 (terminal-ux-upgrade): attachments uploaded during this
+      // session (see POST /api/upload) live in a per-session dir under the
+      // workingDir — best-effort cleanup on stop (Q6). Not awaited: a slow
+      // FS shouldn't hold up session teardown, and a leftover .uploads dir
+      // from a failed rm is not a correctness problem, just tidiness.
+      fs.rm(path.join(session.workingDir, '.uploads', sessionId), { recursive: true, force: true }, () => {});
       session.active = false;
       this.sessions.delete(sessionId);
       return;
