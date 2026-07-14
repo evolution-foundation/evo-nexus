@@ -16,6 +16,189 @@ let sdkModule = null;
 // Workspace root is three levels up from this file (dashboard/terminal-server/src/).
 const WORKSPACE_ROOT = path.resolve(__dirname, '..', '..', '..');
 
+// Chat HUD (car-dashboard panel, same component as the Terminal — see
+// TerminalHudPanel.tsx). Chat sessions are short-lived (one per
+// startSession call, not a persistent REPL like claude-bridge's opencode
+// sessions), so this only tracks what's needed for the shift-detection
+// diff between hud_update ticks — much smaller than claude-bridge's
+// per-session HUD bookkeeping.
+const CHAT_HUD_HEAVY_TOKEN_THRESHOLD = 20_000;
+
+/**
+ * Emits a `hud_update`-shaped event through the same `onMessage` channel
+ * every other chat event goes through — server.js already forwards
+ * anything unrecognized as `{ type: 'chat_event', event: msg }`, and
+ * AgentChat.tsx's handleChatEvent special-cases `hud_update` before it
+ * hits the messages-array reducer (see that file). No server.js changes
+ * needed; this piggybacks on existing plumbing.
+ */
+function _emitChatHud(session, onMessage, patch = {}) {
+  if (!onMessage) return;
+  const providerId = patch.providerId ?? session.lastHudProviderId;
+  const providerModel = patch.providerModel ?? session.lastHudProviderModel;
+  const shift = providerId !== session.lastHudProviderId || providerModel !== session.lastHudProviderModel;
+  session.lastHudProviderId = providerId;
+  session.lastHudProviderModel = providerModel;
+  onMessage({
+    type: 'hud_update',
+    busy: false,
+    tokensPerSec: 0,
+    totalTokens: null,
+    heavy: false,
+    bestTokensPerSec: 0,
+    ...patch,
+    providerId,
+    providerModel,
+    shift,
+  });
+}
+
+/**
+ * Build provider fallback chain from config.
+ * Returns array of { providerId, model, cliCommand, envVars, baseUrl } attempts.
+ * Order: active provider's primary model → fallback_models → fallback_providers (with their chains).
+ */
+function buildProviderFallbackChain(providerConfig) {
+  const providers = providerConfig.providers || {};
+  const activeId = providerConfig.active;
+  const activeProvider = providers[activeId] || providerConfig;
+
+  const chain = [];
+
+  // Primary model from active provider
+  const primaryModel = resolveProviderModel(activeProvider);
+  const activeCliCommand = activeProvider.cli_command || providerConfig.cli_command || 'openclaude';
+  const activeEnvVars = { ...(activeProvider.env_vars || {}), ...(providerConfig.env_vars || {}) };
+  const activeBaseUrl = activeEnvVars.OPENAI_BASE_URL || activeProvider.default_base_url;
+
+  if (primaryModel) {
+    chain.push({
+      providerId: activeId,
+      model: primaryModel,
+      cliCommand: activeCliCommand,
+      envVars: { ...activeEnvVars, OPENAI_MODEL: primaryModel },
+      baseUrl: activeBaseUrl,
+    });
+  }
+
+  // Fallback models within same provider
+  for (const fallbackModel of (activeProvider.fallback_models || [])) {
+    if (fallbackModel && fallbackModel !== primaryModel) {
+      chain.push({
+        providerId: activeId,
+        model: fallbackModel,
+        cliCommand: activeCliCommand,
+        envVars: { ...activeEnvVars, OPENAI_MODEL: fallbackModel },
+        baseUrl: activeBaseUrl,
+      });
+    }
+  }
+
+  // Fallback providers
+  for (const fallbackProviderId of (activeProvider.fallback_providers || [])) {
+    const fp = providers[fallbackProviderId];
+    if (!fp) continue;
+
+    const fpModel = resolveProviderModel(fp);
+    const fpCliCommand = fp.cli_command || 'openclaude';
+    // Somente o env do próprio provider de fallback — misturar o env do
+    // provider ativo faria o attempt reutilizar a base URL/key erradas
+    // (ex.: fallback "omnirouter" chamando a NVIDIA de novo).
+    const fpEnvVars = { ...(fp.env_vars || {}) };
+    const fpBaseUrl = fpEnvVars.OPENAI_BASE_URL || fp.default_base_url;
+
+    if (fpModel) {
+      chain.push({
+        providerId: fallbackProviderId,
+        model: fpModel,
+        cliCommand: fpCliCommand,
+        envVars: { ...fpEnvVars, OPENAI_MODEL: fpModel },
+        baseUrl: fpBaseUrl,
+      });
+    }
+    for (const fbModel of (fp.fallback_models || [])) {
+      if (fbModel && fbModel !== fpModel) {
+        chain.push({
+          providerId: fallbackProviderId,
+          model: fbModel,
+          cliCommand: fpCliCommand,
+          envVars: { ...fpEnvVars, OPENAI_MODEL: fbModel },
+          baseUrl: fpBaseUrl,
+        });
+      }
+    }
+  }
+
+  // Final fallback: anthropic (native claude)
+  if (activeId !== 'anthropic') {
+    chain.push({
+      providerId: 'anthropic',
+      model: null,
+      cliCommand: 'claude',
+      envVars: {},
+      baseUrl: null,
+    });
+  }
+
+  return chain;
+}
+
+/**
+ * CLIs that implement the Agent SDK's subprocess wire protocol — the SDK
+ * always spawns pathToClaudeCodeExecutable with its own flags
+ * (--input-format stream-json --output-format stream-json --verbose,
+ * --permission-prompt-tool stdio, etc.) and talks to it over stdin/stdout
+ * with a control_request/control_response JSON protocol (see
+ * ProcessTransport in @anthropic-ai/claude-agent-sdk/sdk.mjs). claude and
+ * openclaude both speak that protocol; opencode does not — it has its own
+ * CLI shape (`opencode run <msg> -m <provider>/<model> --format json`) and
+ * TUI, unrelated to Claude Code's. Spawning opencode through the SDK fails
+ * immediately (unrecognized args, no control protocol reply) — that's the
+ * "exit code 1 / chat does nothing" failure mode. Chat can't drive opencode
+ * this way (yet — provider_fallback.py's headless "opencode run" +
+ * ndjson-parsing and the Terminal's native PTY spawn are the two paths that
+ * do work today), so any attempt using a non-SDK CLI is skipped here and the
+ * configured fallback_providers carry the conversation instead.
+ */
+const SDK_COMPATIBLE_CLI = new Set(['claude', 'openclaude']);
+
+/**
+ * Check if an error is a retryable provider error (429, 503, quota, capacity).
+ * Includes detection for "Maximum combo retry limit reached".
+ */
+function isRetryableProviderError(error) {
+  if (!error) return false;
+  const msg = String(error.message || error).toLowerCase();
+
+  // "Maximum combo retry limit reached" — provider exhausted internal retries
+  if (msg.includes('maximum combo retry limit reached')) return true;
+
+  // Standard retryable patterns
+  const retryablePatterns = [
+    '429', 'rate limit', 'rate-limit', 'quota', 'too many requests',
+    'resource exhausted', 'capacity', 'overloaded',
+    'service unavailable', 'temporarily unavailable',
+    'insufficient quota', 'billing limit', 'plan limit'
+  ];
+
+  return retryablePatterns.some(p => msg.includes(p));
+}
+
+/**
+ * Check if an error is fatal (auth/config) and should NOT trigger fallback.
+ */
+function isFatalProviderError(error) {
+  if (!error) return false;
+  const msg = String(error.message || error).toLowerCase();
+
+  const fatalPatterns = [
+    '401', '403', 'invalid api key', 'authentication',
+    'unauthorized', 'forbidden', 'no usable api key'
+  ];
+
+  return fatalPatterns.some(p => msg.includes(p));
+}
+
 /**
  * Read chat.trustMode from config/workspace.yaml.
  * Uses a targeted regex — no YAML dep needed.
@@ -43,6 +226,37 @@ const AUTO_APPROVE = new Set([
 const NEEDS_APPROVAL = new Set([
   'Write', 'Edit', 'Bash', 'NotebookEdit', 'Agent',
 ]);
+
+/**
+ * Read an agent's persistent memory (.claude/agent-memory/{agent}/), if any.
+ *
+ * Native Claude Code sessions get CLAUDE.md + .claude/rules/*.md auto-loaded
+ * via the 'claude_code' systemPrompt preset, including memory-recall.md,
+ * which tells the agent to self-serve read its own agent-memory folder.
+ * External providers replace the system prompt entirely (see the
+ * isExternalProvider branch below), so they never get that instruction —
+ * every session starts cold. Mirrors ClaudeBridge.loadAgentMemory in
+ * claude-bridge.js (Terminal); kept as a separate copy since these two
+ * files don't share a util module today.
+ */
+function loadAgentMemory(agent) {
+  if (!agent) return '';
+  const dir = path.join(WORKSPACE_ROOT, '.claude', 'agent-memory', agent);
+  const parts = [];
+  for (const file of ['learnings.md', 'MEMORY.md']) {
+    try {
+      const content = fs.readFileSync(path.join(dir, file), 'utf8').trim();
+      if (content) parts.push(`### ${file}\n${content}`);
+    } catch {
+      // File doesn't exist yet — this agent has no persisted memory. Fine.
+    }
+  }
+  if (!parts.length) return '';
+  const MAX_CHARS = 4000;
+  let combined = parts.join('\n\n');
+  if (combined.length > MAX_CHARS) combined = combined.slice(-MAX_CHARS);
+  return combined;
+}
 
 /**
  * Parse a .claude/agents/{name}.md file into an AgentDefinition.
@@ -171,9 +385,13 @@ function resolveCliBinary(cliCommand) {
 
   const { execSync } = require('child_process');
   try {
+    // Hardcoded dispatch per command (not a template) to satisfy semgrep,
+    // mirroring ClaudeBridge.findClaudeCommand.
     let resolved;
     if (cliCommand === 'openclaude') {
       resolved = execSync('which openclaude', { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'] }).trim();
+    } else if (cliCommand === 'opencode') {
+      resolved = execSync('which opencode', { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'] }).trim();
     } else {
       resolved = execSync('which claude', { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'] }).trim();
     }
@@ -185,18 +403,27 @@ function resolveCliBinary(cliCommand) {
   } catch { /* which failed — try hardcoded paths */ }
 
   const home = process.env.HOME || '/';
-  const candidates = cliCommand === 'openclaude'
-    ? [
-        path.join(home, '.local', 'bin', 'openclaude'),
-        '/usr/local/bin/openclaude',
-        '/usr/bin/openclaude',
-      ]
-    : [
-        path.join(home, '.claude', 'local', 'claude'),
-        path.join(home, '.local', 'bin', 'claude'),
-        '/usr/local/bin/claude',
-        '/usr/bin/claude',
-      ];
+  let candidates;
+  if (cliCommand === 'openclaude') {
+    candidates = [
+      path.join(home, '.local', 'bin', 'openclaude'),
+      '/usr/local/bin/openclaude',
+      '/usr/bin/openclaude',
+    ];
+  } else if (cliCommand === 'opencode') {
+    candidates = [
+      path.join(home, '.local', 'bin', 'opencode'),
+      '/usr/local/bin/opencode',
+      '/usr/bin/opencode',
+    ];
+  } else {
+    candidates = [
+      path.join(home, '.claude', 'local', 'claude'),
+      path.join(home, '.local', 'bin', 'claude'),
+      '/usr/local/bin/claude',
+      '/usr/bin/claude',
+    ];
+  }
   for (const p of candidates) {
     try {
       if (fs.existsSync(p)) {
@@ -244,7 +471,15 @@ function buildProviderEnv(providerConfig) {
   }
   // O auto-updater do CLI migra a instalação npm pro instalador nativo no
   // meio da sessão e mata o processo com exit 1.
-  return { ...env, ...providerEnv, DISABLE_AUTOUPDATER: '1' };
+  // OPENCLAUDE_MAX_RETRIES: o default do CLI são 10 retries com backoff
+  // exponencial (até ~35s cada ≈ 2,5min por modelo) — quem rotaciona é a
+  // nossa fallback chain, então o retry interno fica curto.
+  return {
+    OPENCLAUDE_MAX_RETRIES: '3',
+    ...env,
+    ...providerEnv,
+    DISABLE_AUTOUPDATER: '1',
+  };
 }
 
 /**
@@ -372,6 +607,8 @@ class ChatBridge {
   /**
    * Enforce minimum interval between requests, then fetch with retry/backoff.
    * Retries on 429 (rate limited) and 503 (upstream unavailable).
+   * Does NOT retry internally on "Maximum combo retry limit reached" — lets
+   * outer fallback loop advance to next model/provider instead.
    */
   async _rateLimitedFetch(url, options) {
     // Enforce minimum interval between requests
@@ -383,13 +620,28 @@ class ChatBridge {
       await new Promise((r) => setTimeout(r, wait));
     }
 
-    let lastError = null;
     for (let attempt = 0; attempt <= this._maxRetries; attempt++) {
       this._lastRequestTime = Date.now();
 
       const resp = await fetch(url, options);
 
       if (resp.ok) return resp;
+
+      // Check for "Maximum combo retry limit reached" — provider-level
+      // combo exhaustion. Don't retry internally; let outer loop rotate
+      // to next model/provider in chain.
+      if (resp.status === 503) {
+        const bodyText = await resp.text().catch(() => '');
+        // resp.text() consumiu o body — qualquer retorno daqui pra frente
+        // precisa de um Response reconstruído pra o caller ler o erro.
+        const remake = () => new Response(bodyText, { status: resp.status, statusText: resp.statusText, headers: resp.headers });
+        if (bodyText.includes('Maximum combo retry limit reached')) {
+          console.warn(`[chat-bridge] Provider combo exhausted (503): ${bodyText.slice(0, 200)}`);
+          // Não faz retry interno — deixa o loop externo rotacionar o provider.
+          return remake();
+        }
+        if (attempt === this._maxRetries) return remake();
+      }
 
       const isRetryable = resp.status === 429 || resp.status === 503;
       if (!isRetryable || attempt === this._maxRetries) {
@@ -597,10 +849,14 @@ class ChatBridge {
       if (getProviderMode(providerConfig) !== 'code') {
         return this._startOpenAICompatibleSession(sessionId, options, providerConfig);
       }
-      externalCliPath = resolveCliBinary(providerConfig.cli_command || 'openclaude');
-      if (!externalCliPath) {
-        console.warn(`[chat-bridge] ${providerConfig.cli_command} binary not found — falling back to chat completion. Install with: npm install -g @gitlawb/openclaude`);
-        return this._startOpenAICompatibleSession(sessionId, options, providerConfig);
+      if (SDK_COMPATIBLE_CLI.has(providerConfig.cli_command)) {
+        externalCliPath = resolveCliBinary(providerConfig.cli_command || 'openclaude');
+        if (!externalCliPath) {
+          console.warn(`[chat-bridge] ${providerConfig.cli_command} binary not found — falling back to chat completion. Install with: npm install -g @gitlawb/openclaude`);
+          return this._startOpenAICompatibleSession(sessionId, options, providerConfig);
+        }
+      } else {
+        console.warn(`[chat-bridge] Active provider "${providerConfig.active}" uses cli_command "${providerConfig.cli_command}", which doesn't speak the Agent SDK protocol — Chat will use its fallback_providers instead`);
       }
     }
 
@@ -618,11 +874,11 @@ class ChatBridge {
       abortController,
     };
 
-    if (isExternalProvider) {
+    if (isExternalProvider && externalCliPath) {
       queryOptions.pathToClaudeCodeExecutable = externalCliPath;
       queryOptions.env = buildProviderEnv(providerConfig);
       console.log(`[chat-bridge] External provider "${providerConfig.active}" via ${externalCliPath} (model: ${resolveProviderModel(providerConfig) || 'default'})`);
-    } else {
+    } else if (!isExternalProvider) {
       const claudeExe = resolveClaudeExecutable();
       if (claudeExe) queryOptions.pathToClaudeCodeExecutable = claudeExe;
     }
@@ -661,6 +917,10 @@ class ChatBridge {
           // models, so REPLACE the system prompt to force the agent persona.
           // agentDef.model is a Claude model name — meaningless here; the
           // model comes from the provider's OPENAI_MODEL env var.
+          const priorMemory = loadAgentMemory(agentName);
+          if (priorMemory) {
+            promptAppend += '\n\n## Previous Session Memory (yours — resume/summarize before acting)\n' + priorMemory;
+          }
           queryOptions.systemPrompt = promptAppend + '\n\n' +
             'CRITICAL: You MUST fully embody this agent persona. ' +
             'You are NOT Claude, OpenClaude, or a generic assistant — you ARE ' + agentName + '. ' +
@@ -796,75 +1056,254 @@ class ChatBridge {
       abortController,
       agentName,
       sdkSessionId: sdkSessionId || null,
+      lastHudProviderId: null,
+      lastHudProviderModel: null,
     };
     this.sessions.set(sessionId, session);
 
-    // Run query in background
-    (async () => {
-      try {
-        console.log(`[chat-bridge] Starting query for session ${sessionId}, agent: ${agentName}, resume: ${sdkSessionId || 'new'}`);
-        console.log(`[chat-bridge] Query options:`, JSON.stringify({ cwd: queryOptions.cwd, agent: queryOptions.agent, resume: queryOptions.resume, allowedTools: queryOptions.allowedTools?.length }, null, 2));
-        const q = sdkQuery({ prompt: finalPrompt, options: queryOptions });
-        console.log(`[chat-bridge] Query created, starting iteration...`);
+    // Build provider fallback chain for external providers
+    let fallbackChain = [];
+    let currentFallbackIndex = 0;
+    if (isExternalProvider) {
+      // Drop attempts whose cli_command can't speak the Agent SDK protocol
+      // (see SDK_COMPATIBLE_CLI) — e.g. opencode. buildProviderFallbackChain
+      // always appends a trailing native-anthropic entry when the active
+      // provider isn't anthropic, so this never filters down to empty.
+      fallbackChain = buildProviderFallbackChain(providerConfig)
+        .filter((attempt) => SDK_COMPATIBLE_CLI.has(attempt.cliCommand));
+      console.log(`[chat-bridge] Built fallback chain with ${fallbackChain.length} attempts:`,
+        fallbackChain.map(c => `${c.providerId}:${c.model || 'native'}`).join(' → '));
+    }
 
-        for await (const message of q) {
-          if (!session.active) break;
+    // Run query with provider fallback
+    const runQueryWithFallback = async () => {
+      while (currentFallbackIndex < (fallbackChain.length || 1)) {
+        if (!session.active) return;
 
-          const eventDetail = message.type === 'stream_event' ? ` event=${message.event?.type} cb=${message.event?.content_block?.type || message.event?.delta?.type || ''}` : '';
-          if (message.type === 'system') {
-            console.log(`[chat-bridge] System message: subtype=${message.subtype}, agent=${message.agent || 'none'}, data=${JSON.stringify(message).slice(0, 200)}`);
-          } else {
-            console.log(`[chat-bridge] Message received: type=${message.type}${eventDetail}`);
+        // Apply current fallback config if using external provider
+        if (isExternalProvider && fallbackChain.length > 0) {
+          const attempt = fallbackChain[currentFallbackIndex];
+          console.log(`[chat-bridge] Attempt ${currentFallbackIndex + 1}/${fallbackChain.length}: ${attempt.providerId}:${attempt.model || 'native'}`);
+
+          // AbortController novo por attempt — abortar o anterior mata um
+          // child preso no backoff de retry sem derrubar a sessão nova.
+          if (currentFallbackIndex > 0) {
+            const freshAbort = new AbortController();
+            queryOptions.abortController = freshAbort;
+            session.abortController = freshAbort;
           }
 
-          // Capture SDK session ID from any message that has it
-          if (message.session_id && !session.sdkSessionId) {
-            session.sdkSessionId = message.session_id;
-            if (onMessage) {
-              onMessage({ type: 'session_id', sdkSessionId: message.session_id });
+          // Env do attempt montado do zero (vars de sistema + env do provider
+          // do attempt). NUNCA herdar o env do provider que falhou — uma
+          // OPENAI_BASE_URL/NVIDIA_API_KEY antiga sequestraria a chamada.
+          if (attempt.providerId === 'anthropic' && attempt.cliCommand === 'claude') {
+            // Claude nativo: env limpo, credenciais vêm de ~/.claude via HOME.
+            delete queryOptions.env;
+          } else {
+            queryOptions.env = buildProviderEnv({
+              active: attempt.providerId,
+              env_vars: { ...attempt.envVars },
+            });
+            if (attempt.baseUrl) {
+              queryOptions.env.OPENAI_BASE_URL = attempt.baseUrl;
             }
           }
 
-          // Auto-detect ticket creation in tool_result blocks.
-          if (message.type === 'user') {
-            const content = message.message?.content || message.content;
-            if (Array.isArray(content)) {
-              for (const block of content) {
-                if (block.type !== 'tool_result') continue;
-                const raw = Array.isArray(block.content)
-                  ? block.content.map(c => (typeof c === 'string' ? c : c?.text || '')).join('\n')
-                  : (typeof block.content === 'string' ? block.content : '');
-                const ticketId = detectCreatedTicketId(raw);
-                if (ticketId) {
-                  console.log(`[chat-bridge] ✓ Detected ticket creation: ${ticketId} — auto-binding to session ${sessionId}`);
-                  if (onMessage) {
-                    onMessage({ type: 'ticket_detected', ticketId });
+          // Update CLI path if provider changed
+          if (attempt.cliCommand && attempt.cliCommand !== providerConfig.cli_command) {
+            const cliPath = resolveCliBinary(attempt.cliCommand);
+            if (cliPath) {
+              queryOptions.pathToClaudeCodeExecutable = cliPath;
+            }
+          }
+
+          // Cada attempt começa uma run nova — não deixar o session_id da
+          // tentativa que falhou grudar no cliente.
+          session.sdkSessionId = sdkSessionId || null;
+        }
+
+        const hudProviderId = (isExternalProvider && fallbackChain.length > 0)
+          ? fallbackChain[currentFallbackIndex].providerId
+          : (providerConfig.active || 'anthropic');
+        const hudProviderModel = (isExternalProvider && fallbackChain.length > 0)
+          ? (fallbackChain[currentFallbackIndex].model || 'native')
+          : (resolveProviderModel(providerConfig) || 'default');
+        const turnStartedAt = Date.now();
+        _emitChatHud(session, onMessage, { busy: true, providerId: hudProviderId, providerModel: hudProviderModel });
+
+        let advanceAfterErrorResult = false;
+        try {
+          console.log(`[chat-bridge] Starting query for session ${sessionId}, agent: ${agentName}, resume: ${sdkSessionId || 'new'}`);
+          console.log(`[chat-bridge] Query options:`, JSON.stringify({ cwd: queryOptions.cwd, agent: queryOptions.agent, resume: queryOptions.resume, allowedTools: queryOptions.allowedTools?.length }, null, 2));
+          const q = sdkQuery({ prompt: finalPrompt, options: queryOptions });
+          console.log(`[chat-bridge] Query created, starting iteration...`);
+
+          for await (const message of q) {
+            if (!session.active) break;
+
+            const eventDetail = message.type === 'stream_event' ? ` event=${message.event?.type} cb=${message.event?.content_block?.type || message.event?.delta?.type || ''}` : '';
+            if (message.type === 'system') {
+              console.log(`[chat-bridge] System message: subtype=${message.subtype}, agent=${message.agent || 'none'}, data=${JSON.stringify(message).slice(0, 200)}`);
+            } else {
+              console.log(`[chat-bridge] Message received: type=${message.type}${eventDetail}`);
+            }
+
+            // O CLI faz retry interno com backoff exponencial e anuncia cada
+            // tentativa como system/api_retry. Em erro de capacidade (5xx/429)
+            // com fallback disponível, não vale esperar o backoff — corta e
+            // rotaciona o provider imediatamente.
+            if (message.type === 'system' && message.subtype === 'api_retry') {
+              const status = Number(message.error_status) || 0;
+              const attemptNum = Number(message.attempt) || 0;
+              const retryableStatus = status === 429 || (status >= 500 && status <= 599);
+              const hasMoreFallbacks = isExternalProvider &&
+                currentFallbackIndex < fallbackChain.length - 1;
+              if (hasMoreFallbacks && retryableStatus && attemptNum >= 2) {
+                console.warn(`[chat-bridge] api_retry ${attemptNum}x status=${status} on attempt ${currentFallbackIndex + 1} — advancing fallback chain early`);
+                advanceAfterErrorResult = true;
+                // Aborta ANTES do break: o child pode estar dormindo dezenas
+                // de segundos no backoff e o cleanup do iterator esperaria ele.
+                try { queryOptions.abortController.abort(); } catch {}
+                break;
+              }
+            }
+
+            // Erro de provider (503/429 do OmniRoute, "Maximum combo retry
+            // limit reached", etc.) NÃO vira exceção no Agent SDK — a query
+            // termina "normal" com um result de erro. Detectar aqui e avançar
+            // a cadeia de fallback em vez de entregar o erro pro chat.
+            if (message.type === 'result') {
+              // Real usage — same fields _transformMessage's 'result' case
+              // already reads (msg.usage, msg.duration_ms). tokensPerSec is
+              // a rough turn-average (total tokens / wall time), not a live
+              // streaming rate like the Terminal's opencode path gets from
+              // per-line NDJSON ticks — the Agent SDK doesn't expose partial
+              // usage, only the final total.
+              const usage = message.usage || {};
+              const totalTokens = (usage.input_tokens || 0) + (usage.output_tokens || 0) +
+                (usage.cache_creation_input_tokens || 0) + (usage.cache_read_input_tokens || 0);
+              const elapsedSec = Math.max(0.001, (Date.now() - turnStartedAt) / 1000);
+              _emitChatHud(session, onMessage, {
+                busy: false,
+                tokensPerSec: totalTokens > 0 ? Math.round(totalTokens / elapsedSec) : 0,
+                totalTokens: totalTokens || null,
+                heavy: totalTokens > CHAT_HUD_HEAVY_TOKEN_THRESHOLD,
+              });
+
+              const isErrorResult = message.is_error === true ||
+                (message.subtype && message.subtype !== 'success');
+              if (isErrorResult) {
+                const errText = [message.result, ...(Array.isArray(message.errors) ? message.errors : [])]
+                  .filter((x) => typeof x === 'string' && x)
+                  .join(' ') || JSON.stringify(message).slice(0, 500);
+                const hasMoreFallbacks = isExternalProvider &&
+                  currentFallbackIndex < fallbackChain.length - 1;
+                if (hasMoreFallbacks && session.active && !isFatalProviderError(errText)) {
+                  console.warn(`[chat-bridge] Error result (subtype=${message.subtype}) on attempt ${currentFallbackIndex + 1}: ${errText.slice(0, 300)} — advancing fallback chain`);
+                  advanceAfterErrorResult = true;
+                  break; // sai do for-await; o while tenta o próximo provider/modelo
+                }
+              }
+            }
+
+            // Capture SDK session ID from any message that has it
+            if (message.session_id && !session.sdkSessionId) {
+              session.sdkSessionId = message.session_id;
+              if (onMessage) {
+                onMessage({ type: 'session_id', sdkSessionId: message.session_id });
+              }
+            }
+
+            // Auto-detect ticket creation in tool_result blocks.
+            if (message.type === 'user') {
+              const content = message.message?.content || message.content;
+              if (Array.isArray(content)) {
+                for (const block of content) {
+                  if (block.type !== 'tool_result') continue;
+                  const raw = Array.isArray(block.content)
+                    ? block.content.map(c => (typeof c === 'string' ? c : c?.text || '')).join('\n')
+                    : (typeof block.content === 'string' ? block.content : '');
+                  const ticketId = detectCreatedTicketId(raw);
+                  if (ticketId) {
+                    console.log(`[chat-bridge] ✓ Detected ticket creation: ${ticketId} — auto-binding to session ${sessionId}`);
+                    if (onMessage) {
+                      onMessage({ type: 'ticket_detected', ticketId });
+                    }
                   }
                 }
               }
             }
+
+            if (onMessage) {
+              onMessage(this._transformMessage(message));
+            }
+          }
+          console.log(`[chat-bridge] Query iteration finished for session ${sessionId}`);
+
+          // Result de erro detectado no meio da iteração — tenta o próximo
+          // provider/modelo da cadeia em vez de encerrar a sessão.
+          if (advanceAfterErrorResult && session.active) {
+            // Mata o child da tentativa que falhou (pode estar dormindo no
+            // backoff de retry) — a próxima iteração cria um controller novo.
+            try { queryOptions.abortController.abort(); } catch {}
+            currentFallbackIndex++;
+            const next = fallbackChain[currentFallbackIndex];
+            console.warn(`[chat-bridge] Advancing to fallback ${currentFallbackIndex + 1}/${fallbackChain.length}: ${next.providerId}:${next.model || 'native'}`);
+            continue;
           }
 
-          if (onMessage) {
-            onMessage(this._transformMessage(message));
-          }
-        }
-        console.log(`[chat-bridge] Query iteration finished for session ${sessionId}`);
-
-        session.active = false;
-        this.sessions.delete(sessionId);
-        if (onComplete) onComplete({ sdkSessionId: session.sdkSessionId });
-      } catch (err) {
-        console.error(`[chat-bridge] Error in session ${sessionId}:`, err.message || err);
-        session.active = false;
-        this.sessions.delete(sessionId);
-        if (err.name === 'AbortError') {
+          session.active = false;
+          this.sessions.delete(sessionId);
           if (onComplete) onComplete({ sdkSessionId: session.sdkSessionId });
-        } else {
-          if (onError) onError(err);
+          return; // Success - exit fallback loop
+
+        } catch (err) {
+          // Abort interno disparado pelo avanço da cadeia (api_retry) — não é
+          // cancelamento do usuário; segue pro próximo provider/modelo.
+          if (advanceAfterErrorResult && session.active) {
+            currentFallbackIndex++;
+            const next = fallbackChain[currentFallbackIndex];
+            console.warn(`[chat-bridge] Advancing to fallback ${currentFallbackIndex + 1}/${fallbackChain.length} after internal abort: ${next.providerId}:${next.model || 'native'}`);
+            continue;
+          }
+
+          console.error(`[chat-bridge] Error in session ${sessionId} (attempt ${currentFallbackIndex + 1}):`, err.message || err);
+
+          // Avança a cadeia em qualquer erro não-fatal enquanto houver
+          // fallback — erros do CLI chegam como "process exited with code N"
+          // sem o texto 503/429, então filtrar só por padrão retryable
+          // deixaria a sessão morrer exatamente no caso que queremos cobrir.
+          const isRetryable = isExternalProvider && isRetryableProviderError(err);
+          const isFatal = isExternalProvider && isFatalProviderError(err);
+          const isAbort = err.name === 'AbortError';
+
+          if (!isFatal && !isAbort && isExternalProvider && session.active &&
+              currentFallbackIndex < fallbackChain.length - 1) {
+            currentFallbackIndex++;
+            console.warn(`[chat-bridge] ${isRetryable ? 'Retryable' : 'Non-fatal'} error, advancing to fallback ${currentFallbackIndex + 1}/${fallbackChain.length}: ${fallbackChain[currentFallbackIndex].providerId}:${fallbackChain[currentFallbackIndex].model || 'native'}`);
+            // Continue loop to try next fallback
+            continue;
+          }
+
+          if (isFatal) {
+            console.error(`[chat-bridge] Fatal provider error, not falling back: ${err.message}`);
+          }
+
+          // No more fallbacks or fatal error - propagate error
+          _emitChatHud(session, onMessage, { busy: false, tokensPerSec: 0 });
+          session.active = false;
+          this.sessions.delete(sessionId);
+          if (err.name === 'AbortError') {
+            if (onComplete) onComplete({ sdkSessionId: session.sdkSessionId });
+          } else {
+            if (onError) onError(err);
+          }
+          return;
         }
       }
-    })();
+    };
+
+    runQueryWithFallback();
 
     return { sessionId, sdkSessionId: session.sdkSessionId };
   }
@@ -1077,4 +1516,11 @@ class ChatBridge {
   }
 }
 
-module.exports = { ChatBridge };
+module.exports = {
+  ChatBridge,
+  // Exportados para testes
+  buildProviderFallbackChain,
+  isRetryableProviderError,
+  isFatalProviderError,
+  SDK_COMPATIBLE_CLI,
+};

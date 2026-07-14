@@ -1,11 +1,31 @@
 {
-  "active_provider": "nvidia",
+  "active_provider": "opencode",
   "providers": {
+    "omnirouter": {
+      "name": "OpenClaude (via OmniRoute)",
+      "description": "Gateway de IA auto-hospedado na VPS — roteia 237+ providers com fallback automático e compressão de tokens.",
+      "cli_command": "openclaude",
+      "mode": "code",
+      "env_vars": {
+        "CLAUDE_CODE_USE_OPENAI": "1",
+        "OPENAI_BASE_URL": "http://omniroute:20128/v1",
+        "OPENAI_API_KEY": "[REDACTED]",
+        "OPENAI_MODEL": "auto"
+      },
+      "default_base_url": "http://omniroute:20128/v1",
+      "default_model": "auto",
+      "requires_logout": true,
+      "fallback_providers": [
+        "nvidia",
+        "anthropic"
+      ]
+    },
     "anthropic": {
       "name": "Anthropic (Claude nativo)",
       "cli_command": "claude",
       "env_vars": {},
-      "requires_logout": false
+      "requires_logout": false,
+      "description": "Claude Code oficial via Anthropic API"
     },
     "openrouter": {
       "name": "OpenRouter",
@@ -23,7 +43,8 @@
       "fallback_models": [
         "openrouter/owl-alpha",
         "nex-agi/nex-n2-pro:free"
-      ]
+      ],
+      "description": "200+ modelos via OpenRouter (Claude, GPT, Gemini, Llama, etc.)"
     },
     "nvidia": {
       "name": "NVIDIA NIM",
@@ -59,7 +80,7 @@
         "haiku": "minimaxai/minimax-m3"
       },
       "fallback_providers": [
-        "openrouter",
+        "omnirouter",
         "anthropic"
       ]
     },
@@ -85,7 +106,8 @@
       },
       "default_model": "gemini-2.5-pro",
       "requires_logout": true,
-      "coming_soon": true
+      "coming_soon": true,
+      "description": "Gemini 2.5 Pro/Flash via Google AI"
     },
     "bedrock": {
       "name": "AWS Bedrock (em breve)",
@@ -96,7 +118,8 @@
         "AWS_BEARER_TOKEN_BEDROCK": "[REDACTED]"
       },
       "requires_logout": true,
-      "coming_soon": true
+      "coming_soon": true,
+      "description": "Claude via AWS Bedrock"
     },
     "vertex": {
       "name": "Google Vertex AI (em breve)",
@@ -108,7 +131,25 @@
       },
       "default_region": "us-east5",
       "requires_logout": true,
-      "coming_soon": true
+      "coming_soon": true,
+      "description": "Claude via Google Cloud Vertex AI"
+    },
+    "opencode": {
+      "name": "OpenCode",
+      "description": "Harness opencode — CLI agêntico com tool-use nativo, roteável por qualquer endpoint OpenAI-compatível (Base URL/API Key editáveis abaixo, igual ao OpenClaude). Ativado como active_provider em 2026-07-12; ver workspace/development/features/runtime-harness-agnostic-eval/.",
+      "cli_command": "opencode",
+      "mode": "code",
+      "env_vars": {
+        "OPENAI_BASE_URL": "https://omni.workflowapi.com.br/v1",
+        "OPENAI_API_KEY": "[REDACTED]"
+      },
+      "default_base_url": "https://omni.workflowapi.com.br/v1",
+      "default_model": "auto",
+      "requires_logout": false,
+      "fallback_providers": [
+        "nvidia",
+        "anthropic"
+      ]
     },
     "codex_auth": {
       "name": "OpenAI Codex (OAuth)",
@@ -133,5 +174,5 @@
       ]
     }
   },
-  "telegram_provider": "nvidia"
+  "telegram_provider": ""
 }

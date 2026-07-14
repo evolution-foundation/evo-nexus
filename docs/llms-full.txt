@@ -535,7 +535,7 @@ Skills that orchestrate the engineering agents.
 ### Tier 3 — Meta / utilities (5)
 
 - `dev-cancel` — clean stop of any active eng workflow
-- `dev-remember` — quick context persistence (lighter than mempalace)
+- `dev-remember` — quick context persistence (lighter than mempalace). See [MemPalace Guide](mempalace-guide.md) for the full memory reference.
 - `dev-ask` — single-shot query to a specific model (Claude/Codex/Gemini)
 - `dev-learner` — extract reusable skills from conversation patterns
 - `dev-skillify` — convert current conversation into a new skill
@@ -878,6 +878,141 @@ Persistent memory at `.claude/agent-memory/mako/`. Stores project context, user 
 
 ---
 
+# Guia curto — MemPalace para agentes
+
+Este guia diz, em uma página, **quando** um agente deve usar MemPalace e **como** ler/escrever memória no workspace. Para o brief técnico completo, veja `workspace/development/research/[C]research-mempalace-agent-guide-2026-06-16.md`.
+
+## 30-seconds cheatsheet
+
+- **Buscar:** `evo.get("/api/mempalace/search", params={"q": "...", "n": 5})`
+- **Indexar:** `evo.post("/api/mempalace/mine")`
+- **Status:** `evo.get("/api/mempalace/status")`
+- **Privado (1 agente):** `.claude/agent-memory/{agent}/`
+- **Compartilhado (todos):** `memory/*.md`
+- **Semântico (grande volume):** MemPalace
+
+## TL;DR
+
+| Onde | Use para | Como acessar |
+|---|---|---|
+| `.claude/agent-memory/{agent}/` | Notas privadas de um agente (decisões, gotchas, padrões de uma sessão) | Leitura/escrita de arquivo `.md` |
+| `memory/*.md` | Conhecimento compartilhado entre **todos** os agentes (pessoas, projetos, glossário, contexto) | Leitura/escrita de arquivo `.md`; o conteúdo vira hot cache via `CLAUDE.md` |
+| **MemPalace** (`dashboard/data/mempalace/`) | Busca semântica + BM25 sobre fontes grandes (código, docs, transcrições) | API REST `/api/mempalace/*`, MCP, CLI ou SDK Python |
+
+`memory/*.md` e MemPalace **não competem**: o markdown é a fonte curada, o MemPalace é o índice de busca.
+
+## Quando usar qual
+
+```
+Preciso guardar uma informação?
+│
+├── Contexto técnico de UMA sessão (gotcha, decisão local)
+│   → .claude/agent-memory/{agente}/   (markdown)
+│
+├── Conhecimento que TODOS os agentes precisam (pessoa, projeto, glossário)
+│   → memory/*.md                       (markdown)
+│
+└── Preciso BUSCAR semanticamente em muitos arquivos
+    → MemPalace                         (índice)
+```
+
+Regra do `dev-remember`: nota compartilhada → `memory/`. Quando o volume e a busca semântica justificarem (centenas de arquivos), use MemPalace.
+
+## Como ler
+
+### API REST (rotinas, heartbeats, scripts)
+
+```python
+from dashboard.backend.sdk_client import evo
+
+hits = evo.get("/api/mempalace/search", params={
+    "q": "como funciona o provider fallback",
+    "wing": "evo-nexus",
+    "n": 5,
+})
+for r in hits.get("results", []):
+    print(f"[{r['similarity']:.2f}] {r['source_file']}")
+```
+
+Outros endpoints úteis:
+
+| Método | Rota | Função |
+|---|---|---|
+| GET | `/api/mempalace/status` | Versão, drawers, wings, rooms, status do mining |
+| GET | `/api/mempalace/sources` | Fontes configuradas |
+| POST | `/api/mempalace/mine` | Dispara reindexação (opcional `source_index`) |
+
+Tudo requer `DASHBOARD_API_TOKEN` (injetado automaticamente pelo `evo` SDK).
+
+### MCP (dentro do Claude Code)
+
+```bash
+claude mcp add mempalace -- python -m mempalace.mcp_server \
+  --palace /home/sistemabritto/Documentos/evo-nexus/dashboard/data/mempalace
+```
+
+Depois, a tool `search_memories` aparece direto na sessão.
+
+### CLI (debug rápido)
+
+```bash
+.venv/bin/mempalace search "autenticação jwt" \
+  --palace dashboard/data/mempalace -n 5
+```
+
+## Como escrever
+
+**Ninguém escreve drawers à mão.** O ciclo é:
+
+1. Escreva o conteúdo em arquivos (`.md`, `.py`, `.ts`, …) dentro de uma fonte registrada.
+2. Dispare a indexação: `POST /api/mempalace/mine`.
+3. Acompanhe `GET /api/mempalace/status` (`mining.phase`, `files_done/total`).
+4. Pronto — buscas já enxergam o conteúdo.
+
+Para fixar `wing` e `rooms` de uma fonte, crie um `mempalace.yaml` na raiz dela. Caso contrário, o worker assume `wing = nome do diretório`, `room = general`.
+
+## Estrutura Wing → Room → Drawer
+
+| Nível | O que é | Exemplo |
+|---|---|---|
+| **Wing** | Projeto ou categoria top-level | `evo-nexus`, `evo-ai`, `docs` |
+| **Room** | Tópico dentro da wing | `architecture`, `decisions`, `technical` |
+| **Drawer** | Chunk de ~800 caracteres + metadata | Indexado automaticamente |
+
+Filtre por `wing`/`room` na busca quando souber o domínio — corta ruído.
+
+## MemPalace vs Knowledge Base (pgvector)
+
+São produtos **diferentes** no mesmo dashboard:
+
+| | MemPalace | Knowledge Base |
+|---|---|---|
+| Storage | ChromaDB local em `dashboard/data/mempalace/` | Postgres + pgvector (BYO) |
+| Escopo | Memória pessoal do workspace, offline | Multi-tenant, API-first para times e produtos (ex.: Evo Academy) |
+| Rota | `/api/mempalace/*` | `/api/knowledge/*` e `/api/knowledge/v1/*` |
+| Skills | — | `knowledge-{query,summarize,ingest,browse,organize,admin}` |
+
+Se a busca é para o agente raciocinar localmente, é MemPalace. Se é para servir clientes externos via API, é Knowledge Base.
+
+## Versão e observações
+
+- **MemPalace 3.4.0** instalado em `.venv/` (verificado em 2026-06-16).
+- Embedding padrão: `all-MiniLM-L6-v2` (384-dim, inglês). Para pt-BR, considere trocar para `embeddinggemma-300m-ONNX` — exige `mempalace repair rebuild-index`.
+- Worker de mining é subprocesso detached: se o dashboard reiniciar no meio, o worker antigo termina sozinho; o `/status` faz PID check no próximo poll.
+- ChromaDB não tem auth própria — a segurança vem do `require_permission` no Flask (`mempalace:view` e `mempalace:manage`).
+
+## Próximos passos sugeridos
+
+- Indexar `memory/` e `workspace/development/` como fontes do MemPalace para deixar todo o conhecimento curado searchable.
+- Atualizar `.claude/skills/dev-remember/SKILL.md` com link direto para este guia.
+
+---
+
+**Brief técnico completo:** `workspace/development/research/[C]research-mempalace-agent-guide-2026-06-16.md`
+
+
+---
+
 # Mentor — Courses & Education
 
 **Command:** `/mentor-courses` | **Color:** purple | **Model:** Sonnet
@@ -1168,6 +1303,8 @@ Memory is organized by type:
 | `reference` | Pointers to external systems |
 
 Each memory file uses frontmatter (`name`, `description`, `type`) and a `MEMORY.md` index file tracks all entries. Agents read memory at the start of each session and update it as they learn.
+
+For semantic search over large volumes of content (code, docs, transcripts), use **MemPalace** — the local vector memory system. See [MemPalace Guide](mempalace-guide.md) for the complete reference on when and how to use it.
 
 ## Custom Agents
 
@@ -1634,6 +1771,57 @@ Web UI built with:
 ### Integrations
 
 API clients in `.claude/skills/int-*/scripts/` that connect to external services. Each integration has a SKILL.md describing usage and a Python client script.
+
+
+---
+
+# Brain Repo — GitHub Backup
+
+The **Brain Repo** backs up the knowledge layers of the workspace (`memory/`, `workspace/`, `customizations/`, `config-safe/`) to a private GitHub repository — with secrets scanning before every push. It lives in the dashboard sidebar and gives you versioned, off-machine snapshots of everything the agents have learned.
+
+## What Gets Synced
+
+On every sync the pipeline runs: **mirror → secrets scan → commit → (tag) → push**.
+
+- Watched folders: `memory/`, `workspace/`, `customizations/`, `config-safe/`
+- `workspace/projects/` is **excluded** — user-cloned git repos have their own GitHub
+- Any file containing a detected secret is dropped from the mirror before the commit — never pushed
+
+## Connecting
+
+1. Open **Brain Repo** in the dashboard sidebar
+2. Provide a GitHub token (encrypted at rest with `BRAIN_REPO_MASTER_KEY`)
+3. Create a new repo or connect an existing one — the local working clone lives under `dashboard/data/brain-repos/<repo-name>`
+
+## Syncing
+
+- **Sync now** — enqueues a mirror+commit+push (async; the UI polls `sync_in_progress`)
+- **Milestone** — same pipeline with a named tag (`milestone/<name>`), for marking known-good states
+- Snapshots/tags can be browsed and restored from the UI
+
+## Portability (local ↔ VPS)
+
+The local clone path is stored in the DB, but it is resolved **per machine** at sync time:
+
+1. If the stored path has a valid clone, it's used as-is.
+2. If not (e.g. the `dashboard.db` was restored from a backup made on another machine), the canonical path `{workspace}/dashboard/data/brain-repos/{repo_name}` is tried and persisted back.
+3. If no clone exists anywhere — fresh volume, new VPS — the sync pipeline **re-clones automatically** from GitHub using the stored token and URL, then proceeds. The first sync after a migration just takes a bit longer.
+
+"Re-connect" is only required when the stored credentials themselves are missing or can't be decrypted (e.g. `BRAIN_REPO_MASTER_KEY` changed).
+
+## Troubleshooting
+
+| Error | Cause | Fix |
+|---|---|---|
+| `Local brain repo … is missing or corrupt — re-connect` | No valid clone and no `repo_url`/`repo_name` stored | Reconnect the repo from the UI |
+| `Could not decrypt stored token — re-connect` | `BRAIN_REPO_MASTER_KEY` missing or changed | Restore the key in `.env`, or reconnect with a fresh token |
+| `SYNC_IN_PROGRESS` (409) | Another sync is running | Wait for it, or cancel from the UI |
+| `git push failed` | Token expired / repo permissions | Regenerate the GitHub token and reconnect |
+
+## Related
+
+- Source: `dashboard/backend/routes/brain_repo.py`, `dashboard/backend/brain_repo/job_runner.py`
+- [Environment Variables](../reference/env-variables.md) — `BRAIN_REPO_MASTER_KEY`
 
 
 ---
@@ -2206,6 +2394,8 @@ EvoNexus uses Anthropic's `claude` CLI by default. To run on any other backend (
 | Provider | Binary | Notes |
 |---|---|---|
 | **Anthropic** (default) | `claude` | Native Anthropic auth, no extra config |
+| **NVIDIA NIM** | `openclaude` | OpenAI-compatible endpoint (`integrate.api.nvidia.com/v1`) — DeepSeek, GLM, Kimi, Qwen, Nemotron and other hosted models with generous free tiers |
+| **OmniRoute** (`omnirouter`) | `openclaude` | Self-hosted gateway (237+ providers, automatic fallback, token compression). On the VPS stack it runs as the `omniroute` service and is reached via the internal Swarm alias `http://omniroute:20128/v1` — works even when the container has no external DNS |
 | **OpenRouter** | `openclaude` | 200+ models via one API — Claude, GPT, Gemini, Llama, etc. |
 | **OpenAI** | `openclaude` | GPT-4o, GPT-4.1, o3 via OpenAI API |
 | **Google Gemini** | `openclaude` | Gemini 2.5 Pro/Flash via Google AI |
@@ -2233,6 +2423,22 @@ The Providers page shows a banner at the top indicating whether `claude` and `op
 The active provider is stored in `config/providers.json`. Both the terminal-server and the ADW runner re-read this file on every session spawn, so switching takes effect **immediately** — no restart needed.
 
 A green "Active" badge marks the currently selected provider. Every other provider can still be configured and tested without affecting the active one.
+
+## Fallback Chain (heartbeats and background runs)
+
+Heartbeats and other background invocations don't call the active provider blindly — they go through `dashboard/backend/provider_fallback.py`, which builds a **provider chain** and rotates on failure (429/quota, network errors, non-zero exits):
+
+- The chain starts at `active_provider` and follows its `fallback_providers` list in `config/providers.json` (e.g. `nvidia → omnirouter → anthropic`).
+- Within a provider, `fallback_models` rotates through alternate models before leaving the provider (NVIDIA ships a 12-model chain).
+- The last link is usually `anthropic` (native `claude`) — note that on a fresh VPS container this requires a `claude` login, otherwise the final attempt exits with code 1.
+- Failed provider/model pairs go on a short cooldown so parallel runs don't hammer a throttled endpoint.
+- Disable with `HEARTBEAT_PROVIDER_FALLBACK=0`.
+
+**VPS note:** containers on the Swarm stack may not resolve external hosts (ENOTFOUND on `integrate.api.nvidia.com`, `openrouter.ai`, …). Keep `omnirouter` in the chain — it resolves via internal Docker DNS and is the reliable path for heartbeats on the VPS.
+
+## Per-Channel Provider: `telegram_provider`
+
+`config/providers.json` also accepts a `telegram_provider` key that overrides the provider used by the **Telegram provider bot** (Magneto) without touching the terminal's `active_provider`. On the VPS this is set to `omnirouter` for the DNS reason above. See [Telegram Integration](../integrations/telegram.md#provider-mode-magneto).
 
 ## Testing a Provider
 
@@ -4571,6 +4777,15 @@ Look at the run's `stderr_tail` and `stdout_tail`. Common causes:
 - Agent hit `max_turns` before returning (raise the cap or tighten the prompt)
 - Agent hit `timeout_seconds` (integration call was slow — raise timeout or add a retry inside the agent)
 
+### Provider fallback (exit code 1, `attempt #N`)
+
+Heartbeat runs go through the **provider fallback chain** (`provider_fallback.py`): starting at the `active_provider` in `config/providers.json` and rotating through `fallback_models` / `fallback_providers` on 429s and errors. A failure notification with `attempt #3` means the whole chain was exhausted — check each link:
+
+- External providers (NVIDIA, OpenRouter) fail with ENOTFOUND on VPS containers without external DNS — keep `omnirouter` (the internal OmniRoute gateway) in the chain.
+- The final `anthropic` link runs native `claude`, which needs a login; on a fresh container it exits with code 1 in seconds.
+
+See [Providers → Fallback Chain](dashboard/providers.md#fallback-chain-heartbeats-and-background-runs).
+
 ### YAML and DB drift
 
 If you edited `config/heartbeats.yaml` by hand and the dashboard still shows the old state, run:
@@ -6169,6 +6384,7 @@ Direct HTTP calls to service APIs, executed by skills and routines via Python sc
 | YouTube | @pixel | `int-youtube`, `social-youtube-report` |
 | Instagram | @pixel | `int-instagram`, `social-instagram-report` |
 | LinkedIn | @pixel | `int-linkedin`, `social-linkedin-report` |
+| X / Twitter | @pixel | `post_to_x.py`, `publish_scheduled.py` (posting via editorial calendar) |
 | Evolution API | @pulse | `int-evolution-api`, `pulse-daily` |
 | Evolution Go | @pulse | `int-evolution-go`, `pulse-daily` |
 | Evo CRM | @nex | `int-evo-crm` |
@@ -6177,12 +6393,12 @@ API clients read credentials from `.env` at runtime.
 
 ### OAuth Flows
 
-Social media accounts (YouTube, Instagram, LinkedIn) use OAuth for authentication. The dashboard provides a built-in OAuth flow:
+Social media accounts (YouTube, Instagram, LinkedIn, X/Twitter) use OAuth for authentication. The dashboard provides a built-in OAuth flow:
 
 1. Go to **Integrations** in the dashboard
 2. Click **Connect** on the platform you want
 3. Complete the OAuth consent screen
-4. Tokens are saved to `.env` automatically
+4. Tokens are saved automatically — `SOCIAL_*` keys go to the persistent store `config/social.env` (see [X / Twitter](x-twitter.md#how-tokens-are-stored)); other keys go to `.env`
 
 OAuth requires client credentials configured in `.env`:
 
@@ -6247,6 +6463,7 @@ See individual integration guides for setup steps:
 - [YouTube](youtube.md) -- Channel stats, videos, engagement (OAuth)
 - [Instagram](instagram.md) -- Profile, posts, engagement (Graph API + OAuth)
 - [LinkedIn](linkedin.md) -- Profile and org stats (OAuth)
+- [X / Twitter](x-twitter.md) -- Automated posting with token rotation (OAuth PKCE)
 
 **Development:**
 - [GitHub](github.md) -- PRs, issues, releases via MCP + CLI
@@ -6378,6 +6595,8 @@ Telegram provides real-time messaging and notifications via a bot connected thro
 
 > **Channel mode:** Telegram also works as a [Channel](../guides/channels.md#setup-telegram) — a bidirectional chat bridge that pushes messages into your Claude Code session. Start with `make telegram`. See the [Channels Guide](../guides/channels.md) for full setup including pairing and security.
 
+> **Provider mode:** on headless deployments (VPS/Swarm) where Channels can't run — non-Anthropic providers can't reliably call the `reply` MCP tool — the bot runs in **provider mode** instead. See [Provider Mode (Magneto)](#provider-mode-magneto) below.
+
 ## Setup
 
 ### 1. Create a Bot
@@ -6442,6 +6661,23 @@ reply(chat_id="...", text="Your reply", reply_to="message_id")
 - Edits do not trigger push notifications -- send a new message for important updates
 - The Bot API has no history or search -- only incoming messages are visible
 - Access control is managed via the `/telegram:access` skill
+
+## Provider Mode (Magneto)
+
+`scripts/telegram_provider_bot.py` is a standalone bot runtime that answers chat messages using the workspace's configured LLM provider via plain chat completions — no Claude Code session, no MCP. It's the default on the VPS stack (`TELEGRAM_MODE=provider`), where it runs as the `evonexus_telegram` service.
+
+Key facts:
+
+- **Provider**: reads `telegram_provider` from `config/providers.json` (falls back to `active_provider`). On the VPS it points at `omnirouter` — the internal OmniRoute gateway — because containers can't resolve external provider hosts. Switch at runtime with the `/provider <id>` chat command.
+- **No tools**: the model behind the bot is a plain chat completion — it cannot execute HTTP calls or shell commands by itself. Everything it should "know how to do" is fetched **server-side by the runtime and injected into the prompt**:
+  - **URL contents** — links in your message are fetched and their text injected, so the bot can "read" pages.
+  - **MemPalace recall** — the message is used as a semantic query against `GET /api/mempalace/search`; top hits are injected as persistent workspace memory.
+  - **Nexus status** — when the message mentions crons/rotinas/heartbeats/scheduler, the runtime calls `GET /api/heartbeats` (last run + error per heartbeat) and `GET /api/routines` and injects real data, so "how are the crons doing?" gets answered with facts instead of "I don't have access".
+- **Voice notes**: audio messages are transcribed via Groq Whisper (`GROQ_API_KEY`) and treated as text input.
+- **Memory**: a rolling window of the last messages per chat is kept on disk and injected as conversation memory.
+- **Heartbeat notifications**: heartbeat failures and outcomes are pushed to the configured chat — this is where `⚠️ Heartbeat FAIL` alerts come from.
+
+To extend what the bot can answer, follow the same pattern: add a `fetch_*_context()` function that detects the topic, calls the API server-side, and injects the result into `build_prompt()` — do **not** add prompt instructions telling the model to call APIs itself (it can't).
 
 ## Skills That Use Telegram
 
@@ -6525,6 +6761,71 @@ The `int-todoist` skill uses the `todoist` CLI:
 | Review Todoist | 06:50 BRT daily | `make review` |
 | Good Morning | 07:00 BRT daily | `make morning` |
 | End of Day | 21:00 BRT daily | `make eod` |
+
+
+---
+
+# X / Twitter Integration
+
+Automated posting to X via OAuth 2.0 (PKCE). The editorial calendar routine ("Publicar Posts Sociais (X)") dispatches scheduled posts through `scripts/publish_scheduled.py` → `scripts/post_to_x.py`, with automatic token refresh and rate-limit retry.
+
+## How Tokens Are Stored
+
+X rotates the **refresh token on every refresh** — the old one is invalidated immediately. Because of that, tokens live in a dedicated, writable, persistent store instead of static env vars:
+
+| Store | Path | Notes |
+|---|---|---|
+| **Social token store** | `config/social.env` | Source of truth for all `SOCIAL_*` keys. Gitignored, `chmod 600`. On the VPS it sits in the `evonexus_config` volume — shared by the dashboard and the scheduler, survives redeploys |
+| Root `.env` | `.env` | Holds `TWITTER_CLIENT_ID` / `TWITTER_CLIENT_SECRET`; also receives tokens when connecting via the standalone `social-auth` app |
+| Process env | — | Env vars of the stack; lowest precedence for `SOCIAL_*` keys |
+
+Precedence for `SOCIAL_*` keys: `config/social.env` wins (it holds the freshest rotated tokens), **except** when a manual reconnection wrote a newer `TOKEN_CREATED_AT` to `.env` — then that account's keys from `.env` win. `scripts/seed_social_env.py` exports the social keys from `.env` into `config/social.env` (use `--print` to paste the content on another machine).
+
+## Connecting an Account
+
+### Via the dashboard (recommended on the VPS)
+
+1. Make sure `TWITTER_CLIENT_ID` (and optionally `TWITTER_CLIENT_SECRET`) are configured — the X app must list `https://<your-dashboard-domain>/callback/twitter` as a callback URL.
+2. Open `https://<your-dashboard-domain>/connect/twitter` and authorize.
+3. Tokens are written to `config/social.env` in the shared volume — the scheduler picks them up on the next posting run, no restart needed.
+
+### Via the standalone app (local)
+
+```bash
+python3 social-auth/app.py     # opens localhost:8765
+```
+
+Connect X there; tokens land in the root `.env`. Run `python3 scripts/seed_social_env.py` afterwards to sync them into `config/social.env`.
+
+## Posting
+
+```bash
+python3 scripts/post_to_x.py "Tweet text" [--media image.png] [--account N] [--dry-run]
+```
+
+- Auto-refreshes expired access tokens (X access tokens last ~2h) and persists the rotated pair back to `config/social.env`.
+- Retries with backoff on 429 (free tier resets every 15 min).
+- Multi-account via `SOCIAL_TWITTER_<N>_*` and `--account N`.
+
+## Rules That Save You Pain
+
+- **Only one side should post/refresh.** If both your local machine and the VPS refresh the same refresh token, each rotation invalidates the other side's token and the integration dies with `"Value passed for the token was invalid"`. Pick where the posting routine runs (normally the VPS scheduler) and let the other side go stale.
+- **A bearer token is read-only.** Posting requires the OAuth user-context flow with `tweet.write` — an app-only `BEARER_TOKEN` cannot publish.
+- If the refresh token is ever invalidated, reconnect via the dashboard (`/connect/twitter`) — there is no way to revive it.
+
+## Troubleshooting
+
+| Error | Cause | Fix |
+|---|---|---|
+| `No SOCIAL_TWITTER account found` | No tokens in `config/social.env` / `.env` | Connect via `/connect/twitter` (dashboard) or `social-auth/app.py` (local) |
+| `Invalid state — CSRF protection` on callback | Session cookie not sent on the cross-site redirect | Fixed in the dashboard (SameSite=Lax + ProxyFix); update the image if you still see it |
+| `Token expired (401) and refresh failed` | Refresh token rotated elsewhere or revoked | Reconnect the account |
+| `Only SOCIAL_TWITTER bearer token found` | Account saved with app-only bearer | Redo the OAuth flow (needs `tweet.write`) |
+
+## Related
+
+- [Social Accounts env pattern](../reference/env-variables.md#social-accounts)
+- Source: `scripts/post_to_x.py`, `scripts/publish_scheduled.py`, `social-auth/auth/twitter.py`, `social-auth/env_manager.py`
 
 
 ---
@@ -6796,6 +7097,183 @@ extensions and indexes.
 
 - Wizard: **Knowledge → Connections → New** in the dashboard.
 - Source for the validation: `dashboard/backend/knowledge/auto_migrator.py`.
+
+
+---
+
+# EvoNexus Plugin Contract
+
+This document describes the plugin.yaml schema for EvoNexus plugins, including capabilities, validated fields, and host-enforced contracts.
+
+---
+
+## plugin.yaml — Top-Level Fields
+
+```yaml
+schema_version: "1.0"       # required; must be "1.0"
+name: string                 # human-readable name
+slug: string                 # kebab-case identifier; unique across plugins
+version: string              # semver
+description: string
+author: string
+capabilities:                # list of declared capabilities (see below)
+  - capability_name
+```
+
+---
+
+## Capabilities
+
+A capability must be declared in `capabilities:` before the corresponding block is used. Unknown capabilities are rejected at install time.
+
+| Capability | Enum value | Purpose |
+|---|---|---|
+| `readonly_data` | `readonly_data` | Expose plugin data to agent queries |
+| `custom_tools` | `custom_tools` | Register callable tools on agents |
+| `public_pages` | `public_pages` | Token-gated public web pages served by host |
+| `safe_uninstall` | `safe_uninstall` | 3-step uninstall wizard with data preservation |
+
+---
+
+## `public_pages` — Token-Gated Public Pages
+
+Requires `capabilities: [public_pages]`.
+
+```yaml
+public_pages:
+  - id: string                       # unique within this plugin
+    description: string
+    route_prefix: string             # e.g. "orders"; becomes /p/<slug>/orders/<token>
+    token_source:
+      table: string                  # must start with <slug>_ (snake_case)
+      column: string                 # column holding the access token (snake_case)
+    bundle: string                   # must start with ui/public/
+    custom_element_name: string      # e.g. "my-plugin-orders"
+    auth_mode: token                 # only "token" supported in v1
+    rate_limit_per_ip: string        # e.g. "60/minute"
+    audit_action: string             # logged per request
+```
+
+### Routes
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/p/<slug>/<prefix>/<token>` | Serve the HTML bundle (portal entry) |
+| `GET` | `/p/<slug>/<prefix>/<token>/data` | Run a `public_via`-tagged readonly query |
+| `GET` | `/p/<slug>/<prefix>/<token>/public-assets/<path>` | Serve static assets from `ui/public/` |
+
+All three endpoints:
+1. Validate the token parametrically against `token_source.table/column` (SQL: `SELECT 1 FROM <table> WHERE <column> = ?`)
+2. Apply rate limiting (60 req/min on portal, 120 req/min on data)
+3. Emit security headers (CSP, X-Content-Type-Options, Referrer-Policy, HSTS)
+4. Write an audit log row
+
+### Linking a `readonly_data` query to a public page
+
+```yaml
+readonly_data:
+  queries:
+    - name: order_summary
+      sql: "SELECT id, status, total FROM nutri_orders WHERE id = :order_id"
+      public_via: orders          # id of the public_page above
+      bind_token_param: order_id  # parameter name that receives the token value
+```
+
+`public_via` must reference a declared `public_pages[].id`. When set, `bind_token_param` is required; the validated token value is injected at query time.
+
+---
+
+## `safe_uninstall` — 3-Step Uninstall Wizard
+
+Requires `capabilities: [safe_uninstall]`.
+
+```yaml
+safe_uninstall:
+  enabled: bool                     # true = enforce wizard; false = legacy confirm()
+  block_uninstall: bool             # if true, uninstall is unconditionally blocked (409)
+  reason: string                    # displayed in wizard Step 1 (regulatory context)
+
+  user_confirmation:
+    checkbox_label: string          # Step 1 checkbox text
+    typed_phrase: string            # Step 3 required phrase (exact match)
+
+  pre_uninstall_hook:
+    script: string                  # relative path inside plugin dir (e.g. scripts/export.py)
+    output_dir: string              # where the export lands (relative to plugin dir)
+    timeout_seconds: int            # 1–600
+    must_produce_file: bool         # if true, fail if output_dir is empty after hook
+
+  preserved_tables:                 # tables to rename rather than drop
+    - <slug>_tablename              # must be prefixed with <slug>_
+
+  preserved_host_entities:          # host-managed tables with partial row preservation
+    host_table_name:
+      "SQL condition for rows to KEEP"
+                                    # rows matching NOT (condition) are deleted
+
+  block_uninstall: false
+```
+
+### Host enforcement
+
+When `enabled: true`:
+
+1. **Admin role required** — non-admin users receive 403.
+2. **Confirmation phrase** — `DELETE /api/plugins/<slug>` body must include `confirmation_phrase` matching `user_confirmation.typed_phrase`.
+3. **Export verification** — `exported_at` path must be provided and the file must exist.
+4. **ZIP password** — `zip_password` must be present (forwarded to pre-uninstall hook if configured).
+5. **Pre-uninstall hook** — if configured, runs in a sandboxed subprocess with no secret env vars (only `PLUGIN_SLUG`, `PLUGIN_VERSION`, `OUTPUT_DIR`, `DB_READONLY_PATH`). Hook failure aborts uninstall.
+6. **Preserved tables** — tables listed in `preserved_tables` are renamed to `_orphan_<slug>_<tablename>` and recorded in `plugin_orphans`. They are **not dropped**.
+7. **Cascade-DELETE filtering** — for tables listed in `preserved_host_entities`, only rows NOT matching the preservation condition are deleted.
+
+### Force-uninstall escape hatch
+
+Setting `EVONEXUS_ALLOW_FORCE_UNINSTALL=1` in the host environment bypasses all safe_uninstall checks. Every force-uninstall is logged as `plugin_uninstall_force` in the audit table with the acting user's identity. This flag is intended for emergency recovery only.
+
+### Reinstall after safe_uninstall
+
+On reinstall of a plugin with orphaned tables:
+
+1. Host checks `plugin_orphans` for unrecovered rows.
+2. If present, compares `tarball_sha256` of the incoming tarball against `original_sha256` recorded at uninstall time.
+3. SHA256 mismatch → install blocked unless request includes `confirmed_sha256_change: true` (explicit operator acknowledgment).
+4. On SHA256 match (or explicit override): orphan tables are renamed back (`_orphan_<slug>_<table>` → `<table>`) before install.sql runs.
+
+### `plugin_orphans` table (host-managed)
+
+```sql
+CREATE TABLE plugin_orphans (
+    id TEXT PRIMARY KEY,
+    slug TEXT NOT NULL,
+    tablename TEXT NOT NULL,        -- original name (before _orphan_ prefix)
+    orphaned_at TEXT NOT NULL,
+    orphaned_by_user_id INTEGER,
+    original_plugin_version TEXT,
+    original_sha256 TEXT,
+    original_publisher_url TEXT,
+    recovered_at TEXT,              -- NULL until reinstall recovery
+    UNIQUE(slug, tablename)
+);
+```
+
+---
+
+## Security Notes
+
+- Plugin SQL identifiers (`table`, `column`) are validated at install time against `^[a-z][a-z0-9_]*$`. The host never interpolates untrusted input into SQL identifiers.
+- Token values in public-page routes are always bound as SQL parameters (`?`), never interpolated.
+- Pre-uninstall hooks run with a read-only DB copy; no write access and no secret env vars.
+- SQL in `readonly_data.queries` must not reference `_orphan_*` tables (rejected at install via schema validator).
+- Rate limiting is applied at the IP level on all public endpoints (flask-limiter, in-memory storage, single-process).
+
+---
+
+## Changelog
+
+| Version | Change |
+|---|---|
+| v1.0.0 | Initial contract: `readonly_data`, `custom_tools` |
+| v1.1.0 | Added `public_pages` (B2) and `safe_uninstall` (B3) capabilities |
 
 
 ---
@@ -7453,6 +7931,8 @@ Social media accounts are managed via the dashboard Integrations page after OAut
 SOCIAL_{PLATFORM}_{N}_{FIELD}
 ```
 
+**Where they live:** `SOCIAL_*` keys are written to `config/social.env` — a dedicated, gitignored token store (on the VPS: the `evonexus_config` volume, shared between dashboard and scheduler). This matters because some platforms (X) rotate refresh tokens on every refresh, so the store must be writable and persistent. The root `.env` and process env are still read as fallbacks; `SOCIAL_ENV_PATH` overrides the store location. See [X / Twitter](../integrations/x-twitter.md#how-tokens-are-stored) for the precedence rules.
+
 Examples:
 
 ```env
@@ -7519,6 +7999,10 @@ Configure via the dashboard at `/knowledge/settings` — the provider is locked 
 | `AI_IMG_CREATOR_CF_TOKEN` | Gateway mode | Gateway auth token (from gateway Settings > Authentication) |
 | `AI_IMG_CREATOR_OPENROUTER_KEY` | Direct OpenRouter | OpenRouter API key (starts with `sk-or-...`) |
 | `AI_IMG_CREATOR_GEMINI_KEY` | Direct Google | Google AI Studio API key (starts with `AI...`) |
+| `AI_IMG_CREATOR_OPENAI_KEY` | OpenAI Images API | Platform key (billing on platform.openai.com) for `gpt-image-2`. Falls back to `OPENAI_API_KEY`. ChatGPT Plus/Codex OAuth tokens cannot generate images |
+| `AI_IMG_CREATOR_OMNIROUTE_KEY` | OmniRoute gateway | Key of the self-hosted OmniRoute gateway (`--provider omniroute`) |
+| `AI_IMG_CREATOR_OMNIROUTE_BASE_URL` | Optional | OmniRoute base URL — defaults to `http://omniroute:20128/v1` (VPS stack alias) |
+| `NVIDIA_API_KEY` | NVIDIA NIM | Enables `--provider nvidia` (FLUX models, free tier) |
 
 Gateway mode activates when all three `AI_IMG_CREATOR_CF_*` vars are set. Falls back to direct mode if gateway fails. You only need one provider configured (either Cloudflare or at least one direct key).
 
@@ -7526,6 +8010,10 @@ Gateway mode activates when all three `AI_IMG_CREATOR_CF_*` vars are set. Falls 
 - **Cloudflare Gateway**: [dash.cloudflare.com](https://dash.cloudflare.com) > AI > AI Gateway > Create Gateway. See [docs/skills/ai-image-creator.md](../skills/ai-image-creator.md) for full setup.
 - **OpenRouter key**: [openrouter.ai/keys](https://openrouter.ai/keys) > Create Key.
 - **Google AI Studio key**: [aistudio.google.com/apikey](https://aistudio.google.com/apikey) > Create API Key.
+- **OpenAI platform key**: [platform.openai.com/api-keys](https://platform.openai.com/api-keys) > Create — must be a billing-enabled platform key.
+- **OmniRoute key**: from your self-hosted OmniRoute instance (Dashboard → API Keys).
+
+All of these can be pasted in the dashboard card **Integrations → AI Image Creator**.
 
 
 ---
@@ -8627,7 +9115,7 @@ The `/tasks` page shows:
 
 # AI Image Creator
 
-Generate PNG images using AI models — Gemini, FLUX.2, Riverflow, SeedDream, GPT-5 Image — routed through Cloudflare AI Gateway (BYOK) or directly via OpenRouter/Google AI Studio. Also analyzes and describes existing images using multimodal vision.
+Generate PNG images using AI models — Gemini, FLUX.2, Riverflow, SeedDream, GPT-5 Image, GPT Image 2 — routed through Cloudflare AI Gateway (BYOK), directly via OpenRouter/Google AI Studio/NVIDIA NIM/OpenAI, or through the self-hosted OmniRoute gateway. Also analyzes and describes existing images using multimodal vision.
 
 **Skill name:** `ai-image-creator`
 **Trigger:** "generate an image", "create a PNG", "make an icon", "describe this image", "analyze this image"
@@ -8645,6 +9133,10 @@ The `ai-image-creator` skill wraps a Python script (`generate-image.py`) that ca
 | `flux2` | `black-forest-labs/flux.2-max` | OpenRouter | Image-only |
 | `seedream` | `bytedance-seed/seedream-4.5` | OpenRouter | Image-only |
 | `gpt5` | `openai/gpt-5-image` | OpenRouter | Multimodal |
+| `image2` | `gpt-image-2` | OpenAI Images API / OmniRoute | Image-only |
+| `nvidia-flux2-klein-4b` | `black-forest-labs/flux.2-klein-4b` | NVIDIA NIM | Image-only |
+| `nvidia-flux-dev` | `black-forest-labs/flux.1-dev` | NVIDIA NIM | Image-only |
+| `nvidia-flux-schnell` | `black-forest-labs/flux.1-schnell` | NVIDIA NIM | Image-only |
 
 **Multimodal** models (gemini, gpt5) accept reference images for editing/style transfer and can analyze existing images. **Image-only** models (riverflow, flux2, seedream) generate from text prompts only.
 
@@ -8749,17 +9241,52 @@ export AI_IMG_CREATOR_GEMINI_KEY="AIyour-key-here"
 
 ---
 
+## Setup Option D: OpenAI Images API (gpt-image-2)
+
+Direct access to OpenAI's `gpt-image-2` via the Images API. Excellent text rendering (including Portuguese accents) — the best pick for text-critical art.
+
+1. Get a **platform API key** at [platform.openai.com](https://platform.openai.com) (billing required). **ChatGPT Plus / Codex OAuth tokens cannot generate images** — they lack the images scope and return 401.
+2. Set the key (or paste it in the dashboard **Integrations → AI Image Creator** card):
+
+```bash
+export AI_IMG_CREATOR_OPENAI_KEY="sk-..."   # falls back to OPENAI_API_KEY
+```
+
+3. Use `--provider openai` (or just say "image2" — the keyword auto-selects the provider). `-a` maps to the supported sizes (1024x1024, 1536x1024, 1024x1536); `-r` and `--analyze` are not supported here.
+
+---
+
+## Setup Option E: OmniRoute Gateway (self-hosted)
+
+Routes the same `gpt-image-2` Images API call through the self-hosted [OmniRoute](../dashboard/providers.md) gateway instead of api.openai.com. Only the key is needed — the base URL defaults to the VPS stack alias `http://omniroute:20128/v1`.
+
+```bash
+export AI_IMG_CREATOR_OMNIROUTE_KEY="your-omniroute-key"
+# outside the Swarm stack, point at your gateway:
+export AI_IMG_CREATOR_OMNIROUTE_BASE_URL="https://your-gateway/v1"   # optional
+```
+
+Use `--provider omniroute`. The gateway must proxy `POST /v1/images/generations`.
+
+---
+
 ## Environment Variables Reference
 
-| Variable | Option A | Option B | Option C | Description |
-|----------|----------|----------|----------|-------------|
-| `AI_IMG_CREATOR_CF_ACCOUNT_ID` | Required | — | — | Cloudflare account ID |
-| `AI_IMG_CREATOR_CF_GATEWAY_ID` | Required | — | — | AI Gateway name |
-| `AI_IMG_CREATOR_CF_TOKEN` | Required | — | — | Gateway auth token |
-| `AI_IMG_CREATOR_OPENROUTER_KEY` | Optional* | Required | — | OpenRouter API key |
-| `AI_IMG_CREATOR_GEMINI_KEY` | Optional* | — | Required | Google AI Studio API key |
+| Variable | Option A | Option B | Option C | Option D | Option E | Description |
+|----------|----------|----------|----------|----------|----------|-------------|
+| `AI_IMG_CREATOR_CF_ACCOUNT_ID` | Required | — | — | — | — | Cloudflare account ID |
+| `AI_IMG_CREATOR_CF_GATEWAY_ID` | Required | — | — | — | — | AI Gateway name |
+| `AI_IMG_CREATOR_CF_TOKEN` | Required | — | — | — | — | Gateway auth token |
+| `AI_IMG_CREATOR_OPENROUTER_KEY` | Optional* | Required | — | — | — | OpenRouter API key |
+| `AI_IMG_CREATOR_GEMINI_KEY` | Optional* | — | Required | — | — | Google AI Studio API key |
+| `AI_IMG_CREATOR_OPENAI_KEY` | — | — | — | Required | — | OpenAI platform key for gpt-image-2 (falls back to `OPENAI_API_KEY`) |
+| `AI_IMG_CREATOR_OMNIROUTE_KEY` | — | — | — | — | Required | OmniRoute gateway key |
+| `AI_IMG_CREATOR_OMNIROUTE_BASE_URL` | — | — | — | — | Optional | Gateway base URL (default `http://omniroute:20128/v1`) |
+| `NVIDIA_API_KEY` | — | — | — | — | — | Enables `--provider nvidia` (FLUX models, free tier) |
 
 *For Option A (gateway), provider keys are stored in Cloudflare as BYOK — you do not need to set `OPENROUTER_KEY` or `GEMINI_KEY` locally. Gateway mode activates when all three `CF_*` vars are set and falls back to direct mode if the gateway fails.
+
+All of these can also be configured from the dashboard: **Integrations → AI Image Creator**.
 
 Add these to your `.env` file (used by the workspace) or directly to your shell profile. See [env-variables.md](env-variables.md) for full reference.
 
@@ -8852,6 +9379,9 @@ Typical Pixel workflow:
 | `uv: command not found` | uv not installed | `curl -LsSf https://astral.sh/uv/install.sh \| sh` or `brew install uv` |
 | `BYOK key not found` | Wrong alias in CF Provider Keys | Verify aliases: `default` for OpenRouter, `aistudio` for Google AI Studio |
 | Image-only model + reference image | riverflow/flux2/seedream don't accept reference images | Switch to a multimodal model: `gemini` or `gpt5` |
+| `401` on `--provider openai` with a ChatGPT Plus/Codex token | OAuth tokens lack the images scope | Use a **platform** API key (billing on platform.openai.com) |
+| `AI_IMG_CREATOR_OMNIROUTE_KEY not set` | OmniRoute provider selected without a key | Paste the gateway key in **Integrations → AI Image Creator** or the `.env` |
+| 404/error via OmniRoute | Gateway doesn't proxy `/v1/images/generations` | Use `--provider openai` with a platform key instead |
 
 
 ---

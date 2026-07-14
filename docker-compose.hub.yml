@@ -41,6 +41,9 @@ services:
       - evonexus_memory:/workspace/memory
       - evonexus_adw_logs:/workspace/ADWs/logs
       - evonexus_agent_memory:/workspace/.claude/agent-memory
+      - evonexus_claude_auth:/root/.claude
+      - evonexus_codex_auth:/root/.codex
+      - evonexus_openclaude_auth:/root/.openclaude
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8080/api/version"]
@@ -66,6 +69,9 @@ services:
       - evonexus_memory:/workspace/memory
       - evonexus_adw_logs:/workspace/ADWs/logs
       - evonexus_agent_memory:/workspace/.claude/agent-memory
+      - evonexus_claude_auth:/root/.claude
+      - evonexus_codex_auth:/root/.codex
+      - evonexus_openclaude_auth:/root/.openclaude
     stdin_open: true
     tty: true
     restart: unless-stopped
@@ -88,6 +94,7 @@ services:
       - evonexus_memory:/workspace/memory
       - evonexus_adw_logs:/workspace/ADWs/logs
       - evonexus_agent_memory:/workspace/.claude/agent-memory
+      - evonexus_codex_auth:/root/.codex
     restart: unless-stopped
     depends_on:
       dashboard:
@@ -104,3 +111,6 @@ volumes:
   evonexus_memory:
   evonexus_adw_logs:
   evonexus_agent_memory:
+  evonexus_claude_auth:
+  evonexus_codex_auth:
+  evonexus_openclaude_auth:

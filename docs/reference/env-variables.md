@@ -134,6 +134,8 @@ Social media accounts are managed via the dashboard Integrations page after OAut
 SOCIAL_{PLATFORM}_{N}_{FIELD}
 ```
 
+**Where they live:** `SOCIAL_*` keys are written to `config/social.env` — a dedicated, gitignored token store (on the VPS: the `evonexus_config` volume, shared between dashboard and scheduler). This matters because some platforms (X) rotate refresh tokens on every refresh, so the store must be writable and persistent. The root `.env` and process env are still read as fallbacks; `SOCIAL_ENV_PATH` overrides the store location. See [X / Twitter](../integrations/x-twitter.md#how-tokens-are-stored) for the precedence rules.
+
 Examples:
 
 ```env
@@ -200,6 +202,10 @@ Configure via the dashboard at `/knowledge/settings` — the provider is locked 
 | `AI_IMG_CREATOR_CF_TOKEN` | Gateway mode | Gateway auth token (from gateway Settings > Authentication) |
 | `AI_IMG_CREATOR_OPENROUTER_KEY` | Direct OpenRouter | OpenRouter API key (starts with `sk-or-...`) |
 | `AI_IMG_CREATOR_GEMINI_KEY` | Direct Google | Google AI Studio API key (starts with `AI...`) |
+| `AI_IMG_CREATOR_OPENAI_KEY` | OpenAI Images API | Platform key (billing on platform.openai.com) for `gpt-image-2`. Falls back to `OPENAI_API_KEY`. ChatGPT Plus/Codex OAuth tokens cannot generate images |
+| `AI_IMG_CREATOR_OMNIROUTE_KEY` | OmniRoute gateway | Key of the self-hosted OmniRoute gateway (`--provider omniroute`) |
+| `AI_IMG_CREATOR_OMNIROUTE_BASE_URL` | Optional | OmniRoute base URL — defaults to `http://omniroute:20128/v1` (VPS stack alias) |
+| `NVIDIA_API_KEY` | NVIDIA NIM | Enables `--provider nvidia` (FLUX models, free tier) |
 
 Gateway mode activates when all three `AI_IMG_CREATOR_CF_*` vars are set. Falls back to direct mode if gateway fails. You only need one provider configured (either Cloudflare or at least one direct key).
 
@@ -207,3 +213,7 @@ Gateway mode activates when all three `AI_IMG_CREATOR_CF_*` vars are set. Falls 
 - **Cloudflare Gateway**: [dash.cloudflare.com](https://dash.cloudflare.com) > AI > AI Gateway > Create Gateway. See [docs/skills/ai-image-creator.md](../skills/ai-image-creator.md) for full setup.
 - **OpenRouter key**: [openrouter.ai/keys](https://openrouter.ai/keys) > Create Key.
 - **Google AI Studio key**: [aistudio.google.com/apikey](https://aistudio.google.com/apikey) > Create API Key.
+- **OpenAI platform key**: [platform.openai.com/api-keys](https://platform.openai.com/api-keys) > Create — must be a billing-enabled platform key.
+- **OmniRoute key**: from your self-hosted OmniRoute instance (Dashboard → API Keys).
+
+All of these can be pasted in the dashboard card **Integrations → AI Image Creator**.

@@ -30,6 +30,8 @@ When the user mentions a model keyword in their image request, use the correspon
 **OpenAI Images API notes (`image2`):**
 - Requires a **platform API key** (`AI_IMG_CREATOR_OPENAI_KEY` or `OPENAI_API_KEY`, billing on platform.openai.com).
 - **ChatGPT Plus / Codex OAuth tokens CANNOT generate images** — they lack the `api.model.images.request` scope (verified: API returns 401). Do not suggest the Codex login as an image path.
+- `--provider omniroute` routes the same Images API call through the self-hosted OmniRoute gateway: set only `AI_IMG_CREATOR_OMNIROUTE_KEY` — the base URL defaults to `http://omniroute:20128/v1` (VPS stack alias; override with `AI_IMG_CREATOR_OMNIROUTE_BASE_URL` outside the stack). The gateway must proxy `POST /v1/images/generations`.
+- `AI_IMG_CREATOR_OPENAI_BASE_URL` (advanced, optional) reroutes the plain `openai` provider through any other OpenAI-compatible endpoint. Must end in `/v1`.
 - `-a` maps to the supported sizes (1024x1024, 1536x1024, 1024x1536). `--image-size`, `-r` (reference images) and `--analyze` are not supported on this provider.
 - Excellent text rendering (including Portuguese accents) — good choice for text-critical art.
 
@@ -117,6 +119,8 @@ The script auto-loads env vars from the workspace `.env`. Choose provider based 
 - If only `AI_IMG_CREATOR_OPENROUTER_KEY` is set → use default (`--provider openrouter`, implicit)
 - If only `AI_IMG_CREATOR_GEMINI_KEY` is set → use `--provider google`
 - If `NVIDIA_API_KEY` is set → `--provider nvidia` is available (FLUX models, free tier). Auto-selected when the model keyword starts with `nvidia-`
+- If `AI_IMG_CREATOR_OPENAI_KEY` (or `OPENAI_API_KEY`) is set → `--provider openai` is available (gpt-image-2 via Images API on api.openai.com)
+- If `AI_IMG_CREATOR_OMNIROUTE_KEY` is set → `--provider omniroute` is available (same gpt-image-2 call routed through the self-hosted OmniRoute gateway — base URL defaults to `http://omniroute:20128/v1`, no extra config needed)
 - **Do NOT use `source .env`** — the Python script loads it internally. Just run the command directly.
 
 ### Step 2: Run Generation Script

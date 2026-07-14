@@ -651,9 +651,22 @@ def sync_force():
     if not local_path:
         abort(400, description="local_path not configured — repo not yet cloned")
 
-    repo_dir = Path(local_path)
-    if not repo_dir.is_dir() or not (repo_dir / ".git").is_dir():
-        abort(500, description=f"Local brain repo at {local_path} is missing or corrupt — re-connect")
+    try:
+        from brain_repo import job_runner
+    except ImportError:
+        abort(500, description="job_runner module unavailable")
+
+    workspace = Path(__file__).resolve().parent.parent.parent.parent
+    repo_dir = job_runner.resolve_local_path(local_path, config.repo_name, workspace)
+    if repo_dir is None:
+        # Sem working tree local. Com repo_url + repo_name no config o
+        # pipeline re-clona sozinho; sem eles só re-connect resolve.
+        if not config.repo_url or not config.repo_name:
+            abort(500, description=f"Local brain repo at {local_path} is missing or corrupt — re-connect")
+    elif str(repo_dir) != local_path:
+        # DB restaurado de outra máquina — regrava o path desta.
+        config.local_path = str(repo_dir)
+        db.session.commit()
 
     # Quick token-decryption probe so bad keys fail fast (before enqueueing).
     # The pipeline re-decrypts inside the thread — we just surface the error
@@ -661,13 +674,6 @@ def sync_force():
     token = _decrypt_token(config)
     if not token:
         abort(500, description="Could not decrypt stored token — re-connect the brain repo")
-
-    try:
-        from brain_repo import job_runner
-    except ImportError:
-        abort(500, description="job_runner module unavailable")
-
-    workspace = Path(__file__).resolve().parent.parent.parent.parent
     now = datetime.now(timezone.utc)
     # Seconds in the tag name avoids "tag already exists" on rapid re-clicks
     tag_name = f"milestone/manual-{now.strftime('%Y-%m-%d-%H-%M-%S')}"
@@ -722,20 +728,27 @@ def tag_milestone():
     if not local_path:
         abort(400, description="local_path not configured — repo not yet cloned")
 
-    repo_dir = Path(local_path)
-    if not repo_dir.is_dir() or not (repo_dir / ".git").is_dir():
-        abort(500, description=f"Local brain repo at {local_path} is missing or corrupt — re-connect")
-
-    token = _decrypt_token(config)
-    if not token:
-        abort(500, description="Could not decrypt stored token — re-connect the brain repo")
-
     try:
         from brain_repo import job_runner
     except ImportError:
         abort(500, description="job_runner module unavailable")
 
     workspace = Path(__file__).resolve().parent.parent.parent.parent
+    repo_dir = job_runner.resolve_local_path(local_path, config.repo_name, workspace)
+    if repo_dir is None:
+        # Sem working tree local. Com repo_url + repo_name no config o
+        # pipeline re-clona sozinho; sem eles só re-connect resolve.
+        if not config.repo_url or not config.repo_name:
+            abort(500, description=f"Local brain repo at {local_path} is missing or corrupt — re-connect")
+    elif str(repo_dir) != local_path:
+        # DB restaurado de outra máquina — regrava o path desta.
+        config.local_path = str(repo_dir)
+        db.session.commit()
+
+    token = _decrypt_token(config)
+    if not token:
+        abort(500, description="Could not decrypt stored token — re-connect the brain repo")
+
     tag = f"milestone/{name}"
     now = datetime.now(timezone.utc)
 

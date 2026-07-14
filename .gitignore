@@ -152,6 +152,7 @@ memory/raw-transcripts/
 *.bak.telegram
 .env.bak*
 config/.reload
+config/social.env
 
 # ── One-off integration test scaffolding (may contain hardcoded creds) ──
 scripts/ghost_integration_test.py

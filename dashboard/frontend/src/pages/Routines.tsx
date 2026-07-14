@@ -88,7 +88,14 @@ function transformRoutineMetrics(data: any): Routine[] {
   return Object.entries(metrics).map(([name, m]: [string, any]) => {
     const runs = Number(m.runs || 0)
     const successes = Number(m.successes || 0)
-    const successRate = Number(m.success_rate || (runs > 0 ? (successes / runs) * 100 : 0))
+    // Always derived fresh from raw counts, never trusting the stored
+    // success_rate field directly — one routine (uso_modelos_dia) used to
+    // write it as a 0-1 fraction instead of the 0-100 percentage every
+    // other routine's metrics use (ADWs/runner.py), which silently rendered
+    // as "0.8333% success" / misclassified as critical instead of 83.3% /
+    // healthy. Deriving from runs/successes here is immune to any producer
+    // writing success_rate in the wrong units again.
+    const successRate = runs > 0 ? (successes / runs) * 100 : 0
     const totalTokens = Number(m.total_input_tokens || 0) + Number(m.total_output_tokens || 0)
     const totalCost = Number(m.total_cost_usd || 0)
     const avgCost = Number(m.avg_cost_usd || 0)

@@ -1,6 +1,6 @@
 # AI Image Creator
 
-Generate PNG images using AI models — Gemini, FLUX.2, Riverflow, SeedDream, GPT-5 Image — routed through Cloudflare AI Gateway (BYOK) or directly via OpenRouter/Google AI Studio. Also analyzes and describes existing images using multimodal vision.
+Generate PNG images using AI models — Gemini, FLUX.2, Riverflow, SeedDream, GPT-5 Image, GPT Image 2 — routed through Cloudflare AI Gateway (BYOK), directly via OpenRouter/Google AI Studio/NVIDIA NIM/OpenAI, or through the self-hosted OmniRoute gateway. Also analyzes and describes existing images using multimodal vision.
 
 **Skill name:** `ai-image-creator`
 **Trigger:** "generate an image", "create a PNG", "make an icon", "describe this image", "analyze this image"
@@ -18,6 +18,10 @@ The `ai-image-creator` skill wraps a Python script (`generate-image.py`) that ca
 | `flux2` | `black-forest-labs/flux.2-max` | OpenRouter | Image-only |
 | `seedream` | `bytedance-seed/seedream-4.5` | OpenRouter | Image-only |
 | `gpt5` | `openai/gpt-5-image` | OpenRouter | Multimodal |
+| `image2` | `gpt-image-2` | OpenAI Images API / OmniRoute | Image-only |
+| `nvidia-flux2-klein-4b` | `black-forest-labs/flux.2-klein-4b` | NVIDIA NIM | Image-only |
+| `nvidia-flux-dev` | `black-forest-labs/flux.1-dev` | NVIDIA NIM | Image-only |
+| `nvidia-flux-schnell` | `black-forest-labs/flux.1-schnell` | NVIDIA NIM | Image-only |
 
 **Multimodal** models (gemini, gpt5) accept reference images for editing/style transfer and can analyze existing images. **Image-only** models (riverflow, flux2, seedream) generate from text prompts only.
 
@@ -122,17 +126,52 @@ export AI_IMG_CREATOR_GEMINI_KEY="AIyour-key-here"
 
 ---
 
+## Setup Option D: OpenAI Images API (gpt-image-2)
+
+Direct access to OpenAI's `gpt-image-2` via the Images API. Excellent text rendering (including Portuguese accents) — the best pick for text-critical art.
+
+1. Get a **platform API key** at [platform.openai.com](https://platform.openai.com) (billing required). **ChatGPT Plus / Codex OAuth tokens cannot generate images** — they lack the images scope and return 401.
+2. Set the key (or paste it in the dashboard **Integrations → AI Image Creator** card):
+
+```bash
+export AI_IMG_CREATOR_OPENAI_KEY="sk-..."   # falls back to OPENAI_API_KEY
+```
+
+3. Use `--provider openai` (or just say "image2" — the keyword auto-selects the provider). `-a` maps to the supported sizes (1024x1024, 1536x1024, 1024x1536); `-r` and `--analyze` are not supported here.
+
+---
+
+## Setup Option E: OmniRoute Gateway (self-hosted)
+
+Routes the same `gpt-image-2` Images API call through the self-hosted [OmniRoute](../dashboard/providers.md) gateway instead of api.openai.com. Only the key is needed — the base URL defaults to the VPS stack alias `http://omniroute:20128/v1`.
+
+```bash
+export AI_IMG_CREATOR_OMNIROUTE_KEY="your-omniroute-key"
+# outside the Swarm stack, point at your gateway:
+export AI_IMG_CREATOR_OMNIROUTE_BASE_URL="https://your-gateway/v1"   # optional
+```
+
+Use `--provider omniroute`. The gateway must proxy `POST /v1/images/generations`.
+
+---
+
 ## Environment Variables Reference
 
-| Variable | Option A | Option B | Option C | Description |
-|----------|----------|----------|----------|-------------|
-| `AI_IMG_CREATOR_CF_ACCOUNT_ID` | Required | — | — | Cloudflare account ID |
-| `AI_IMG_CREATOR_CF_GATEWAY_ID` | Required | — | — | AI Gateway name |
-| `AI_IMG_CREATOR_CF_TOKEN` | Required | — | — | Gateway auth token |
-| `AI_IMG_CREATOR_OPENROUTER_KEY` | Optional* | Required | — | OpenRouter API key |
-| `AI_IMG_CREATOR_GEMINI_KEY` | Optional* | — | Required | Google AI Studio API key |
+| Variable | Option A | Option B | Option C | Option D | Option E | Description |
+|----------|----------|----------|----------|----------|----------|-------------|
+| `AI_IMG_CREATOR_CF_ACCOUNT_ID` | Required | — | — | — | — | Cloudflare account ID |
+| `AI_IMG_CREATOR_CF_GATEWAY_ID` | Required | — | — | — | — | AI Gateway name |
+| `AI_IMG_CREATOR_CF_TOKEN` | Required | — | — | — | — | Gateway auth token |
+| `AI_IMG_CREATOR_OPENROUTER_KEY` | Optional* | Required | — | — | — | OpenRouter API key |
+| `AI_IMG_CREATOR_GEMINI_KEY` | Optional* | — | Required | — | — | Google AI Studio API key |
+| `AI_IMG_CREATOR_OPENAI_KEY` | — | — | — | Required | — | OpenAI platform key for gpt-image-2 (falls back to `OPENAI_API_KEY`) |
+| `AI_IMG_CREATOR_OMNIROUTE_KEY` | — | — | — | — | Required | OmniRoute gateway key |
+| `AI_IMG_CREATOR_OMNIROUTE_BASE_URL` | — | — | — | — | Optional | Gateway base URL (default `http://omniroute:20128/v1`) |
+| `NVIDIA_API_KEY` | — | — | — | — | — | Enables `--provider nvidia` (FLUX models, free tier) |
 
 *For Option A (gateway), provider keys are stored in Cloudflare as BYOK — you do not need to set `OPENROUTER_KEY` or `GEMINI_KEY` locally. Gateway mode activates when all three `CF_*` vars are set and falls back to direct mode if the gateway fails.
+
+All of these can also be configured from the dashboard: **Integrations → AI Image Creator**.
 
 Add these to your `.env` file (used by the workspace) or directly to your shell profile. See [env-variables.md](env-variables.md) for full reference.
 
@@ -225,3 +264,6 @@ Typical Pixel workflow:
 | `uv: command not found` | uv not installed | `curl -LsSf https://astral.sh/uv/install.sh \| sh` or `brew install uv` |
 | `BYOK key not found` | Wrong alias in CF Provider Keys | Verify aliases: `default` for OpenRouter, `aistudio` for Google AI Studio |
 | Image-only model + reference image | riverflow/flux2/seedream don't accept reference images | Switch to a multimodal model: `gemini` or `gpt5` |
+| `401` on `--provider openai` with a ChatGPT Plus/Codex token | OAuth tokens lack the images scope | Use a **platform** API key (billing on platform.openai.com) |
+| `AI_IMG_CREATOR_OMNIROUTE_KEY not set` | OmniRoute provider selected without a key | Paste the gateway key in **Integrations → AI Image Creator** or the `.env` |
+| 404/error via OmniRoute | Gateway doesn't proxy `/v1/images/generations` | Use `--provider openai` with a platform key instead |

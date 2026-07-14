@@ -15,6 +15,7 @@ services:
       - TERMINAL_SERVER_PORT=32352
     volumes:
       - claude-auth:/root/.claude
+      - openclaude-auth:/root/.openclaude
       - ./config:/workspace/config
       - ./workspace:/workspace/workspace
       - ./dashboard/data:/workspace/dashboard/data
@@ -82,6 +83,7 @@ services:
 
 volumes:
   claude-auth:
+  openclaude-auth:
   daily-logs:
   projects:
   community:

@@ -42,6 +42,14 @@ def _cors_allowed_origins():
     return "*" if not _is_production() else []
 
 app = Flask(__name__, static_folder=None)
+
+# Atrás do Traefik o scheme visto pelo Flask é http; sem honrar
+# X-Forwarded-Proto/Host, request.host_url gera redirect_uri http:// nos
+# fluxos OAuth (social-auth blueprints) e o provedor recusa o callback.
+# A porta 8080 não é exposta diretamente na VPS, então confiar em 1 hop
+# de proxy é seguro; sem os headers (acesso local) nada muda.
+from werkzeug.middleware.proxy_fix import ProxyFix
+app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 # Persist secret key so sessions survive restarts
 _secret_key = os.environ.get("EVONEXUS_SECRET_KEY")
 if not _secret_key:
@@ -75,8 +83,12 @@ if not _brain_key:
 app.config["SQLALCHEMY_DATABASE_URI"] = f"sqlite:///{WORKSPACE / 'dashboard' / 'data' / 'evonexus.db'}"
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 app.config["REMEMBER_COOKIE_DURATION"] = timedelta(days=30)
-# SameSite=Strict prevents cross-origin cookie riding (CSRF defense layer 1).
-app.config["SESSION_COOKIE_SAMESITE"] = "Strict"
+# SameSite=Lax: bloqueia cookie em requests cross-site mutantes (POST/iframe/
+# subresource — onde CSRF acontece) mas permite navegação top-level GET.
+# Strict quebrava TODO fluxo OAuth montado no dashboard: o redirect de volta
+# do provedor (twitter.com → /callback/twitter) é cross-site, o cookie de
+# sessão não era enviado e o state salvo em session sumia → "Invalid state".
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 
 # --- JSON encoding for API responses ---
 # With ensure_ascii=True (Flask default) jsonify escapes every non-ASCII

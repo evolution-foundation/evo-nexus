@@ -95,6 +95,15 @@ Look at the run's `stderr_tail` and `stdout_tail`. Common causes:
 - Agent hit `max_turns` before returning (raise the cap or tighten the prompt)
 - Agent hit `timeout_seconds` (integration call was slow — raise timeout or add a retry inside the agent)
 
+### Provider fallback (exit code 1, `attempt #N`)
+
+Heartbeat runs go through the **provider fallback chain** (`provider_fallback.py`): starting at the `active_provider` in `config/providers.json` and rotating through `fallback_models` / `fallback_providers` on 429s and errors. A failure notification with `attempt #3` means the whole chain was exhausted — check each link:
+
+- External providers (NVIDIA, OpenRouter) fail with ENOTFOUND on VPS containers without external DNS — keep `omnirouter` (the internal OmniRoute gateway) in the chain.
+- The final `anthropic` link runs native `claude`, which needs a login; on a fresh container it exits with code 1 in seconds.
+
+See [Providers → Fallback Chain](dashboard/providers.md#fallback-chain-heartbeats-and-background-runs).
+
 ### YAML and DB drift
 
 If you edited `config/heartbeats.yaml` by hand and the dashboard still shows the old state, run:

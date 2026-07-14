@@ -94,6 +94,7 @@ _429_PATTERNS = [
     re.compile(r"insufficient_quota", re.IGNORECASE),
     re.compile(r"billing.?limit", re.IGNORECASE),
     re.compile(r"plan.?limit", re.IGNORECASE),
+    re.compile(r"maximum combo retry limit reached", re.IGNORECASE),
 ]
 
 # Fatal errors that should NOT trigger fallback (auth / config issues)
@@ -166,7 +167,11 @@ def _agent_prompt(agent: str | None) -> str:
 
 
 def _embed_agent_for_openclaude(prompt: str, agent: str | None) -> str:
-    """OpenClaude can misparse --agent frontmatter; embed persona in prompt."""
+    """OpenClaude can misparse --agent frontmatter; embed persona in prompt.
+
+    Reused as-is for opencode (validated 2026-07-12, spike/opencode-runtime):
+    same embed-in-prompt pattern works unmodified, no adaptation needed.
+    """
     persona = _agent_prompt(agent)
     if not persona:
         return prompt
@@ -410,14 +415,27 @@ def _invoke_cli(
             "tokens_in": None, "tokens_out": None, "cost_usd": None,
         }
 
-    cmd = [cli_bin, "--print", "--max-turns", str(max_turns),
-           "--dangerously-skip-permissions", "--output-format", "json"]
-    if cli_command == "openclaude":
+    output_mode = "envelope"
+    if cli_command == "opencode":
+        # opencode não tem --max-turns nem --dangerously-skip-permissions — o
+        # equivalente de bypass de permissão é --auto (validado spike
+        # 2026-07-12). Seleção de modelo é via -m provider/model, não por
+        # env var OPENAI_MODEL — provider_id precisa bater com uma entry em
+        # opencode.json (ver opencode.json na raiz do workspace).
         prompt = _embed_agent_for_openclaude(prompt, agent)
         agent = ""
-    if agent:
-        cmd.extend(["--agent", agent])
-    cmd.extend(["--", prompt])
+        model_ref = f"{provider_id}/{model}" if model else f"{provider_id}/auto"
+        cmd = [cli_bin, "run", prompt, "-m", model_ref, "--format", "json", "--auto"]
+        output_mode = "opencode-ndjson"
+    else:
+        cmd = [cli_bin, "--print", "--max-turns", str(max_turns),
+               "--dangerously-skip-permissions", "--output-format", "json"]
+        if cli_command == "openclaude":
+            prompt = _embed_agent_for_openclaude(prompt, agent)
+            agent = ""
+        if agent:
+            cmd.extend(["--agent", agent])
+        cmd.extend(["--", prompt])
 
     run_env = dict(os.environ)
     if env_overrides:
@@ -446,7 +464,7 @@ def _invoke_cli(
             "skip_advance_model": True,
         }
     try:
-        return _invoke_cli_run(cmd, run_env, timeout_seconds, WORKSPACE)
+        return _invoke_cli_run(cmd, run_env, timeout_seconds, WORKSPACE, output_mode=output_mode)
     finally:
         lk.release()
 
@@ -471,7 +489,52 @@ def _invoke_cli(
 
 
 
-def _invoke_cli_run(cmd: list, run_env: dict, timeout_seconds: int, workspace: Path) -> dict:
+def _parse_opencode_ndjson(output: str) -> dict:
+    """opencode --format json emits one JSON event per line (step_start, text,
+    step_finish, ...) instead of Claude Code's single envelope. Validated
+    2026-07-12 against a real OmniRoute call — step_finish carries
+    tokens.{input,output} and cost; text events carry the assistant's reply.
+    """
+    tokens_in = tokens_out = cost_usd = None
+    text_parts: list[str] = []
+    saw_error = False
+    error_message = ""
+    for line in output.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        etype = event.get("type")
+        part = event.get("part") or {}
+        if etype == "text":
+            t = part.get("text")
+            if t:
+                text_parts.append(t)
+        elif etype == "error":
+            saw_error = True
+            err = event.get("error") or {}
+            msg = err.get("data", {}).get("message") if isinstance(err.get("data"), dict) else None
+            error_message = msg or err.get("name") or error_message
+        elif etype == "step_finish":
+            usage = part.get("tokens") or {}
+            if usage.get("input") is not None:
+                tokens_in = usage.get("input")
+            if usage.get("output") is not None:
+                tokens_out = usage.get("output")
+            if part.get("cost") is not None:
+                cost_usd = part.get("cost")
+    return {
+        "text": "\n".join(text_parts),
+        "tokens_in": tokens_in, "tokens_out": tokens_out, "cost_usd": cost_usd,
+        "saw_error": saw_error, "error_message": error_message,
+    }
+
+
+def _invoke_cli_run(cmd: list, run_env: dict, timeout_seconds: int, workspace: Path,
+                     output_mode: str = "envelope") -> dict:
     """Inner run — assume the per-model inflight lock is already held.
     Holds the subprocess, parses tokens, applies backoff on 429, returns dict.
     """
@@ -511,17 +574,35 @@ def _invoke_cli_run(cmd: list, run_env: dict, timeout_seconds: int, workspace: P
     duration_ms = int((time.time() - start_time) * 1000)
 
     tokens_in = tokens_out = cost_usd = None
-    try:
-        envelope = json.loads(output)
-        usage = envelope.get("usage") or {}
-        tokens_in = usage.get("input_tokens")
-        tokens_out = usage.get("output_tokens")
-        cost_usd = envelope.get("total_cost_usd")
-        if status != "success" and envelope.get("type") == "result" and envelope.get("result") and envelope.get("is_error") is False:
-            status = "success"
-            error = None
-    except (json.JSONDecodeError, AttributeError, TypeError):
-        pass
+    if output_mode == "opencode-ndjson":
+        parsed = _parse_opencode_ndjson(output)
+        tokens_in, tokens_out, cost_usd = parsed["tokens_in"], parsed["tokens_out"], parsed["cost_usd"]
+        if parsed["saw_error"]:
+            status = "fail"
+            # troca o "exit code 1" genérico pela mensagem real do evento de
+            # erro do opencode — is_429_error()/is_fatal também escaneiam
+            # `output` (o ndjson bruto), então a detecção de 429/fatal já
+            # funcionava antes disso; isso só melhora a legibilidade do log.
+            if parsed["error_message"] and (not error or error.startswith("exit code")):
+                error = parsed["error_message"]
+            elif not error:
+                error = "opencode emitted an error event in the ndjson stream"
+        if status == "success" and not parsed["text"] and tokens_in is None:
+            # nem texto nem step_finish — stream vazio/quebrado, não confia
+            status = "fail"
+            error = error or "opencode produced no text/step_finish events"
+    else:
+        try:
+            envelope = json.loads(output)
+            usage = envelope.get("usage") or {}
+            tokens_in = usage.get("input_tokens")
+            tokens_out = usage.get("output_tokens")
+            cost_usd = envelope.get("total_cost_usd")
+            if status != "success" and envelope.get("type") == "result" and envelope.get("result") and envelope.get("is_error") is False:
+                status = "success"
+                error = None
+        except (json.JSONDecodeError, AttributeError, TypeError):
+            pass
 
     return {
         "status": status, "output": output, "error": error,

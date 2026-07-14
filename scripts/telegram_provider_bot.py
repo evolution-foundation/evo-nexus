@@ -16,6 +16,7 @@ import sys
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -479,10 +480,25 @@ def skill_context(name: str) -> str:
 
 
 def workspace_context() -> str:
+    nexus_api_url = os.environ.get("EVONEXUS_API_URL", "")
+    has_api = bool(nexus_api_url and os.environ.get("DASHBOARD_API_TOKEN", "").strip())
+    nexus_line = (
+        f"Nexus REST API: {nexus_api_url}" if nexus_api_url
+        else "Nexus REST API: (environ EVONEXUS_API_URL nao definida)"
+    )
+    if has_api:
+        nexus_line += (
+            " — disponivel com DASHBOARD_API_TOKEN. "
+            "Endpoints: GET/POST /api/goals, /api/missions, /api/projects, "
+            "/api/tickets, /api/mempalace/search?q=&n="
+        )
+    else:
+        nexus_line += " — sem token, modo leitura URL apenas."
     return "\n".join([
         skill_context("custom-int-ghost"),
         f"Env Ghost: {env_presence(('GHOST_URL', 'GHOST_CONTENT_API_KEY', 'GHOST_ADMIN_API_KEY'))}.",
-        "Ghost Admin API usa JWT HS256 gerado de GHOST_ADMIN_API_KEY no formato id:secret; header Authorization: Ghost <JWT>.",
+        "Ghost Admin API usa JWT HS256 gerado de GHOST_ADMIN_API_KEY no formato id:secret; header Authorization: Ghost ***",
+        nexus_line,
     ])
 
 
@@ -541,6 +557,119 @@ def fetch_url_context(text: str, max_urls: int = 3, max_chars: int = 6000) -> st
     return "\n\n".join(blocks)
 
 
+def fetch_mempalace_context(text: str, max_results: int = 3) -> str:
+    """Search MemPalace for context relevant to the user's question.
+
+    Uses EVONEXUS_API_URL + DASHBOARD_API_TOKEN from env (set inside the Docker
+    container on the VPS). Falls back silently if unreachable/unconfigured.
+    """
+    if not text or len(text.strip()) < 5:
+        return ""
+    base_url = os.environ.get("EVONEXUS_API_URL", "").strip().rstrip("/")
+    token = os.environ.get("DASHBOARD_API_TOKEN", "").strip()
+    if not base_url or not token:
+        return ""
+    params = urllib.parse.urlencode({"q": text.strip()[:200], "n": max_results})
+    url = f"{base_url}/api/mempalace/search?{params}"
+    req = urllib.request.Request(
+        url,
+        headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return ""
+    results = data.get("results") or data.get("data", {}).get("results") or []
+    if not results:
+        return ""
+    blocks = []
+    for r in results[:max_results]:
+        sim = r.get("similarity", r.get("score", 0))
+        source = r.get("source_file", r.get("source", "?"))
+        content = r.get("content", r.get("text", "")).strip()[:600]
+        if content:
+            blocks.append(f"[MemPalace {sim:.2f} — {source}]\n{content}")
+    ctx = "\n\n".join(blocks)
+    return ctx[:2500]
+
+
+_NEXUS_STATUS_TERMS = (
+    "heartbeat", "heart beat", "cron", "rotina", "routine",
+    "scheduler", "agendad", "agendamento", "adw",
+)
+
+
+def _nexus_api_get(path: str, timeout: int = 10) -> dict | None:
+    """GET on the Nexus REST API using env credentials. None if unavailable."""
+    base_url = os.environ.get("EVONEXUS_API_URL", "").strip().rstrip("/")
+    token = os.environ.get("DASHBOARD_API_TOKEN", "").strip()
+    if not base_url or not token:
+        return None
+    req = urllib.request.Request(
+        f"{base_url}{path}",
+        headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return None
+
+
+def fetch_nexus_status_context(text: str) -> str:
+    """Fetch real cron/heartbeat status server-side and inject it in the prompt.
+
+    The model behind this bot is a plain chat completion — it cannot execute
+    HTTP calls by itself. Whenever the user asks about crons/heartbeats we do
+    the API calls here and hand the model the data, same pattern as
+    fetch_url_context/fetch_mempalace_context.
+    """
+    lower = (text or "").lower()
+    if not any(term in lower for term in _NEXUS_STATUS_TERMS):
+        return ""
+    blocks: list[str] = []
+
+    hb_data = _nexus_api_get("/api/heartbeats")
+    if hb_data:
+        lines = []
+        for hb in hb_data.get("heartbeats", []):
+            last = hb.get("last_run") or {}
+            status = last.get("status", "nunca rodou")
+            when = last.get("started_at", "")
+            err = (last.get("error") or "").strip().replace("\n", " ")[:180]
+            line = (
+                f"- {hb.get('id')} (agente {hb.get('agent')}, "
+                f"{'ativo' if hb.get('enabled') else 'desativado'}): "
+                f"última run {status}{f' em {when}' if when else ''}"
+            )
+            if err:
+                line += f" — erro: {err}"
+            lines.append(line)
+        if lines:
+            blocks.append("Heartbeats:\n" + "\n".join(lines))
+
+    rt_data = _nexus_api_get("/api/routines")
+    if rt_data:
+        metrics = rt_data.get("metrics", {})
+        ran = [
+            (rid, m) for rid, m in metrics.items()
+            if isinstance(m, dict) and m.get("last_run")
+        ]
+        ran.sort(key=lambda kv: kv[1].get("last_run") or "", reverse=True)
+        lines = [
+            f"- {rid}: última run {m.get('last_run')}, "
+            f"{m.get('runs', 0)} runs, {m.get('success_rate', 0)}% sucesso"
+            for rid, m in ran[:12]
+        ]
+        if lines:
+            blocks.append("Rotinas (cron) com execução registrada:\n" + "\n".join(lines))
+
+    if not blocks:
+        return ""
+    return "\n\n".join(blocks)[:3000]
+
+
 def build_prompt(chat_id: str, prompt_text: str, *, speaker: str | None = None) -> str:
     memory = format_chat_memory(load_chat_memory(chat_id), current_speaker=speaker)
     clean_prompt = redact_secrets(prompt_text.strip())
@@ -550,6 +679,8 @@ def build_prompt(chat_id: str, prompt_text: str, *, speaker: str | None = None) 
         "Nao diga que nao tem acesso a ferramentas de forma generica.",
         "Quando a mensagem contiver URLs, o conteudo delas ja foi buscado e esta abaixo em 'Conteudo das URLs' — USE esse conteudo; nunca diga que nao consegue navegar.",
         "Quando o usuario pedir uma acao, tente executar pelo workspace/integracoes disponiveis.",
+        "O runtime deste bot consulta a API REST do Nexus por voce: quando a pergunta envolve cron/rotinas/heartbeats, os dados reais ja vem injetados abaixo em 'Status atual do Nexus'. "
+        "Responda com base nesses dados. Se um bloco de status nao veio, diga que a API nao respondeu (nao diga que 'falta endpoint' ou que 'nao tem acesso').",
         "Se houver bloqueio real, responda somente o bloqueio concreto: credencial, arquivo, permissao, endpoint ou erro.",
         "Se a mensagem veio de audio transcrito, use a transcricao apenas como entrada interna; nao repita a transcricao ao usuario.",
         "Use a memoria recente abaixo apenas quando for relevante; ignore respostas antigas que negaram acesso genericamente.",
@@ -560,10 +691,24 @@ def build_prompt(chat_id: str, prompt_text: str, *, speaker: str | None = None) 
     url_ctx = fetch_url_context(clean_prompt)
     if url_ctx:
         parts.extend(["Conteudo das URLs mencionadas:", url_ctx, ""])
+    status_ctx = fetch_nexus_status_context(clean_prompt)
+    if status_ctx:
+        parts.extend([
+            "Status atual do Nexus (dados REAIS buscados agora na API — use-os para responder; nao diga que falta endpoint):",
+            status_ctx,
+            "",
+        ])
     if memory:
         parts.extend([
             "Memoria recente da conversa:",
             memory,
+            "",
+        ])
+    mem_ctx = fetch_mempalace_context(clean_prompt)
+    if mem_ctx:
+        parts.extend([
+            "Contexto do MemPalace (memoria persistente do workspace):",
+            mem_ctx,
             "",
         ])
     parts.extend([
