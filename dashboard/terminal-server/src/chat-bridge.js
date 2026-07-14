@@ -16,6 +16,43 @@ let sdkModule = null;
 // Workspace root is three levels up from this file (dashboard/terminal-server/src/).
 const WORKSPACE_ROOT = path.resolve(__dirname, '..', '..', '..');
 
+// Chat HUD (car-dashboard panel, same component as the Terminal — see
+// TerminalHudPanel.tsx). Chat sessions are short-lived (one per
+// startSession call, not a persistent REPL like claude-bridge's opencode
+// sessions), so this only tracks what's needed for the shift-detection
+// diff between hud_update ticks — much smaller than claude-bridge's
+// per-session HUD bookkeeping.
+const CHAT_HUD_HEAVY_TOKEN_THRESHOLD = 20_000;
+
+/**
+ * Emits a `hud_update`-shaped event through the same `onMessage` channel
+ * every other chat event goes through — server.js already forwards
+ * anything unrecognized as `{ type: 'chat_event', event: msg }`, and
+ * AgentChat.tsx's handleChatEvent special-cases `hud_update` before it
+ * hits the messages-array reducer (see that file). No server.js changes
+ * needed; this piggybacks on existing plumbing.
+ */
+function _emitChatHud(session, onMessage, patch = {}) {
+  if (!onMessage) return;
+  const providerId = patch.providerId ?? session.lastHudProviderId;
+  const providerModel = patch.providerModel ?? session.lastHudProviderModel;
+  const shift = providerId !== session.lastHudProviderId || providerModel !== session.lastHudProviderModel;
+  session.lastHudProviderId = providerId;
+  session.lastHudProviderModel = providerModel;
+  onMessage({
+    type: 'hud_update',
+    busy: false,
+    tokensPerSec: 0,
+    totalTokens: null,
+    heavy: false,
+    bestTokensPerSec: 0,
+    ...patch,
+    providerId,
+    providerModel,
+    shift,
+  });
+}
+
 /**
  * Build provider fallback chain from config.
  * Returns array of { providerId, model, cliCommand, envVars, baseUrl } attempts.
@@ -1019,6 +1056,8 @@ class ChatBridge {
       abortController,
       agentName,
       sdkSessionId: sdkSessionId || null,
+      lastHudProviderId: null,
+      lastHudProviderModel: null,
     };
     this.sessions.set(sessionId, session);
 
@@ -1083,6 +1122,15 @@ class ChatBridge {
           session.sdkSessionId = sdkSessionId || null;
         }
 
+        const hudProviderId = (isExternalProvider && fallbackChain.length > 0)
+          ? fallbackChain[currentFallbackIndex].providerId
+          : (providerConfig.active || 'anthropic');
+        const hudProviderModel = (isExternalProvider && fallbackChain.length > 0)
+          ? (fallbackChain[currentFallbackIndex].model || 'native')
+          : (resolveProviderModel(providerConfig) || 'default');
+        const turnStartedAt = Date.now();
+        _emitChatHud(session, onMessage, { busy: true, providerId: hudProviderId, providerModel: hudProviderModel });
+
         let advanceAfterErrorResult = false;
         try {
           console.log(`[chat-bridge] Starting query for session ${sessionId}, agent: ${agentName}, resume: ${sdkSessionId || 'new'}`);
@@ -1125,6 +1173,23 @@ class ChatBridge {
             // termina "normal" com um result de erro. Detectar aqui e avançar
             // a cadeia de fallback em vez de entregar o erro pro chat.
             if (message.type === 'result') {
+              // Real usage — same fields _transformMessage's 'result' case
+              // already reads (msg.usage, msg.duration_ms). tokensPerSec is
+              // a rough turn-average (total tokens / wall time), not a live
+              // streaming rate like the Terminal's opencode path gets from
+              // per-line NDJSON ticks — the Agent SDK doesn't expose partial
+              // usage, only the final total.
+              const usage = message.usage || {};
+              const totalTokens = (usage.input_tokens || 0) + (usage.output_tokens || 0) +
+                (usage.cache_creation_input_tokens || 0) + (usage.cache_read_input_tokens || 0);
+              const elapsedSec = Math.max(0.001, (Date.now() - turnStartedAt) / 1000);
+              _emitChatHud(session, onMessage, {
+                busy: false,
+                tokensPerSec: totalTokens > 0 ? Math.round(totalTokens / elapsedSec) : 0,
+                totalTokens: totalTokens || null,
+                heavy: totalTokens > CHAT_HUD_HEAVY_TOKEN_THRESHOLD,
+              });
+
               const isErrorResult = message.is_error === true ||
                 (message.subtype && message.subtype !== 'success');
               if (isErrorResult) {
@@ -1225,6 +1290,7 @@ class ChatBridge {
           }
 
           // No more fallbacks or fatal error - propagate error
+          _emitChatHud(session, onMessage, { busy: false, tokensPerSec: 0 });
           session.active = false;
           this.sessions.delete(sessionId);
           if (err.name === 'AbortError') {
