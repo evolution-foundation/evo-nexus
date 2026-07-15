@@ -14,14 +14,23 @@ import re
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "dashboard" / "backend"))
+# Same agentic-CLI fallback engine the heartbeats already run in production
+# (dashboard/backend/heartbeat_runner.py) — real tool-use (Bash, Agent/Task
+# spawning) instead of a bare chat completion. _parse_opencode_ndjson is
+# reused as-is to extract plain text from opencode's event stream.
+from provider_fallback import invoke_with_fallback, _parse_opencode_ndjson  # noqa: E402
+
 PROVIDERS_PATH = ROOT / "config" / "providers.json"
 TELEGRAM_STATE = Path.home() / ".claude" / "channels" / "telegram"
 TELEGRAM_ENV = TELEGRAM_STATE / ".env"
@@ -34,7 +43,13 @@ GROQ_TRANSCRIPTION_MODEL = os.environ.get("GROQ_TRANSCRIPTION_MODEL", "whisper-l
 MAX_MEMORY_MESSAGES = 8
 MAX_MEMORY_CHARS = 1800
 MAX_STORED_MESSAGE_CHARS = 1600
-TELEGRAM_CODEX_MODELS = (None,)
+
+# Orchestrator tuning — real agentic runs (Bash/Agent/Task spawning) need far
+# more headroom than a plain chat completion; defaults mirror heartbeat ranges
+# (10-50 turns, several hundred seconds) instead of the old 2 turns/120s.
+TELEGRAM_MAX_TURNS = int(os.environ.get("TELEGRAM_MAX_TURNS", "25"))
+TELEGRAM_TIMEOUT = int(os.environ.get("TELEGRAM_TIMEOUT", "600"))
+TELEGRAM_MAX_CONCURRENT = int(os.environ.get("TELEGRAM_MAX_CONCURRENT", "4"))
 
 
 def _load_workspace_env() -> None:
@@ -363,22 +378,6 @@ def allowed_chat(chat_id: str, from_id: str) -> bool:
     if from_id in {str(x) for x in access.get("allowFrom", [])}:
         return True
     return chat_id in access.get("groups", {})
-
-
-def provider_chain() -> list[tuple[str, dict]]:
-    config = read_json(PROVIDERS_PATH, {"active_provider": "anthropic", "providers": {}})
-    providers = config.get("providers", {})
-    override_id = os.environ.get("TELEGRAM_PROVIDER") or config.get("telegram_provider")
-    active_id = (
-        override_id
-        or config.get("active_provider")
-        or "anthropic"
-    )
-    active = providers.get(active_id, {})
-    ids = [active_id]
-    if not override_id:
-        ids.extend(pid for pid in active.get("fallback_providers", []) if pid not in ids)
-    return [(pid, providers.get(pid, {})) for pid in ids if providers.get(pid) is not None]
 
 
 def active_provider_info() -> tuple[str, str | None, str | None]:
@@ -737,210 +736,113 @@ def parse_provider_command(text: str) -> str | None:
     return parts[1].strip() if len(parts) > 1 else "status"
 
 
-def models_for(provider: dict) -> list[str | None]:
-    env = provider.get("env_vars", {})
-    primary = env.get("OPENAI_MODEL") or provider.get("default_model")
-    models: list[str | None] = []
-    if primary:
-        models.append(primary)
-    for model in provider.get("fallback_models", []):
-        if model and model not in models:
-            models.append(model)
-    if not models:
-        models.append(None)
-    return models
+_chat_run_locks: dict[str, threading.Lock] = {}
+_chat_run_locks_guard = threading.Lock()
 
 
-def provider_models(provider_id: str, provider: dict) -> list[str | None]:
-    if provider_id == "codex_auth":
-        return list(TELEGRAM_CODEX_MODELS)
-    return models_for(provider)
+def _chat_lock(chat_id: str) -> threading.Lock:
+    with _chat_run_locks_guard:
+        lk = _chat_run_locks.get(chat_id)
+        if lk is None:
+            lk = threading.Lock()
+            _chat_run_locks[chat_id] = lk
+        return lk
 
 
-def invoke_openai_compatible(provider_id: str, provider: dict, model: str, prompt: str) -> str:
-    env = provider.get("env_vars", {})
-    base_url = (env.get("OPENAI_BASE_URL") or provider.get("default_base_url") or "https://api.openai.com/v1").rstrip("/")
-    # A chave do próprio provider vem primeiro — o env do processo carrega a
-    # chave do provider global (NVIDIA_API_KEY do .env) e sequestrava chamadas
-    # a outros gateways (omnirouter recebia a chave NVIDIA → 401). A chave
-    # NVIDIA do env só vale como fallback para endpoints da própria NVIDIA.
-    candidates = [env.get("OPENAI_API_KEY"), env.get("NVIDIA_API_KEY")]
-    if "nvidia.com" in base_url.lower():
-        candidates.append(os.environ.get("NVIDIA_API_KEY"))
-    candidates.append(os.environ.get("OPENAI_API_KEY"))
-    api_key = next((k for k in candidates if _usable_secret(k)), None)
-    if not api_key:
-        raise RuntimeError(f"{provider_id} has no usable API key")
-    payload = {
-        "model": model,
-        "messages": [
-            {
-                "role": "system",
-                "content": (
-                    "Voce e o assistente Telegram do EvoNexus. Responda em portugues, "
-                    "de forma direta e util. Runtime atual: "
-                    f"provider={provider_id}, model={model}, base_url={base_url}. "
-                    "Se perguntarem qual LLM, provider ou modelo voce usa, responda exatamente com esses dados."
-                ),
-            },
-            {"role": "user", "content": prompt},
-        ],
-        "max_tokens": 900,
-        "temperature": 0.4,
-        # Gateways como o OmniRoute streamam SSE por padrão; sem stream=false
-        # o corpo vem em chunks "data: {...}" e o json.loads explode
-        # ("Expecting value: line 1 column 1").
-        "stream": False,
-    }
-    req = urllib.request.Request(
-        f"{base_url}/chat/completions",
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+_executor = ThreadPoolExecutor(max_workers=TELEGRAM_MAX_CONCURRENT, thread_name_prefix="telegram-orch")
+
+
+def _extract_reply_text(result: dict) -> str:
+    """Pull the assistant's final text out of a provider_fallback result.
+
+    result["output"] is the raw subprocess stdout — either a Claude/OpenClaude
+    JSON envelope ({"type":"result","result":"..."}) or opencode's ndjson
+    event stream, depending on which CLI answered. Falls back to the raw
+    output if neither shape parses, rather than raising.
+    """
+    output = (result.get("output") or "").strip()
+    try:
+        envelope = json.loads(output)
+        if isinstance(envelope, dict) and envelope.get("result"):
+            return str(envelope["result"]).strip()
+    except (json.JSONDecodeError, TypeError):
+        pass
+    try:
+        parsed = _parse_opencode_ndjson(output)
+        if parsed.get("text"):
+            return str(parsed["text"]).strip()
+    except Exception:
+        pass
+    return output
+
+
+def invoke_orchestrator(prompt: str) -> tuple[str, str]:
+    """Run the message through the same agentic-CLI fallback engine the
+    heartbeats use — real tool-use (Bash, Agent/Task spawning of any
+    .claude/agents/*.md specialist), routed through the active provider
+    chain in config/providers.json (opencode by default).
+    """
+    result = invoke_with_fallback(
+        prompt=prompt,
+        agent="",  # no fixed persona — the model self-dispatches to any of
+                   # the 38 specialist agents via the Agent/Task tool, same
+                   # as a normal interactive Claude Code session would.
+        max_turns=TELEGRAM_MAX_TURNS,
+        timeout_seconds=TELEGRAM_TIMEOUT,
     )
-    try:
-        with urllib.request.urlopen(req, timeout=90) as resp:
-            raw = resp.read().decode("utf-8")
-    except urllib.error.HTTPError as exc:
-        if exc.code == 401:
-            raise RuntimeError(f"401 Unauthorized: chave API inválida/expirada para {provider_id}") from exc
-        raise
-    return _parse_chat_completion(raw, provider_id, model)
+    if result.get("status") != "success":
+        raise RuntimeError(result.get("error") or f"status={result.get('status')}")
+    text = _extract_reply_text(result)
+    if not text:
+        raise RuntimeError("orchestrator returned empty response")
+    used = f"{result.get('provider_id') or '?'}:{result.get('model') or 'default'}"
+    return text, used
 
 
-def _parse_chat_completion(raw: str, provider_id: str, model: str) -> str:
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        # Gateway ignorou stream=false e devolveu SSE mesmo assim — agrega os
-        # deltas de content dos chunks "data: {...}".
-        parts: list[str] = []
-        for line in raw.splitlines():
-            line = line.strip()
-            if not line.startswith("data:"):
-                continue
-            chunk = line[len("data:"):].strip()
-            if not chunk or chunk == "[DONE]":
-                continue
-            try:
-                choices = json.loads(chunk).get("choices") or [{}]
-                delta = choices[0].get("delta") or {}
-            except (json.JSONDecodeError, AttributeError, IndexError, TypeError):
-                continue
-            piece = delta.get("content")
-            if piece:
-                parts.append(piece)
-        content = "".join(parts).strip()
-        if not content:
-            raise RuntimeError(f"{provider_id}:{model} returned unparseable response")
-        return content
-    content = (data.get("choices") or [{}])[0].get("message", {}).get("content", "")
-    if not content:
-        raise RuntimeError(f"{provider_id}:{model} returned empty content")
-    return content.strip()
+def _typing_loop(token: str, chat_id: str, stop_event: threading.Event) -> None:
+    while not stop_event.is_set():
+        try:
+            api(token, "sendChatAction", {"chat_id": chat_id, "action": "typing"}, timeout=10)
+        except Exception:
+            pass
+        stop_event.wait(4)
 
 
-def invoke_cli(provider_id: str, provider: dict, prompt: str, model: str | None = None) -> str:
-    if provider_id == "codex_auth":
-        return invoke_codex_exec(prompt)
+def run_orchestrated_reply(
+    token: str,
+    chat_id: str,
+    prompt: str,
+    *,
+    memory_user_text: str,
+    speaker: str | None,
+) -> None:
+    """Background task: ack, keep 'typing' alive, run the orchestrator, reply.
 
-    cli = provider.get("cli_command") or ("claude" if provider_id == "anthropic" else "openclaude")
-    if provider_id == "anthropic":
-        cli = "claude"
-    elif provider_id == "codex_auth":
-        cli = "openclaude"
-    env = os.environ.copy()
-    for key, value in provider.get("env_vars", {}).items():
-        # Placeholders [REDACTED] do providers.json não podem vazar pro CLI —
-        # viram uma chave inválida e todo request 401a.
-        if value and _usable_secret(str(value)):
-            env[key] = str(value)
-    # Impede o CLI de se auto-migrar pro instalador nativo no meio da sessão
-    # (mata o processo com exit 1).
-    env["DISABLE_AUTOUPDATER"] = "1"
-    if model:
-        env["OPENAI_MODEL"] = model
-    max_turns = int(os.environ.get("TELEGRAM_CLI_MAX_TURNS") or provider.get("telegram_max_turns") or (5 if provider_id == "codex_auth" else 2))
-    timeout = int(os.environ.get("TELEGRAM_CLI_TIMEOUT") or provider.get("telegram_timeout_seconds") or (240 if provider_id == "codex_auth" else 120))
-    cmd = [cli, "--print", "--max-turns", str(max_turns), "--dangerously-skip-permissions", "--", prompt]
-    proc = subprocess.run(cmd, cwd=ROOT, env=env, text=True, capture_output=True, timeout=timeout)
-    if proc.returncode != 0:
-        raise RuntimeError((proc.stderr or proc.stdout or f"{cli} failed").strip()[:500])
-    return proc.stdout.strip()
-
-
-def invoke_codex_exec(prompt: str) -> str:
-    output_path: Path | None = None
-    with tempfile.NamedTemporaryFile(prefix="telegram-codex-", suffix=".txt", delete=False) as tmp:
-        output_path = Path(tmp.name)
-    timeout = int(os.environ.get("TELEGRAM_CODEX_TIMEOUT") or 600)
-    try:
-        proc = subprocess.run(
-            [
-                "codex",
-                "exec",
-                "-C",
-                str(ROOT),
-                "--dangerously-bypass-approvals-and-sandbox",
-                "--ephemeral",
-                "-o",
-                str(output_path),
-                prompt,
-            ],
-            cwd=ROOT,
-            text=True,
-            capture_output=True,
-            input="",
-            timeout=timeout,
-        )
-        if proc.returncode != 0:
-            raise RuntimeError(compact_codex_error(proc.stdout, proc.stderr))
-        text = output_path.read_text(encoding="utf-8", errors="replace").strip()
-        if not text:
-            raise RuntimeError("codex exec returned empty response")
-        return text
-    finally:
-        if output_path:
-            try:
-                output_path.unlink()
-            except OSError:
-                pass
-
-
-def compact_codex_error(stdout: str, stderr: str) -> str:
-    raw = (stderr or stdout or "codex exec failed").strip()
-    if not raw:
-        return "codex exec failed"
-    interesting: list[str] = []
-    for line in raw.splitlines():
-        stripped = line.strip()
-        if not stripped:
-            continue
-        if stripped.startswith(("ERROR:", "error:", "Error:", "status:", "message:")):
-            interesting.append(stripped)
-        elif "usage limit" in stripped.lower() or "rate limit" in stripped.lower() or "quota" in stripped.lower():
-            interesting.append(stripped)
-        elif "timed out" in stripped.lower() or "timeout" in stripped.lower():
-            interesting.append(stripped)
-    if interesting:
-        return " | ".join(interesting[-3:])[:700]
-    return "codex exec falhou sem mensagem final; veja screen -r telegram"
-
-
-def invoke_provider(prompt: str) -> tuple[str, str]:
-    errors: list[str] = []
-    for provider_id, provider in provider_chain():
-        for model in provider_models(provider_id, provider):
-            try:
-                if provider_id in {"anthropic", "codex_auth"}:
-                    text = invoke_cli(provider_id, provider, prompt, model)
-                    return text, f"{provider_id}:{model or 'default'}"
-                if model:
-                    text = invoke_openai_compatible(provider_id, provider, model, prompt)
-                    return text, f"{provider_id}:{model}"
-            except Exception as exc:
-                errors.append(f"{provider_id}:{model or 'default'}: {exc}")
-                log(f"fallback after {provider_id}:{model or 'default'} failed: {exc}")
-    raise RuntimeError("All providers failed: " + " | ".join(errors[-3:]))
+    Serialized per chat_id (a lock, not the executor) so one chat's messages
+    never interleave while other chats keep running concurrently — this is
+    what lets the poll loop submit long agentic runs without stalling.
+    """
+    with _chat_lock(chat_id):
+        try:
+            api(token, "sendMessage", {"chat_id": chat_id, "text": "Recebido, trabalhando nisso..."})
+        except Exception:
+            pass
+        stop_typing = threading.Event()
+        typing_thread = threading.Thread(target=_typing_loop, args=(token, chat_id, stop_typing), daemon=True)
+        typing_thread.start()
+        try:
+            answer, used = invoke_orchestrator(prompt)
+        except Exception as exc:
+            answer = f"Falhei ao orquestrar: {exc}"
+            used = "error"
+        finally:
+            stop_typing.set()
+            typing_thread.join(timeout=2)
+        log(f"orchestrated-reply chat={chat_id} via {used}")
+        api(token, "sendMessage", {"chat_id": chat_id, "text": answer[:3900]})
+        if used != "error":
+            append_chat_memory(chat_id, "user", memory_user_text, speaker=speaker)
+            append_chat_memory(chat_id, "assistant", answer, speaker="Magneto")
 
 
 def load_offset() -> int | None:
@@ -1042,20 +944,17 @@ def main() -> int:
                 audio_file_id = message_audio_file_id(message)
                 if audio_file_id:
                     api(token, "sendChatAction", {"chat_id": chat_id, "action": "typing"}, timeout=10)
-                    transcription = ""
                     try:
                         transcription = handle_audio_message(token, chat_id, audio_file_id)
-                        prompt = build_prompt(chat_id, transcription, speaker=sender_name)
-                        answer, used = invoke_provider(prompt)
                     except Exception as exc:
-                        error_label = "processar audio" if transcription else "transcrever audio"
-                        answer = f"Falhei ao {error_label}: {exc}"
-                        used = "error"
-                    log(f"audio chat={chat_id} via {used}")
-                    api(token, "sendMessage", {"chat_id": chat_id, "text": answer[:3900]})
-                    if used != "error":
-                        append_chat_memory(chat_id, "user", f"[audio transcrito] {transcription}", speaker=sender_name)
-                        append_chat_memory(chat_id, "assistant", answer, speaker="Magneto")
+                        api(token, "sendMessage", {"chat_id": chat_id, "text": f"Falhei ao transcrever audio: {exc}"})
+                        log(f"audio-transcribe-fail chat={chat_id}: {exc}")
+                        continue
+                    prompt = build_prompt(chat_id, transcription, speaker=sender_name)
+                    _executor.submit(
+                        run_orchestrated_reply, token, chat_id, prompt,
+                        memory_user_text=f"[audio transcrito] {transcription}", speaker=sender_name,
+                    )
                     continue
                 image_info = message_image_file_id(message)
                 if image_info:
@@ -1063,23 +962,22 @@ def main() -> int:
                     try:
                         image_file_id, suffix = image_info
                         image_path = save_telegram_file(token, image_file_id, suffix=suffix)
-                        caption = (message.get("caption") or "").strip()
-                        prompt_text = (
-                            "Analise a imagem recebida no Telegram.\n"
-                            f"Caminho local da imagem: {image_path}\n"
-                            f"Legenda/mensagem do usuario: {caption or '(sem legenda)'}\n"
-                            "Se conseguir acessar o arquivo, descreva o que ve e responda ao pedido do usuario."
-                        )
-                        prompt = build_prompt(chat_id, prompt_text, speaker=sender_name)
-                        answer, used = invoke_provider(prompt)
                     except Exception as exc:
-                        answer = f"Falhei ao processar imagem: {exc}"
-                        used = "error"
-                    log(f"image chat={chat_id} via {used}")
-                    api(token, "sendMessage", {"chat_id": chat_id, "text": answer[:3900]})
-                    if used != "error":
-                        append_chat_memory(chat_id, "user", f"[imagem] {caption or image_path}", speaker=sender_name)
-                        append_chat_memory(chat_id, "assistant", answer, speaker="Magneto")
+                        api(token, "sendMessage", {"chat_id": chat_id, "text": f"Falhei ao processar imagem: {exc}"})
+                        log(f"image-download-fail chat={chat_id}: {exc}")
+                        continue
+                    caption = (message.get("caption") or "").strip()
+                    prompt_text = (
+                        "Analise a imagem recebida no Telegram.\n"
+                        f"Caminho local da imagem: {image_path}\n"
+                        f"Legenda/mensagem do usuario: {caption or '(sem legenda)'}\n"
+                        "Se conseguir acessar o arquivo, descreva o que ve e responda ao pedido do usuario."
+                    )
+                    prompt = build_prompt(chat_id, prompt_text, speaker=sender_name)
+                    _executor.submit(
+                        run_orchestrated_reply, token, chat_id, prompt,
+                        memory_user_text=f"[imagem] {caption or image_path}", speaker=sender_name,
+                    )
                     continue
                 if not text:
                     continue
@@ -1120,18 +1018,11 @@ def main() -> int:
                     api(token, "sendMessage", {"chat_id": chat_id, "text": answer})
                     log(f"provider-info chat={chat_id} {provider_id}:{model or 'default'}")
                     continue
-                api(token, "sendChatAction", {"chat_id": chat_id, "action": "typing"}, timeout=10)
-                try:
-                    prompt = build_prompt(chat_id, text, speaker=sender_name)
-                    answer, used = invoke_provider(prompt)
-                except Exception as exc:
-                    answer = f"Falhei ao consultar o provider: {exc}"
-                    used = "error"
-                log(f"reply chat={chat_id} via {used}")
-                api(token, "sendMessage", {"chat_id": chat_id, "text": answer[:3900]})
-                if used != "error":
-                    append_chat_memory(chat_id, "user", text, speaker=sender_name)
-                    append_chat_memory(chat_id, "assistant", answer, speaker="Magneto")
+                prompt = build_prompt(chat_id, text, speaker=sender_name)
+                _executor.submit(
+                    run_orchestrated_reply, token, chat_id, prompt,
+                    memory_user_text=text, speaker=sender_name,
+                )
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", "ignore")
             log(f"telegram http error {exc.code}: {body[:300]}")
