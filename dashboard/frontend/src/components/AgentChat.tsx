@@ -1044,6 +1044,120 @@ export default function AgentChat({ agent, sessionId, accentColor = '#00FFA7', e
   const inputDisabled = isConnecting || !!effectiveError
   const canSend = (input.trim().length > 0 || attachedFiles.length > 0) && !inputDisabled && status !== 'running'
 
+  // Top-row badges (connection status, ticket pill, pending-approval) used to
+  // be `absolute top-3 ...` overlays fixed to the container's top edge — that
+  // worked when the HUD dashboard row didn't exist yet, but the HUD row is
+  // itself normal-flow content starting at that same top edge, so once `hud`
+  // arrives the badges render on top of the LCD readout (reported live
+  // 2026-07-15: "No ticket" pill overlapping the tok/s panel). Fix: render
+  // these as normal flex children INSIDE the HUD row (flex-wrap, so mobile
+  // reflows instead of clipping) whenever hud exists; keep the original
+  // absolute-overlay behavior only for the pre-HUD state, where there's no
+  // HUD row underneath to collide with.
+  const cornerStatusBadge = (isConnecting || effectiveError) ? (
+    <div
+      className={hud
+        ? 'relative flex flex-shrink-0 items-center gap-1.5 px-2 py-1 rounded-full border text-[10px] max-w-[220px] sm:max-w-[280px]'
+        : 'absolute top-3 right-3 z-40 flex items-center gap-1.5 px-2 py-1 rounded-full border text-[10px] max-w-[280px]'}
+      style={{
+        background: effectiveError ? '#ef444415' : '#F59E0B15',
+        borderColor: effectiveError ? '#ef444440' : '#F59E0B40',
+        color: effectiveError ? '#ef4444' : '#F59E0B',
+      }}
+      title={effectiveError || 'Connecting...'}
+    >
+      <span
+        className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${effectiveError ? '' : 'animate-pulse'}`}
+        style={{ background: effectiveError ? '#ef4444' : '#F59E0B' }}
+      />
+      <span className="truncate">{effectiveError || 'Connecting...'}</span>
+    </div>
+  ) : null
+
+  const ticketPillBlock = sessionId ? (
+    <div className={hud ? 'relative flex-shrink-0' : 'absolute top-3 left-3 z-40'}>
+      <button
+        onClick={() => setShowTicketPicker(v => !v)}
+        className="flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-[10px] transition-colors"
+        style={{
+          background: ticketId ? `${accentColor}10` : '#161b22',
+          borderColor: ticketId ? `${accentColor}30` : '#21262d',
+          color: ticketId ? accentColor : '#667085',
+        }}
+        title={ticketId ? `Ticket #${ticketId.slice(0, 8)} attached` : 'Attach to a ticket'}
+      >
+        <TicketIcon size={11} />
+        <span className="font-mono">
+          {ticketId ? `#${ticketId.slice(0, 8)}` : 'No ticket'}
+        </span>
+      </button>
+      {showTicketPicker && (
+        <div
+          className="absolute mt-1.5 left-0 w-72 rounded-lg border bg-[#161b22] shadow-xl z-50 max-h-80 overflow-y-auto"
+          style={{ borderColor: '#21262d' }}
+        >
+          <div className="px-3 py-2 border-b border-[#21262d] text-[10px] text-[#667085] uppercase tracking-wider">
+            Attach to ticket
+          </div>
+          {ticketId && (
+            <button
+              onClick={() => bindTicket(null)}
+              className="w-full text-left px-3 py-2 text-xs text-red-400 hover:bg-white/5 border-b border-[#21262d] flex items-center gap-2"
+            >
+              <X size={12} /> Detach current ticket
+            </button>
+          )}
+          <button
+            onClick={createAndBindTicket}
+            className="w-full text-left px-3 py-2 text-xs text-[#e6edf3] hover:bg-white/5 border-b border-[#21262d] flex items-center gap-2"
+            style={{ color: accentColor }}
+          >
+            <Plus size={12} /> Create new ticket
+          </button>
+          {tickets.length === 0 ? (
+            <div className="px-3 py-3 text-[11px] text-[#667085] italic">
+              No open tickets for @{agent}
+            </div>
+          ) : (
+            tickets.map(t => (
+              <button
+                key={t.id}
+                onClick={() => bindTicket(t.id)}
+                className="w-full text-left px-3 py-2 text-xs hover:bg-white/5 transition-colors flex items-start gap-2"
+              >
+                <span
+                  className="font-mono text-[10px] mt-0.5 shrink-0"
+                  style={{ color: t.id === ticketId ? accentColor : '#667085' }}
+                >
+                  #{t.id.slice(0, 6)}
+                </span>
+                <span className="text-[#e6edf3] truncate flex-1">{t.title}</span>
+                {t.id === ticketId && <CheckCircle2 size={11} style={{ color: accentColor }} />}
+              </button>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  ) : null
+
+  const pendingApprovalBadge = pendingApprovals.length > 0 ? (
+    <div
+      className={hud
+        ? 'relative flex flex-shrink-0 items-center gap-1.5 px-2.5 py-1 rounded-full border text-[10px] animate-pulse'
+        : 'absolute top-3 z-40 flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-[10px] animate-pulse'}
+      style={{
+        ...(hud ? {} : { right: '12px' }),
+        background: '#F59E0B15',
+        borderColor: '#F59E0B40',
+        color: '#F59E0B',
+      }}
+    >
+      <ShieldAlert size={11} />
+      <span>{pendingApprovals.length === 1 ? 'Awaiting your approval' : `${pendingApprovals.length} awaiting approval`}</span>
+    </div>
+  ) : null
+
   return (
     <div
       className="flex flex-col h-full bg-[#0C111D] relative"
@@ -1052,108 +1166,12 @@ export default function AgentChat({ agent, sessionId, accentColor = '#00FFA7', e
       onDragOver={handleDragOver}
       onDrop={handleDrop}
     >
-      {/* Corner status indicator */}
-      {(isConnecting || effectiveError) && (
-        <div
-          className="absolute top-3 right-3 z-40 flex items-center gap-1.5 px-2 py-1 rounded-full border text-[10px] max-w-[280px]"
-          style={{
-            background: effectiveError ? '#ef444415' : '#F59E0B15',
-            borderColor: effectiveError ? '#ef444440' : '#F59E0B40',
-            color: effectiveError ? '#ef4444' : '#F59E0B',
-          }}
-          title={effectiveError || 'Connecting...'}
-        >
-          <span
-            className={`w-1.5 h-1.5 rounded-full ${effectiveError ? '' : 'animate-pulse'}`}
-            style={{ background: effectiveError ? '#ef4444' : '#F59E0B' }}
-          />
-          <span className="truncate">{effectiveError || 'Connecting...'}</span>
-        </div>
-      )}
-
-      {/* Ticket binding pill (Feature 1.3) */}
-      {sessionId && (
-        <div className="absolute top-3 left-3 z-40">
-          <button
-            onClick={() => setShowTicketPicker(v => !v)}
-            className="flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-[10px] transition-colors"
-            style={{
-              background: ticketId ? `${accentColor}10` : '#161b22',
-              borderColor: ticketId ? `${accentColor}30` : '#21262d',
-              color: ticketId ? accentColor : '#667085',
-            }}
-            title={ticketId ? `Ticket #${ticketId.slice(0, 8)} attached` : 'Attach to a ticket'}
-          >
-            <TicketIcon size={11} />
-            <span className="font-mono">
-              {ticketId ? `#${ticketId.slice(0, 8)}` : 'No ticket'}
-            </span>
-          </button>
-          {showTicketPicker && (
-            <div
-              className="absolute mt-1.5 left-0 w-72 rounded-lg border bg-[#161b22] shadow-xl z-50 max-h-80 overflow-y-auto"
-              style={{ borderColor: '#21262d' }}
-            >
-              <div className="px-3 py-2 border-b border-[#21262d] text-[10px] text-[#667085] uppercase tracking-wider">
-                Attach to ticket
-              </div>
-              {ticketId && (
-                <button
-                  onClick={() => bindTicket(null)}
-                  className="w-full text-left px-3 py-2 text-xs text-red-400 hover:bg-white/5 border-b border-[#21262d] flex items-center gap-2"
-                >
-                  <X size={12} /> Detach current ticket
-                </button>
-              )}
-              <button
-                onClick={createAndBindTicket}
-                className="w-full text-left px-3 py-2 text-xs text-[#e6edf3] hover:bg-white/5 border-b border-[#21262d] flex items-center gap-2"
-                style={{ color: accentColor }}
-              >
-                <Plus size={12} /> Create new ticket
-              </button>
-              {tickets.length === 0 ? (
-                <div className="px-3 py-3 text-[11px] text-[#667085] italic">
-                  No open tickets for @{agent}
-                </div>
-              ) : (
-                tickets.map(t => (
-                  <button
-                    key={t.id}
-                    onClick={() => bindTicket(t.id)}
-                    className="w-full text-left px-3 py-2 text-xs hover:bg-white/5 transition-colors flex items-start gap-2"
-                  >
-                    <span
-                      className="font-mono text-[10px] mt-0.5 shrink-0"
-                      style={{ color: t.id === ticketId ? accentColor : '#667085' }}
-                    >
-                      #{t.id.slice(0, 6)}
-                    </span>
-                    <span className="text-[#e6edf3] truncate flex-1">{t.title}</span>
-                    {t.id === ticketId && <CheckCircle2 size={11} style={{ color: accentColor }} />}
-                  </button>
-                ))
-              )}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Pending approval badge */}
-      {pendingApprovals.length > 0 && (
-        <div
-          className="absolute top-3 z-40 flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-[10px] animate-pulse"
-          style={{
-            right: sessionId ? '12px' : '12px',
-            background: '#F59E0B15',
-            borderColor: '#F59E0B40',
-            color: '#F59E0B',
-          }}
-        >
-          <ShieldAlert size={11} />
-          <span>{pendingApprovals.length === 1 ? 'Awaiting your approval' : `${pendingApprovals.length} awaiting approval`}</span>
-        </div>
-      )}
+      {/* Top badges — absolute-overlay only until the HUD row exists (see
+          cornerStatusBadge/ticketPillBlock/pendingApprovalBadge above);
+          once hud arrives they move inline into the HUD row below instead. */}
+      {!hud && cornerStatusBadge}
+      {!hud && ticketPillBlock}
+      {!hud && pendingApprovalBadge}
 
       {/* Drag-drop overlay */}
       {isDragging && (
@@ -1180,8 +1198,13 @@ export default function AgentChat({ agent, sessionId, accentColor = '#00FFA7', e
           — see TerminalHudPanel.tsx) — only appears once the backend has
           sent at least one hud_update, same as the Terminal. */}
       {hud && (
-        <div className="flex-shrink-0 flex items-center gap-2 px-4 py-1.5 border-b border-[#21262d] bg-[#0d1117]">
+        <div className="flex-shrink-0 flex flex-wrap items-center gap-2 px-4 py-1.5 border-b border-[#21262d] bg-[#0d1117]">
           <TerminalHudPanel hud={hud} accentColor={accentColor} />
+          {ticketPillBlock}
+          <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
+            {cornerStatusBadge}
+            {pendingApprovalBadge}
+          </div>
         </div>
       )}
 
