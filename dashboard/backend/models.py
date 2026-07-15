@@ -792,6 +792,15 @@ class Ticket(db.Model):
     priority_rank = db.Column(db.Integer, nullable=False, default=2)  # derived
     project_id = db.Column(db.Integer, db.ForeignKey("projects.id", ondelete="SET NULL"), nullable=True)
     goal_id = db.Column(db.Integer, db.ForeignKey("goals.id", ondelete="SET NULL"), nullable=True)
+    # Real FK to the specific goal_task this ticket represents (as opposed to
+    # goal_id, which only scopes the ticket to a goal in general). Without
+    # this, resolving a ticket had no reliable way to know which goal_task —
+    # if any — should also flip to done: the only correlation was a "[GOAL:N]
+    # <task title>" naming convention that nothing in the codebase actually
+    # enforced or read back. Confirmed live 2026-07-15: 24 goal_tasks sat
+    # `open` for weeks with their mirrored ticket already `resolved`, because
+    # closing the ticket never touched the task. See _sync_goal_task_from_ticket.
+    task_id = db.Column(db.Integer, db.ForeignKey("goal_tasks.id", ondelete="SET NULL"), nullable=True)
     assignee_agent = db.Column(db.String(100), nullable=True)
     locked_at = db.Column(db.String(30), nullable=True)
     locked_by = db.Column(db.String(100), nullable=True)
@@ -822,6 +831,7 @@ class Ticket(db.Model):
             "priority_rank": self.priority_rank,
             "project_id": self.project_id,
             "goal_id": self.goal_id,
+            "task_id": self.task_id,
             "assignee_agent": self.assignee_agent,
             "locked_at": self.locked_at,
             "locked_by": self.locked_by,

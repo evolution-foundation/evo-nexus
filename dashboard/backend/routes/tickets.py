@@ -42,6 +42,10 @@ def _require(action: str) -> Optional[tuple]:
     return None
 
 
+def _db_path() -> str:
+    return str(WORKSPACE / "dashboard" / "data" / "evonexus.db")
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
@@ -273,6 +277,7 @@ def create_ticket():
         assignee_agent=data.get("assignee_agent"),
         project_id=data.get("project_id"),
         goal_id=data.get("goal_id"),
+        task_id=data.get("task_id"),
         created_by=current_user.username,
         source_agent=source_agent,
         source_session_id=source_session_id,
@@ -341,6 +346,9 @@ def update_ticket(ticket_id: str):
     if "goal_id" in data:
         ticket.goal_id = data["goal_id"]
 
+    if "task_id" in data:
+        ticket.task_id = data["task_id"]
+
     # Thread-areas: allow persisting the SDK session ID back from the frontend (R1 mitigation)
     if "thread_session_id" in data:
         ticket.thread_session_id = data["thread_session_id"] or None
@@ -349,6 +357,19 @@ def update_ticket(ticket_id: str):
     ticket.updated_at = _now()
     _log_activity(ticket_id, current_user.username, "status_changed" if "status" in changes else "updated", changes)
     db.session.commit()
+
+    # Mirror onto the linked goal_task (if any) — same sync heartbeat-driven
+    # resolutions get via heartbeat_outcome._move_ticket. Manual/UI/API status
+    # changes need it too, or the goal only progresses when a heartbeat agent
+    # happens to be the one closing the ticket.
+    if "status" in changes and changes["status"]["to"] in ("resolved", "closed"):
+        import sqlite3
+        from heartbeat_outcome import _sync_goal_task_from_ticket
+        _conn = sqlite3.connect(_db_path())
+        try:
+            _sync_goal_task_from_ticket(ticket_id, changes["status"]["to"], _conn)
+        finally:
+            _conn.close()
 
     audit(current_user, "update", "tickets", f"updated ticket {ticket_id}: {list(data.keys())}")
     return jsonify(ticket.to_dict())
@@ -511,6 +532,7 @@ def bulk_action():
 
     now = _now()
     updated = 0
+    closed_ids: list[str] = []
 
     try:
         for tid in ids:
@@ -523,6 +545,7 @@ def bulk_action():
                 ticket.resolved_at = ticket.resolved_at or now
                 ticket.updated_at = now
                 _log_activity(tid, current_user.username, "status_changed", {"from": old, "to": "closed"})
+                closed_ids.append(tid)
             elif action == "reopen":
                 old = ticket.status
                 ticket.status = "open"
@@ -546,6 +569,16 @@ def bulk_action():
     except Exception as exc:
         db.session.rollback()
         return jsonify({"error": f"bulk action failed: {exc}"}), 500
+
+    if closed_ids:
+        import sqlite3
+        from heartbeat_outcome import _sync_goal_task_from_ticket
+        _conn = sqlite3.connect(_db_path())
+        try:
+            for tid in closed_ids:
+                _sync_goal_task_from_ticket(tid, "closed", _conn)
+        finally:
+            _conn.close()
 
     audit(current_user, "manage", "tickets", f"bulk {action} on {updated} tickets")
     return jsonify({"updated": updated, "action": action})

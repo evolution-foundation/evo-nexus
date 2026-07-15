@@ -354,6 +354,12 @@ with app.app_context():
         _conn.commit()
     # --- End thread-areas migration ---
 
+    # --- task_id link on tickets (ticket <-> goal_task real FK) ---
+    if "task_id" not in _ticket_cols:
+        _cur.execute("ALTER TABLE tickets ADD COLUMN task_id INTEGER REFERENCES goal_tasks(id) ON DELETE SET NULL")
+        _conn.commit()
+    # --- End task_id migration ---
+
     # --- Plugin provenance: source_plugin on tables that plugins can seed ---
     # When a plugin installs rows into projects/goals/missions/goal_tasks/
     # tickets/triggers, the row gets tagged with its slug. Uninstall then
