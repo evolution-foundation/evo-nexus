@@ -21,6 +21,8 @@ Usage:
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import json
 import os
 import re
@@ -740,6 +742,66 @@ class FallbackEngine:
 
 # ── Convenience: single call with automatic fallback ───────────────────────────
 
+# ── Cross-container workspace-bash mutex ─────────────────────────────────────
+# Heartbeats (dashboard service) and the Telegram orchestrator (telegram
+# service, since the 2026-07-15 rewire) both funnel through this function,
+# each running in its OWN container, and both can spawn a real Bash/Agent-
+# capable CLI session against the SAME /workspace tree with zero coordination
+# — two concurrent runs (e.g. two Telegram chats, or a heartbeat + a Telegram
+# message) can race on the same file or git working tree.
+#
+# A DB-row lock (the tickets.locked_at/locked_by pattern) won't work here:
+# dashboard.db lives on the evonexus_dashboard_data volume, which is only
+# mounted in the dashboard service — telegram and scheduler don't have it, so
+# a sqlite-based lock would silently be per-container and coordinate nothing.
+# evonexus_workspace IS mounted at the same path (/workspace/workspace) in
+# all three services, so flock() on a file there is a real, OS-enforced,
+# cross-container mutex — and unlike the ticket lock, it needs no janitor
+# sweep: the OS releases it automatically if the holding process dies.
+_ORCH_LOCK_PATH = WORKSPACE / "workspace" / ".locks" / "orchestrator-bash.lock"
+_ORCH_LOCK_WAIT_SECONDS = float(os.environ.get("ORCHESTRATOR_LOCK_WAIT_SECONDS", "120"))
+_ORCH_LOCK_POLL_SECONDS = 0.5
+
+
+@contextlib.contextmanager
+def _workspace_bash_lock(holder: str) -> Iterator[None]:
+    """Block until the workspace-wide Bash mutex is free, then hold it.
+
+    Raises TimeoutError if it can't acquire within _ORCH_LOCK_WAIT_SECONDS —
+    callers should turn that into a clean "busy" result rather than letting
+    it propagate as an unhandled exception.
+    """
+    _ORCH_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(_ORCH_LOCK_PATH), os.O_CREAT | os.O_RDWR, 0o644)
+    deadline = time.time() + _ORCH_LOCK_WAIT_SECONDS
+    acquired = False
+    try:
+        while time.time() < deadline:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                acquired = True
+                break
+            except BlockingIOError:
+                time.sleep(_ORCH_LOCK_POLL_SECONDS)
+        if not acquired:
+            raise TimeoutError(
+                f"workspace busy — another agentic run held the lock for {_ORCH_LOCK_WAIT_SECONDS}s"
+            )
+        try:
+            os.ftruncate(fd, 0)
+            os.write(fd, f"{holder}:pid={os.getpid()}:since={time.time()}\n".encode())
+        except OSError:
+            pass  # best-effort observability only, never block on it
+        yield
+    finally:
+        if acquired:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
+        os.close(fd)
+
+
 def invoke_with_fallback(
     prompt: str,
     max_turns: int = 10,
@@ -749,6 +811,31 @@ def invoke_with_fallback(
     force_model: str | None = None,
 ) -> dict:
     """Invoke CLI with automatic 429 fallback. Returns the first successful result."""
+    holder = f"agent={agent or 'none'}"
+    try:
+        with _workspace_bash_lock(holder):
+            return _invoke_with_fallback_locked(
+                prompt=prompt, max_turns=max_turns, timeout_seconds=timeout_seconds,
+                agent=agent, force_provider=force_provider, force_model=force_model,
+            )
+    except TimeoutError as exc:
+        print(f"[fallback] {exc}", flush=True)
+        return {
+            "status": "busy",
+            "error": str(exc),
+            "output": "", "duration_ms": 0,
+            "fallback_exhausted": False, "total_attempts": 0,
+        }
+
+
+def _invoke_with_fallback_locked(
+    prompt: str,
+    max_turns: int = 10,
+    timeout_seconds: int = 600,
+    agent: str = "",
+    force_provider: str | None = None,
+    force_model: str | None = None,
+) -> dict:
     engine = FallbackEngine()
     last_result = None
 
