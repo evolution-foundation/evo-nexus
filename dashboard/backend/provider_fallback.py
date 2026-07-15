@@ -124,6 +124,15 @@ def is_429_error(error_text: str) -> bool:
 _cooldowns: dict[str, float] = {}
 DEFAULT_COOLDOWN_SECONDS = 60   # 1 min — faster rotation through the NVIDIA chain
 
+# A model that hangs (no response, no error, no 429) previously ate the FULL
+# timeout_seconds of a single attempt before the chain could advance — with
+# timeout_seconds=900 and 12 NVIDIA models, worst case was 3h stuck on one
+# call. Confirmed live 2026-07-14 (ai-news-weekly-x-research: sage step stuck
+# 11+ min with zero attempt-failed log lines). Cap each attempt so a hang
+# gets cut and the chain rotates quickly; the overall deadline below still
+# respects the caller's timeout_seconds as a TOTAL budget.
+PER_ATTEMPT_TIMEOUT_CAP = 180
+
 
 def set_cooldown(key: str, duration_seconds: float = DEFAULT_COOLDOWN_SECONDS):
     _cooldowns[key] = time.time() + duration_seconds
@@ -634,6 +643,7 @@ class FallbackEngine:
     ) -> Iterator[FallbackAttempt]:
         config = _read_providers_config()
         attempt_num = 0
+        deadline = time.time() + timeout_seconds
 
         chain = self.provider_chain
         if force_provider:
@@ -672,6 +682,11 @@ class FallbackEngine:
                 if is_on_cooldown(provider_id) and provider_id != "nvidia":
                     continue
 
+                remaining = deadline - time.time()
+                if remaining < 20:
+                    return
+                attempt_timeout = int(min(remaining, PER_ATTEMPT_TIMEOUT_CAP))
+
                 attempt_num += 1
 
                 env_overrides = dict(base_env)
@@ -685,7 +700,7 @@ class FallbackEngine:
                     cli_command=cli_command,
                     prompt=prompt,
                     max_turns=max_turns,
-                    timeout_seconds=timeout_seconds,
+                    timeout_seconds=attempt_timeout,
                     agent=agent,
                     env_overrides=env_overrides,
                 )
