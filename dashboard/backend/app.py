@@ -371,6 +371,39 @@ with app.app_context():
 
     # --- End tickets migration ---
 
+    # --- ticket_activity reconciliation (Feature 1.3, run unconditionally) ---
+    # The CREATE TABLE IF NOT EXISTS ticket_activity above lives inside
+    # `if "tickets" not in _existing_tables2:` (line ~277). On any install
+    # where `tickets` already existed before ticket_activity was added to that
+    # executescript, the whole block — including ticket_activity's own
+    # CREATE TABLE — never ran, so the table can be missing entirely or stuck
+    # on an older column set with no path to catch up. Confirmed live
+    # 2026-07-15: production hit `sqlite3.OperationalError: table
+    # ticket_activity has no column named X` from heartbeat_outcome.py's
+    # INSERT (id, ticket_id, actor, action, payload, created_at) — that
+    # gated CREATE TABLE was the only place this table's shape was ever
+    # declared. Run unconditionally so it self-heals regardless of when
+    # `tickets` was created.
+    _cur.execute("""
+        CREATE TABLE IF NOT EXISTS ticket_activity (
+            id TEXT PRIMARY KEY,
+            ticket_id TEXT NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+            actor TEXT NOT NULL,
+            action TEXT NOT NULL,
+            payload TEXT,
+            created_at TEXT NOT NULL
+        );
+    """)
+    _cur.execute("CREATE INDEX IF NOT EXISTS idx_activity_ticket_created ON ticket_activity(ticket_id, created_at);")
+    _conn.commit()
+    _activity_cols = {row[1] for row in _cur.execute("PRAGMA table_info(ticket_activity)").fetchall()}
+    for _col, _decl in (("actor", "TEXT NOT NULL DEFAULT ''"), ("action", "TEXT NOT NULL DEFAULT ''"),
+                         ("payload", "TEXT"), ("created_at", "TEXT NOT NULL DEFAULT ''")):
+        if _col not in _activity_cols:
+            _cur.execute(f"ALTER TABLE ticket_activity ADD COLUMN {_col} {_decl}")
+            _conn.commit()
+    # --- End ticket_activity reconciliation ---
+
     # --- Knowledge connections migration (pgvector-knowledge feature) ---
     _existing_tables3 = {row[0] for row in _cur.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
     if "knowledge_connections" not in _existing_tables3:
