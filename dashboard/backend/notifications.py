@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import time
 import urllib.parse
 import urllib.request
@@ -64,6 +65,34 @@ def _should_send(category: str, key: str) -> bool:
     return False
 
 
+def _append_bot_memory(chat_id: str, text: str) -> None:
+    """Mirror a system-pushed notification into the Telegram bot's own chat memory.
+
+    scripts/telegram_provider_bot.py runs as a SEPARATE service/container and
+    builds conversation context purely from what flowed through its own reply
+    loop (append_chat_memory calls in run_orchestrated_reply). Messages this
+    module sends via _send_telegram — heartbeat alerts, outcome notifications,
+    approval pings — go straight to the Telegram HTTP API from the dashboard
+    container and never touch that memory file, so the bot has no idea it (or
+    the system) already told the user something. Reported live 2026-07-15:
+    user asked the bot about content from a notification it had just received
+    and the bot had no memory of it ever being sent.
+    /root/.claude is the evonexus_claude_auth volume, mounted at the same
+    path in dashboard, telegram AND scheduler — writing the exact JSONL
+    format telegram_provider_bot.py itself uses closes the gap without any
+    network call between the two services. Best-effort: a failure here must
+    never break the actual notification send.
+    """
+    try:
+        scripts_dir = str(WORKSPACE / "scripts")
+        if scripts_dir not in sys.path:
+            sys.path.insert(0, scripts_dir)
+        import telegram_provider_bot as _tpb
+        _tpb.append_chat_memory(chat_id, "assistant", text, speaker="Sistema")
+    except Exception:
+        pass
+
+
 def _send_telegram(text: str) -> bool:
     """Send Telegram message. Returns True on success."""
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
@@ -80,9 +109,12 @@ def _send_telegram(text: str) -> bool:
         url = f"https://api.telegram.org/bot{token}/sendMessage"
         req = urllib.request.Request(url, data=payload, method="POST")
         with urllib.request.urlopen(req, timeout=15) as resp:
-            return resp.status == 200
+            ok = resp.status == 200
     except Exception:
         return False
+    if ok:
+        _append_bot_memory(cid, text)
+    return ok
 
 
 def send_telegram_alert(text: str) -> bool:
