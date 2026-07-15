@@ -104,22 +104,41 @@ def main() -> None:
     banner("AI News Weekly X Research", "X trends -> Sage -> Mako -> fila editorial")
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
+    # fetch_ai_trends.py precisa de SOCIAL_TWITTER_1_BEARER_TOKEN — se a
+    # credencial estiver ausente/expirada ou a chamada à API do X falhar,
+    # essa falha NÃO pode derrubar a rotina inteira: já existe um fallback
+    # editorial pronto mais abaixo (_fallback_queue) pra exatamente esse
+    # caso, mas o RuntimeError original matava o processo ANTES de chegar
+    # lá — Sage/Mako nunca rodavam, sem log visível (subprocess.Popen do
+    # /api/routines/<id>/run descarta stdout/stderr). Confirmado ao vivo
+    # 2026-07-14: rotina disparada via API, processo morreu sem nenhuma
+    # métrica registrada, nem o passo mais básico (Sage) chegou a rodar.
     fetch_script = SKILL_DIR / "fetch_ai_trends.py"
-    result = subprocess.run(
-        [sys.executable, str(fetch_script), "--days", "7", "--per-query", "100", "--out", str(RAW_OUT)],
-        cwd=str(WORKSPACE),
-        timeout=300,
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(result.stderr or result.stdout or "fetch_ai_trends failed")
+    try:
+        result = subprocess.run(
+            [sys.executable, str(fetch_script), "--days", "7", "--per-query", "100", "--out", str(RAW_OUT)],
+            cwd=str(WORKSPACE),
+            timeout=300,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr or result.stdout or "fetch_ai_trends failed")
+        raw_preview = json.loads(RAW_OUT.read_text(encoding="utf-8"))
+    except Exception as exc:
+        print(f"[ai-news-weekly] fetch_ai_trends falhou, seguindo com fallback editorial: {exc}", flush=True)
+        raw_preview = {
+            "topics_ranked": [],
+            "total_tweets_collected": 0,
+            "api_errors": [{"status": "fetch_failed", "detail": str(exc)[:300]}],
+        }
+        RAW_OUT.parent.mkdir(parents=True, exist_ok=True)
+        RAW_OUT.write_text(json.dumps(raw_preview, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     week = _week_id()
     pauta_path = OUT_DIR / f"[C]pauta-{week}.md"
     sage_path = OUT_DIR / f"[C]sage-curadoria-{week}.md"
 
-    raw_preview = json.loads(RAW_OUT.read_text(encoding="utf-8"))
     collected = raw_preview.get("total_tweets_collected", 0)
     topics = len(raw_preview.get("topics_ranked", []))
     api_errors = raw_preview.get("api_errors", [])
