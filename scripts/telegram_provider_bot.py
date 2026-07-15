@@ -790,6 +790,10 @@ def invoke_orchestrator(prompt: str) -> tuple[str, str]:
         max_turns=TELEGRAM_MAX_TURNS,
         timeout_seconds=TELEGRAM_TIMEOUT,
     )
+    if result.get("status") == "busy":
+        raise RuntimeError(
+            "sistema ocupado com outra execução (heartbeat ou outro chat) — tenta de novo em instantes"
+        )
     if result.get("status") != "success":
         raise RuntimeError(result.get("error") or f"status={result.get('status')}")
     text = _extract_reply_text(result)
