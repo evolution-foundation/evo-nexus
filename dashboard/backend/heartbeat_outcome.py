@@ -363,6 +363,50 @@ def _advance_goal_for_ticket(ticket_id: str, old_status: str, new_status: str, c
     )
 
 
+def _sync_goal_task_from_ticket(ticket_id: str, new_status: str, conn) -> None:
+    """Mirror a ticket's resolution onto its linked goal_task, if any.
+
+    tickets.task_id is a real FK to goal_tasks.id (added 2026-07-15). Without
+    this, resolving a ticket never touched the task it represented — the only
+    correlation was an informal "[GOAL:N] <task title>" naming convention
+    nothing in the codebase read back, so goals silently stopped progressing
+    the moment work moved from goal_tasks to tickets as the unit of work.
+    Runs on every ticket status transition, not just the heartbeat-driven one
+    in _move_ticket, so it applies regardless of which agent or human closes
+    the ticket. Recomputes current_value by COUNTing done tasks (matches
+    routes/goals.py:_recalculate_goal_value) rather than incrementing, so it
+    stays correct even if called more than once for the same ticket.
+    """
+    if new_status not in ("resolved", "closed"):
+        return
+    row = conn.execute("SELECT task_id FROM tickets WHERE id = ?", (ticket_id,)).fetchone()
+    task_id = row["task_id"] if row and hasattr(row, "keys") else (row[0] if row else None)
+    if not task_id:
+        return
+    trow = conn.execute("SELECT status, goal_id FROM goal_tasks WHERE id = ?", (task_id,)).fetchone()
+    if not trow:
+        return
+    task_status = trow["status"] if hasattr(trow, "keys") else trow[0]
+    goal_id = trow["goal_id"] if hasattr(trow, "keys") else trow[1]
+    if task_status == "done":
+        return
+    now = _now_iso()
+    conn.execute("UPDATE goal_tasks SET status = 'done', updated_at = ? WHERE id = ?", (now, task_id))
+    if goal_id:
+        done_count = conn.execute(
+            "SELECT COUNT(*) FROM goal_tasks WHERE goal_id = ? AND status = 'done'", (goal_id,)
+        ).fetchone()[0]
+        conn.execute(
+            "UPDATE goals SET current_value = ?, updated_at = ? WHERE id = ?",
+            (float(done_count), now, goal_id),
+        )
+        conn.execute(
+            "UPDATE goals SET status = 'achieved' WHERE id = ? AND current_value >= target_value AND status = 'active'",
+            (goal_id,),
+        )
+    conn.commit()
+
+
 def _move_ticket(ticket_id: str, new_status: str, agent: str, comment: str, conn) -> None:
     """Update ticket status + log a comment and an activity event."""
     now = _now_iso()
@@ -375,6 +419,7 @@ def _move_ticket(ticket_id: str, new_status: str, agent: str, comment: str, conn
         (new_status, now, resolved_at, ticket_id),
     )
     _advance_goal_for_ticket(ticket_id, old_status, new_status, conn)
+    _sync_goal_task_from_ticket(ticket_id, new_status, conn)
     if comment:
         import uuid
         conn.execute(

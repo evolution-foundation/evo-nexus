@@ -12,6 +12,7 @@ Persistent topics with state, assignable to agents, with atomic checkout. Primar
 | `priority` | `urgent` / `high` / `medium` / `low` |
 | `assignee_agent` | agent slug (`zara-cs`, `flux-finance`, ...) |
 | `project_id`, `goal_id` | Optional links to Goals (F1.2) |
+| `task_id` | Optional FK to a specific `goal_tasks.id` (not just the goal). **Set this whenever a ticket represents one specific goal_task** — e.g. tickets mirroring a task with a `[GOAL:N] <task title>` naming convention. Without it, resolving the ticket has no way to advance the task: title-matching is not read back by any code. When `task_id` is set, resolving/closing the ticket (via API, bulk action, or `heartbeat_outcome._move_ticket`) automatically marks the linked `goal_task` `done` and recalculates the goal's `current_value` — see `_sync_goal_task_from_ticket` in `dashboard/backend/heartbeat_outcome.py`. Confirmed live 2026-07-15: 24 tickets had been resolved for weeks with their goal_tasks still `open` because this link didn't exist yet. |
 | `locked_at`, `locked_by` | Atomic checkout state |
 | `lock_timeout_seconds` | Default 1800 — janitor releases after this |
 
