@@ -200,7 +200,7 @@ def update_heartbeat(heartbeat_id):
     updatable = {
         "agent", "interval_seconds", "max_turns", "timeout_seconds",
         "lock_timeout_seconds", "wake_triggers", "enabled",
-        "goal_id", "required_secrets", "decision_prompt",
+        "goal_id", "required_secrets", "decision_prompt", "handler",
     }
 
     for field, value in data.items():
@@ -317,14 +317,17 @@ def manual_run(heartbeat_id):
 
     hb = Heartbeat.query.get_or_404(heartbeat_id)
 
+    if not hb.enabled:
+        return jsonify({"error": "Heartbeat is disabled", "heartbeat_id": heartbeat_id}), 400
+
     from heartbeat_dispatcher import dispatch
     dispatched, run_id = dispatch(heartbeat_id, "manual")
 
     if not dispatched:
         return jsonify({
-            "warning": "Heartbeat debounced or disabled — no run dispatched",
+            "error": "Heartbeat is debounced or already running",
             "heartbeat_id": heartbeat_id,
-        }), 200
+        }), 409
 
     audit(current_user, "execute", "heartbeats", f"manual run {heartbeat_id} run_id={run_id}")
     return jsonify({"run_id": run_id, "heartbeat_id": heartbeat_id, "status": "dispatched"}), 202

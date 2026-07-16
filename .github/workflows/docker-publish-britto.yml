@@ -10,13 +10,13 @@ name: Build & Publish (Docker Hub Sistema Britto)
 #   * DOCKERHUB_TOKEN     — Access Token do Docker Hub (Account Settings → Security)
 #
 # Triggers:
-#   * push na branch feat/chat-openclaude-provider-routing  -> publica :latest e :sha-xxxx
+#   * push na branch main  -> publica :latest e :sha-xxxx
 #   * push de tag vX.Y.Z                                     -> publica :vX.Y.Z e :latest
 #   * disparo manual (workflow_dispatch)                     -> builda e publica
 
 on:
   push:
-    branches: [feat/chat-openclaude-provider-routing]
+    branches: [main]
     tags: ['v*']
   workflow_dispatch:
 

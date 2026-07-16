@@ -1,30 +1,34 @@
-# Heartbeats — Proactive Agent Configuration
-# Source of truth for all heartbeat definitions.
-# DB mirrors this file; UI reads/writes through the API which updates both.
+# Heartbeats — Proactive Agent Configuration (Example)
+# Copy of the live Sistema Britto configuration with sensitive values
+# replaced by placeholders. Use this as a reference or template.
+#
+# The real configuration is in heartbeats.yaml (gitignored).
 #
 # Fields:
-#   id              — unique slug (kebab-case)
-#   agent           — agent file stem from .claude/agents/ (without .md)
-#   interval_seconds — minimum 60; use multiples of 3600 for hourly cadences
-#   max_turns       — hard cap on Claude turns per run (default: 10)
-#   timeout_seconds — hard kill timeout for subprocess (default: 600)
+#   id                 — unique slug (kebab-case)
+#   agent              — agent file stem from .claude/agents/ (without .md)
+#   interval_seconds   — minimum 60; use multiples of 3600 for hourly cadences
+#   max_turns          — hard cap on Claude turns per run (default: 10)
+#   timeout_seconds    — hard kill timeout for subprocess (default: 600)
 #   lock_timeout_seconds — stale lock cleanup threshold (default: 1800)
-#   wake_triggers   — list from: [interval, new_task, mention, manual, approval_decision]
-#   enabled         — false = dormant; set true via UI toggle or YAML edit to activate
-#   goal_id         — (stub, Feature 1.2) links to a goal for context injection
-#   required_secrets — (stub, Feature 2.3) list of .env key names this agent needs
-#   decision_prompt — the decision question the agent answers in step 4 of the protocol
-#   handler         — (Wave 2.2r) optional Python module.function for in-process handlers.
-#                     If set, heartbeat_runner calls this function directly instead of
-#                     spawning a Claude CLI subprocess. max_turns must be 0.
-#                     Format: "module_name.function_name"
+#   wake_triggers      — list from: [interval, new_task, mention, manual, approval_decision]
+#   enabled            — false = dormant; set true via UI toggle or YAML edit to activate
+#   goal_id            — (optional) links to a goal for context injection
+#   required_secrets   — list of .env key names this agent needs at runtime
+#   decision_prompt    — the decision question the agent answers in step 4 of the protocol
+#   handler            — (optional) Python module.function for in-process handlers.
+#                        If set, heartbeat_runner calls this function directly instead of
+#                        spawning a Claude CLI subprocess. max_turns must be 0.
+#                        Format: "module_name.function_name"
 #
-# IMPORTANT: All seeds start with enabled: false.
-# Davidson enables individually via UI toggle after reviewing in staging.
+# IMPORTANT: All seeds start with enabled: false in this example.
+# Enable individually via UI toggle after reviewing.
 
 heartbeats:
 
-  # Atlas — Linear/GitHub triage every 4 hours
+  # Atlas — Project pipeline check every 4 hours
+  # Monitors Evo CRM for leads stuck in early stages and checks Nexus tickets/goal_tasks
+  # assigned to atlas-project. No longer uses Linear or GitHub.
   - id: atlas-4h
     agent: atlas-project
     interval_seconds: 14400  # 4 hours
@@ -37,15 +41,23 @@ heartbeats:
       - manual
     enabled: false
     goal_id: null
-    required_secrets: []
+    required_secrets:
+      - EVO_CRM_TOKEN  # API token for int-evo-crm skill
     decision_prompt: >
-      You are Atlas, the project agent. Review Linear for stale PRs and issues older
-      than 3 days with no activity. Check GitHub for open PRs waiting on review.
-      Decide: should you act now (comment, triage, escalate) or is there nothing
-      urgent? Respond with a JSON object: {"action": "work"|"skip", "reason": "<1 sentence>",
-      "tasks": [<list of issue ids to touch, if action=work>]}.
+      You are Atlas, the project agent. Linear/GitHub triage is retired — Felipe
+      manages the sales pipeline via Evo CRM (int-evo-crm skill, pipelines/stages/items)
+      and delivery work via the Nexus dashboard itself (tickets and goal_tasks in this
+      workspace DB). Check Evo CRM pipelines for items stuck in an early stage (e.g.
+      "Novo Lead") for more than 3 days with no stage change or follow-up. Check Nexus
+      tickets with status open/in_progress assigned to you (atlas-project) and overdue
+      goal_tasks. Decide: should you act now (follow up on a stuck lead, comment/triage
+      a ticket, escalate) or is there nothing urgent? Respond with JSON:
+      {"action": "work"|"skip", "reason": "<1 sentence>",
+      "tasks": [<list of pipeline item ids or ticket ids to touch, if action=work>]}.
 
   # Zara — Customer support queue triage every 2 hours
+  # Scans the Nexus ticket system for open/pending tickets assigned to zara-cs.
+  # Picks the highest-priority item and decides whether to act.
   - id: zara-2h
     agent: zara-cs
     interval_seconds: 7200  # 2 hours
@@ -68,6 +80,8 @@ heartbeats:
       "ticket_id": "<id or null>"}.
 
   # Flux — Payments and financial alerts every 6 hours
+  # Checks AbacatePay for failed/pending PIX or boleto payments and Evo CRM
+  # for billing items needing attention. No longer uses Stripe or Omie.
   - id: flux-6h
     agent: flux-finance
     interval_seconds: 21600  # 6 hours
@@ -80,13 +94,14 @@ heartbeats:
     enabled: false
     goal_id: null
     required_secrets:
-      - STRIPE_KEY
-      - OMIE_APP_KEY
+      - ABACATEPAY_API_KEY  # AbacatePay API key for payment checks
+      - EVO_CRM_TOKEN       # API token for int-evo-crm billing items
     decision_prompt: >
-      You are Flux, the finance agent. Check Stripe for failed payments or
-      subscriptions that lapsed in the last 6 hours. Check Omie for pending NF-e
-      that need action. Decide: is there something urgent requiring action or escalation
-      to Davidson via Telegram? Respond with JSON:
+      You are Flux, the finance agent. Check AbacatePay (list_checkouts,
+      list_transparent via the custom-int-abacatepay skill) for failed or pending
+      PIX/boleto payments in the last 6 hours. Check Evo CRM (int-evo-crm skill)
+      for billing/CRM items that need action. Decide: is there something urgent
+      requiring action or escalation to Felipe via Telegram? Respond with JSON:
       {"action": "work"|"skip", "reason": "<1 sentence>",
       "alerts": [<list of critical items, if any>]}.
 

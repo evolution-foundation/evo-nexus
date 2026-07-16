@@ -26,6 +26,12 @@ WORKSPACE = Path(__file__).resolve().parent.parent.parent
 _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="hb-worker")
 _schedule_lock = threading.Lock()
 
+# Execution lock — prevents same heartbeat_id from running concurrently.
+# Slot is reserved in dispatch() (main thread) before _executor.submit(),
+# released in _run()'s finally block (worker thread).
+_running: set[str] = set()
+_running_lock = threading.Lock()
+
 # Debounce window (seconds)
 DEBOUNCE_SECONDS = 30
 
@@ -130,6 +136,15 @@ def dispatch(heartbeat_id: str, trigger_type: str, payload: dict | None = None) 
     # Generate run_id
     run_id = str(uuid.uuid4())
 
+    # Reserve execution slot — atomic check+add under lock.
+    # Done in main thread (not in _run) to avoid TOCTOU race between workers.
+    with _running_lock:
+        if heartbeat_id in _running:
+            _record_trigger(heartbeat_id, trigger_type, payload, coalesced_into=None)
+            print(f"[dispatcher] {heartbeat_id} already running, coalesced run_id={run_id}", flush=True)
+            return False, None
+        _running.add(heartbeat_id)
+
     def _run():
         from heartbeat_runner import run_heartbeat
         try:
@@ -142,6 +157,9 @@ def dispatch(heartbeat_id: str, trigger_type: str, payload: dict | None = None) 
             )
         except Exception as exc:
             print(f"[dispatcher] ERROR running {heartbeat_id} run_id={run_id}: {exc}", flush=True)
+        finally:
+            with _running_lock:
+                _running.discard(heartbeat_id)
 
     print(f"[dispatcher] dispatching {heartbeat_id} trigger_type={trigger_type} run_id={run_id}", flush=True)
     _executor.submit(_run)
@@ -324,6 +342,7 @@ def register_interval_jobs():
             registered += 1
 
     print(f"[dispatcher] {registered} interval jobs registered", flush=True)
+    return registered
 
 
 def start_dispatcher_thread():

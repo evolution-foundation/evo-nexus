@@ -545,19 +545,24 @@ def step8_persist(run_id: str, heartbeat_id: str, result: dict, trigger_id: str 
 
 # ── Step 9: Release checkout ──────────────────────────────────────────────────
 
-def step9_release_checkout(task_id: str | None, run_id: str, conn):
-    """Release task lock. Stub in F1.1."""
-    if not task_id:
+def step9_release_checkout(ticket_id: str | None, agent_slug: str, conn):
+    """Release ticket lock on the tickets table (Feature 1.3)."""
+    if not ticket_id:
         return
     try:
         conn.execute(
-            """UPDATE tasks SET locked_at = NULL, locked_by = NULL
+            """UPDATE tickets SET locked_at = NULL, locked_by = NULL
                WHERE id = ? AND locked_by = ?""",
-            (task_id, run_id),
+            (ticket_id, agent_slug),
+        )
+        conn.execute(
+            """INSERT INTO ticket_activity (ticket_id, event, actor, metadata)
+               VALUES (?, 'release', ?, '{}')""",
+            (ticket_id, f"agent:{agent_slug}"),
         )
         conn.commit()
-    except Exception:
-        pass  # Table may not exist in F1.1
+    except Exception as exc:
+        print(f"[heartbeat_runner] step9 release WARNING ticket={ticket_id}: {exc}", flush=True)
 
 
 # ── Failure alert (runs between persist and release) ──────────────────────────
@@ -817,8 +822,7 @@ def run_heartbeat(heartbeat_id: str, triggered_by: str = "manual", trigger_id: s
 
         result = {"status": "fail", "error": None, "duration_ms": None, "agent": hb["agent"]}
         full_prompt = ""
-        task_id = None
-
+        ticket_id = None
         try:
             # Special case: legacy agent='system' heartbeats without explicit handler
             # run a Python script directly, resolved by heartbeat id.
@@ -891,15 +895,6 @@ def run_heartbeat(heartbeat_id: str, triggered_by: str = "manual", trigger_id: s
                 decision_ctx = step4_pick_priority(identity, approvals, inbox, hb["decision_prompt"])
                 print(f"[heartbeat_runner] step4 decision context assembled", flush=True)
 
-                # Step 5
-                task_id = None  # no specific task in F1.1
-                checkout_ok = step5_atomic_checkout(task_id, run_id, conn)
-                if not checkout_ok:
-                    print(f"[heartbeat_runner] step5 checkout conflict, skipping", flush=True)
-                    result = {"status": "success", "error": None, "agent": hb["agent"], "duration_ms": 0}
-                    step8_persist(run_id, heartbeat_id, result, trigger_id, triggered_by, "", conn)
-                    return
-
                 # Step 6
                 trigger_payload = _load_trigger_payload(trigger_id, conn)
                 full_prompt = step6_assemble_context(identity, decision_ctx, hb.get("goal_id"), trigger_payload)
@@ -932,6 +927,40 @@ def run_heartbeat(heartbeat_id: str, triggered_by: str = "manual", trigger_id: s
                 result = invoke_result
                 print(f"[heartbeat_runner] step7 done status={result['status']} duration_ms={result.get('duration_ms')}", flush=True)
 
+                # Extract ticket_id from Claude's JSON output for atomic checkout
+                spec = None
+                if invoke_result.get("status") == "success" and invoke_result.get("output"):
+                    try:
+                        from heartbeat_outcome import parse_agent_outcome
+                        spec = parse_agent_outcome(invoke_result["output"])
+                        if spec and spec.get("action") == "work":
+                            ticket_id = spec.get("ticket_id")
+                    except Exception as parse_exc:
+                        print(f"[heartbeat_runner] WARNING outcome parse failed: {parse_exc}", flush=True)
+
+                # Step 5 (moved after step7 — checkout the ticket Claude chose)
+                if ticket_id:
+                    agent_slug = hb.get("agent", "unknown")
+                    now = _now_iso()
+                    cur = conn.execute(
+                        """UPDATE tickets SET locked_at = ?, locked_by = ?, lock_timeout_seconds = 1800
+                           WHERE id = ? AND locked_at IS NULL""",
+                        (now, agent_slug, ticket_id),
+                    )
+                    if cur.rowcount == 0:
+                        print(f"[heartbeat_runner] step5 checkout CONFLICT ticket={ticket_id} already locked", flush=True)
+                        ticket_id = None
+                    else:
+                        conn.execute(
+                            """INSERT INTO ticket_activity (ticket_id, event, actor, metadata)
+                               VALUES (?, 'checkout', ?, ?)""",
+                            (ticket_id, f"agent:{agent_slug}", f'{{"run_id":"{run_id}","triggered_by":"{triggered_by}"}}'),
+                        )
+                        conn.commit()
+                        print(f"[heartbeat_runner] step5 checkout OK ticket={ticket_id} agent={agent_slug}", flush=True)
+                else:
+                    print(f"[heartbeat_runner] step5 no ticket to checkout (action={spec.get('action','unknown') if spec else 'no_output'})", flush=True)
+
         except Exception as exc:
             import traceback
             result = {
@@ -954,7 +983,7 @@ def run_heartbeat(heartbeat_id: str, triggered_by: str = "manual", trigger_id: s
             print(f"[heartbeat_runner] notification error (non-fatal): {notif_exc}", flush=True)
 
         # Step 9
-        step9_release_checkout(task_id, run_id, conn)
+        step9_release_checkout(ticket_id, hb["agent"], conn)
         print(f"[heartbeat_runner] step9 checkout released", flush=True)
 
         print(f"[heartbeat_runner] DONE run_id={run_id} status={result['status']}", flush=True)
