@@ -411,12 +411,18 @@ class FallbackAttempt:
 # this one helper — agents run with --dangerously-skip-permissions, so
 # whatever lands in their env is theirs to use. Before this, both call sites
 # did `dict(os.environ)` unfiltered, meaning an agent could read
-# DASHBOARD_API_TOKEN out of its own env and call the approval-decision
+# APPROVAL_BRIDGE_TOKEN out of its own env and call the approval-decision
 # endpoint to approve its own publish, or read social-platform credentials
 # and publish directly instead of going through the approval gate at all
-# (Vault V1c/V2). Denylist, not allowlist, because most of os.environ (PATH,
-# locale, provider config, etc.) legitimately needs to reach the agent.
-_AGENT_ENV_DENYLIST_EXACT = {"DASHBOARD_API_TOKEN", "APPROVAL_BRIDGE_TOKEN"}
+# (Vault V1c/V2). DASHBOARD_API_TOKEN is NOT denylisted: it is what
+# sdk_client.EvoClient uses for every legitimate agent call (create-ticket,
+# manage-heartbeats, the goal-planner heartbeat, etc.), and it alone never
+# authorizes /api/approvals/*/decision — that endpoint requires the separate
+# APPROVAL_BRIDGE_TOKEN (see routes/_helpers.py::valid_approval_bridge_token),
+# which stays denylisted below. Denylist, not allowlist, because most of
+# os.environ (PATH, locale, provider config, etc.) legitimately needs to
+# reach the agent.
+_AGENT_ENV_DENYLIST_EXACT = {"APPROVAL_BRIDGE_TOKEN"}
 _AGENT_ENV_DENYLIST_PREFIXES = ("SOCIAL_", "INSTAGRAM_", "LINKEDIN_", "TWITTER_", "DISCORD_")
 
 

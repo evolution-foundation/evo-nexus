@@ -185,18 +185,13 @@ def sweep_pending_approvals(app=None) -> int:
                     except (ValueError, TypeError):
                         pass
                     message_id = send_approval_request(row.id, title, body)
-                    update = {"t": now, "id": row.id}
                     if message_id is not None:
                         db.session.execute(
                             db.text("UPDATE pending_approvals SET nudged_at=:t, telegram_message_id=:mid WHERE id=:id"),
-                            {**update, "mid": message_id},
+                            {"t": now, "id": row.id, "mid": message_id},
                         )
-                    else:
-                        db.session.execute(
-                            db.text("UPDATE pending_approvals SET nudged_at=:t WHERE id=:id"), update,
-                        )
-                    db.session.commit()
-                    swept += 1
+                        db.session.commit()
+                        swept += 1
                     break
 
     except Exception as exc:

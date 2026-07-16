@@ -477,7 +477,14 @@ def _recompute_goal_from_tickets(goal_id, conn) -> None:
     """
     if not goal_id:
         return
-    if not conn.execute("SELECT 1 FROM goals WHERE id = ?", (goal_id,)).fetchone():
+    goal_row = conn.execute("SELECT metric_type FROM goals WHERE id = ?", (goal_id,)).fetchone()
+    if not goal_row:
+        return
+    metric_type = goal_row["metric_type"] if hasattr(goal_row, "keys") else goal_row[0]
+    if metric_type != "count":
+        # COUNT-of-terminal-tickets only makes sense for count goals — for
+        # currency/percentage/boolean goals it would clobber the real value
+        # (e.g. R$45.000 MRR -> 1) on the first ticket status transition.
         return
     done = conn.execute(
         "SELECT COUNT(*) FROM tickets WHERE goal_id = ? AND status IN ('resolved','closed')",

@@ -313,24 +313,24 @@ def delete_goal(goal_id: int):
 
 @bp.route("/api/goals/<int:goal_id>/recalculate", methods=["POST"])
 def recalculate_goal(goal_id: int):
-    """Drift correction: recompute current_value from goal_progress_v."""
+    """Drift correction: recompute current_value from the single source of
+    truth (tickets), not the legacy goal_progress_v (goal_tasks) view — see
+    heartbeat_outcome._recompute_goal_from_tickets."""
     denied = _require("execute")
     if denied:
         return denied
-    g = Goal.query.get_or_404(goal_id)
+    Goal.query.get_or_404(goal_id)
 
+    from heartbeat_outcome import _recompute_goal_from_tickets
     conn = sqlite3.connect(_db_path())
-    row = conn.execute(
-        "SELECT done_tasks, pct_complete FROM goal_progress_v WHERE goal_id = ?", (goal_id,)
-    ).fetchone()
-    conn.close()
+    try:
+        _recompute_goal_from_tickets(goal_id, conn)
+        conn.commit()
+    finally:
+        conn.close()
 
-    if row:
-        g.current_value = float(row[0])
-        if g.current_value >= g.target_value and g.status == "active":
-            g.status = "achieved"
-    g.updated_at = _now()
-    db.session.commit()
+    db.session.expire_all()
+    g = Goal.query.get_or_404(goal_id)
     audit(current_user, "recalculate", "goals", f"Recalculated goal #{goal_id}")
     return jsonify(g.to_dict())
 
@@ -429,23 +429,17 @@ def delete_goal_task(task_id: int):
 
 
 def _recalculate_goal_value(goal_id: int):
-    """Internal helper: sync goal.current_value with done tasks count."""
+    """Internal helper: sync goal.current_value via the single source of
+    truth (tickets) — see heartbeat_outcome._recompute_goal_from_tickets.
+    goal_progress_v (goal_tasks) is frozen legacy post goal-ticket-unification."""
+    from heartbeat_outcome import _recompute_goal_from_tickets
     conn = sqlite3.connect(_db_path())
-    row = conn.execute(
-        "SELECT done_tasks FROM goal_progress_v WHERE goal_id = ?", (goal_id,)
-    ).fetchone()
-    conn.close()
-
-    if row is None:
-        return
-    g = Goal.query.get(goal_id)
-    if g is None:
-        return
-    g.current_value = float(row[0])
-    if g.current_value >= g.target_value and g.status == "active":
-        g.status = "achieved"
-    g.updated_at = _now()
-    db.session.commit()
+    try:
+        _recompute_goal_from_tickets(goal_id, conn)
+        conn.commit()
+    finally:
+        conn.close()
+    db.session.expire_all()
 
 
 # --------------- Link routine to goal ---------------

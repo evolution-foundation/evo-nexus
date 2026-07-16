@@ -391,13 +391,20 @@ def approval_approvers() -> set[str]:
     which today already only lists individual Telegram user ids (not chat/
     group ids) for DM pairing — see the seeding in telegram_swarm_entry.sh.
     An explicit "approvers" list, if ever added to access.json, takes
-    precedence.
+    precedence. APPROVAL_APPROVER_IDS (env, documented in .env.example and
+    passed via evonexus-vps.stack.yml) is merged in too — union, not
+    override, so operators setting the env don't silently lose whoever is
+    already paired via access.json.allowFrom.
     """
     access = read_json(ACCESS_FILE, {"allowFrom": [], "approvers": [], "groups": {}})
     explicit = access.get("approvers")
-    if explicit:
-        return {str(x) for x in explicit}
-    return {str(x) for x in access.get("allowFrom", [])}
+    approvers = {str(x) for x in explicit} if explicit else {str(x) for x in access.get("allowFrom", [])}
+    env_ids = os.environ.get("APPROVAL_APPROVER_IDS", "")
+    for part in re.split(r"[,;]", env_ids):
+        part = part.strip()
+        if part:
+            approvers.add(part)
+    return approvers
 
 
 def decide_approval_via_api(approval_id: int, decision: str, from_id: str) -> dict:
@@ -990,18 +997,21 @@ def main() -> int:
                     cq_message = cq.get("message") or {}
                     cq_chat_id = str((cq_message.get("chat") or {}).get("id", ""))
                     m = re.match(r"^apr:(\d+):([ar])$", data)
+                    decision_registered = False
                     if m and from_id in approval_approvers():
                         decision = "approve" if m.group(2) == "a" else "reject"
                         resp = decide_approval_via_api(int(m.group(1)), decision, from_id)
                         api(token, "answerCallbackQuery", {"callback_query_id": cq["id"], "text": resp["toast"]})
                         log(f"approval-decision chat={cq_chat_id} approval={m.group(1)} decision={decision} ok={resp['ok']}")
+                        decision_registered = resp.get("ok") is True
                     else:
                         api(token, "answerCallbackQuery", {"callback_query_id": cq["id"], "text": "não autorizado"})
                         log(f"approval-decision dropped from_id={from_id} data={data!r}")
-                    # Remove the buttons regardless of outcome (double-press,
-                    # unauthorized, or success) so the message reflects the
-                    # current state instead of inviting another press.
-                    if cq_chat_id and cq_message.get("message_id"):
+                    # Only remove the buttons once the decision is actually
+                    # registered — an unauthorized press or a transient API
+                    # failure (5xx/timeout) must leave the keyboard intact so
+                    # the legitimate approver can still press it.
+                    if decision_registered and cq_chat_id and cq_message.get("message_id"):
                         api(token, "editMessageReplyMarkup", {
                             "chat_id": cq_chat_id, "message_id": cq_message["message_id"],
                         })

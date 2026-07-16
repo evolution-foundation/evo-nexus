@@ -422,20 +422,23 @@ def _step7_invoke_claude_native(
         # provider_fallback._invoke_cli) — reached when provider fallback is
         # disabled/unavailable. Without env=_build_agent_run_env(), Popen
         # inherits the full parent env unfiltered, including
-        # DASHBOARD_API_TOKEN/APPROVAL_BRIDGE_TOKEN, making the env-isolation
-        # in provider_fallback.py bypassable just by disabling fallback.
+        # APPROVAL_BRIDGE_TOKEN, making the env-isolation in
+        # provider_fallback.py bypassable just by disabling fallback.
+        # DASHBOARD_API_TOKEN is intentionally NOT denylisted — see the
+        # comment on _AGENT_ENV_DENYLIST_EXACT in provider_fallback.py.
         try:
             from provider_fallback import _build_agent_run_env
             agent_env = _build_agent_run_env()
         except Exception:
             # provider_fallback unavailable — apply the same denylist inline
             # rather than let this fallback become the leak V10 closed.
-            _denylist_exact = {"DASHBOARD_API_TOKEN", "APPROVAL_BRIDGE_TOKEN"}
+            _denylist_exact = {"APPROVAL_BRIDGE_TOKEN"}
             _denylist_prefixes = ("SOCIAL_", "INSTAGRAM_", "LINKEDIN_", "TWITTER_", "DISCORD_")
             agent_env = {
                 k: v for k, v in os.environ.items()
                 if k not in _denylist_exact and not k.startswith(_denylist_prefixes)
             }
+            agent_env["DISABLE_AUTOUPDATER"] = "1"
 
         proc = subprocess.Popen(
             cmd,

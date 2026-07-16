@@ -326,6 +326,7 @@ def update_ticket(ticket_id: str):
     ticket = Ticket.query.get_or_404(ticket_id)
     data = request.get_json() or {}
     changes: dict = {}
+    old_goal_id = ticket.goal_id
 
     if "status" in data:
         new_status = data["status"]
@@ -389,12 +390,17 @@ def update_ticket(ticket_id: str):
     # when an agent happens to be the one closing the ticket. Fires on ANY
     # status change (not just into resolved/closed) so a ticket walked BACK
     # from resolved/closed to blocked/open correctly drops the goal's count.
-    if "status" in changes and ticket.goal_id:
+    # Also fires on a bare goal_id change (rebind, no status change) so BOTH
+    # the origin goal (which loses the ticket) and the destination goal
+    # (which gains it) stay in sync — recomputing only ticket.goal_id (the
+    # post-change value) would leave the origin goal inflated forever.
+    if ("status" in changes or "goal_id" in data) and (old_goal_id or ticket.goal_id):
         import sqlite3
         from heartbeat_outcome import _recompute_goal_from_tickets
         _conn = sqlite3.connect(_db_path())
         try:
-            _recompute_goal_from_tickets(ticket.goal_id, _conn)
+            for _gid in {gid for gid in (old_goal_id, ticket.goal_id) if gid}:
+                _recompute_goal_from_tickets(_gid, _conn)
             _conn.commit()
         finally:
             _conn.close()
@@ -427,6 +433,19 @@ def delete_ticket(ticket_id: str):
         ticket.updated_at = now
         _log_activity(ticket_id, current_user.username, "status_changed", {"from": old_status, "to": "closed"})
         db.session.commit()
+
+        # Same recompute update_ticket does for this exact transition
+        # (any status -> closed) — the soft-close path must not skip it.
+        if ticket.goal_id:
+            import sqlite3
+            from heartbeat_outcome import _recompute_goal_from_tickets
+            _conn = sqlite3.connect(_db_path())
+            try:
+                _recompute_goal_from_tickets(ticket.goal_id, _conn)
+                _conn.commit()
+            finally:
+                _conn.close()
+
         audit(current_user, "update", "tickets", f"closed ticket {ticket_id}")
         return jsonify({"deleted": ticket_id, "hard": False, "ticket": ticket.to_dict()})
 
@@ -586,6 +605,8 @@ def bulk_action():
                 if ticket.goal_id:
                     goal_ids_to_recompute.add(ticket.goal_id)
             elif action == "delete":
+                if ticket.goal_id:
+                    goal_ids_to_recompute.add(ticket.goal_id)
                 db.session.delete(ticket)
                 _log_activity(tid, current_user.username, "deleted", {})
             elif action == "reassign":
@@ -594,8 +615,13 @@ def bulk_action():
                 ticket.updated_at = now
                 _log_activity(tid, current_user.username, "assigned", {"assignee_agent": new_agent})
             elif action == "relink_goal":
+                old_goal_id = ticket.goal_id
+                if old_goal_id:
+                    goal_ids_to_recompute.add(old_goal_id)
                 ticket.goal_id = payload.get("goal_id")
                 ticket.updated_at = now
+                if ticket.goal_id:
+                    goal_ids_to_recompute.add(ticket.goal_id)
                 _log_activity(tid, current_user.username, "updated", {"goal_id": ticket.goal_id})
             updated += 1
         db.session.commit()
