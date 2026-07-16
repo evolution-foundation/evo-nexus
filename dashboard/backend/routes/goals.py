@@ -239,6 +239,11 @@ def create_goal():
         return jsonify({"error": "slug, title, and project_id are required"}), 400
     if Goal.query.filter_by(slug=data["slug"]).first():
         return jsonify({"error": f"Goal slug '{data['slug']}' already exists"}), 409
+    # Sub-goal (agent-authored, has a parent) must always carry a due_date —
+    # ADR SPEC 5a. Without this, an agent-proposed decomposition tree has no
+    # deadline to bound it.
+    if data.get("parent_goal_id") and not data.get("due_date"):
+        return jsonify({"error": "sub-goal requires due_date"}), 400
     now = _now()
     g = Goal(
         slug=data["slug"],
@@ -251,12 +256,25 @@ def create_goal():
         current_value=data.get("current_value", 0.0),
         due_date=data.get("due_date"),
         status=data.get("status", "active"),
+        parent_goal_id=data.get("parent_goal_id"),
+        decomposition_state=data.get("decomposition_state"),
         created_at=now,
         updated_at=now,
     )
     db.session.add(g)
     db.session.commit()
     audit(current_user, "create", "goals", f"Created goal #{g.id}: {g.title}")
+
+    # goal-planner emitter (ADR SPEC 5b): only human-authored TOP-LEVEL goals
+    # fire goal_created — sub-goals (parent_goal_id set) never re-trigger the
+    # planner on creation, or decomposition would recurse infinitely.
+    if g.parent_goal_id is None:
+        try:
+            from heartbeat_dispatcher import dispatch
+            dispatch("goal-planner", "goal_created", {"goal_id": g.id})
+        except Exception as exc:  # noqa: BLE001 — best-effort, never block goal creation
+            print(f"[goals] WARNING: could not dispatch goal_created for goal #{g.id}: {exc}", flush=True)
+
     return jsonify(g.to_dict()), 201
 
 
@@ -267,8 +285,12 @@ def patch_goal(goal_id: int):
         return denied
     g = Goal.query.get_or_404(goal_id)
     data = request.get_json() or {}
+    # current_value is intentionally not accepted here — it has a single
+    # source of truth (COUNT of resolved/closed tickets, see
+    # heartbeat_outcome._recompute_goal_from_tickets). Manual drift
+    # correction goes through POST /api/goals/{id}/recalculate instead.
     for field in ("title", "description", "target_metric", "metric_type", "target_value",
-                  "current_value", "due_date", "status", "project_id"):
+                  "due_date", "status", "project_id"):
         if field in data:
             setattr(g, field, data[field])
     g.updated_at = _now()

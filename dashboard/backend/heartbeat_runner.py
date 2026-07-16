@@ -39,7 +39,35 @@ AGENTS_DIR = WORKSPACE / ".claude" / "agents"
 # Agents that monitor external state (Linear, Stripe, Omie, …) and may have work
 # to do even with an empty ticket inbox. These bypass the empty-inbox cost guard;
 # every other agent skips (without invoking Claude) when it has no assigned work.
-STATE_MONITOR_AGENTS = {"atlas-project", "flux-finance"}
+# goal-planner is here for the same reason: it decomposes Goals, not tickets —
+# its own ticket inbox is always empty, so without this it would never run.
+STATE_MONITOR_AGENTS = {"atlas-project", "flux-finance", "goal-planner"}
+
+# Review-loop subagent instructions (goal-ticket-unification Step 6, ADR SPEC
+# 2c): appended to the executor's prompt ONLY when the pre-run active_provider
+# is 'anthropic' (native subagent/Task support). Any other provider (nvidia
+# default) gets none of this — the verdict comes from
+# heartbeat_outcome.verdict_via_nvidia after the run's lock has released.
+_VERDICT_JSON_HINT = (
+    '{"verdict": "pass"|"fail", "critique": "<1-3 frases pt-BR>", '
+    '"blocking_issues": ["<opcional>"], "confidence": "high"|"medium"|"low"}'
+)
+
+REVIEW_LOOP_SUBAGENT_INSTRUCTIONS = f"""
+
+---
+
+## Revisão em sessão (só se você decidir new_status="review")
+
+Se, e SOMENTE se, o `new_status` da sua resposta for "review": ANTES de
+responder, invoque os subagentes `raven-critic` e depois `oath-verifier`
+(Task tool) na MESMA sessão para revisar criticamente o que você acabou de
+entregar. Depois de rodar os dois, decida o veredito final e ANEXE este
+segundo JSON de veredito logo após o JSON de outcome, na mesma resposta (uma
+linha, nada entre eles):
+
+{_VERDICT_JSON_HINT}
+"""
 
 
 def _now_iso() -> str:
@@ -187,10 +215,45 @@ def step5_atomic_checkout(task_id: str | None, run_id: str, conn) -> bool:
     return True
 
 
+def _load_trigger_payload(trigger_id: str | None, conn) -> dict | None:
+    """Load the JSON payload attached to a non-interval wake trigger, if any.
+
+    e.g. the goal_created trigger's {"goal_id": <id>} — see step6's docstring.
+    """
+    if not trigger_id:
+        return None
+    try:
+        row = conn.execute(
+            "SELECT payload FROM heartbeat_triggers WHERE id = ?", (trigger_id,)
+        ).fetchone()
+    except Exception:
+        return None
+    if not row:
+        return None
+    raw = row["payload"] if hasattr(row, "keys") else row[0]
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+
 # ── Step 6: Assemble context ──────────────────────────────────────────────────
 
-def step6_assemble_context(identity: str, decision_context: dict, goal_id: str | None) -> str:
-    """Build the full prompt for Claude. Injects goal chain (Mission→Project→Goal) if goal_id is set."""
+def step6_assemble_context(
+    identity: str,
+    decision_context: dict,
+    goal_id: str | None,
+    trigger_payload: dict | None = None,
+) -> str:
+    """Build the full prompt for Claude. Injects goal chain (Mission→Project→Goal) if goal_id is set.
+
+    trigger_payload surfaces the data attached to a non-interval wake (e.g. the
+    goal_created trigger's {"goal_id": <id>}, needed by goal-planner to know
+    WHICH goal to decompose — its ticket inbox is always empty, see
+    STATE_MONITOR_AGENTS).
+    """
     inbox_summary = ""
     if decision_context.get("inbox_count", 0) > 0:
         inbox_summary = f"\n\nPending inbox items: {decision_context['inbox_count']}"
@@ -201,13 +264,17 @@ def step6_assemble_context(identity: str, decision_context: dict, goal_id: str |
     if decision_context.get("pending_approvals", 0) > 0:
         approvals_summary = f"\n\nPending approvals: {decision_context['pending_approvals']}"
 
+    trigger_summary = ""
+    if trigger_payload:
+        trigger_summary = f"\n\nTrigger payload: {json.dumps(trigger_payload, ensure_ascii=False)}"
+
     base_prompt = f"""{identity}
 
 ---
 
 ## Heartbeat Decision Context
 
-{decision_context['decision_prompt']}{inbox_summary}{approvals_summary}
+{decision_context['decision_prompt']}{inbox_summary}{approvals_summary}{trigger_summary}
 
 ---
 
@@ -351,6 +418,25 @@ def _step7_invoke_claude_native(
     status = "success"
 
     try:
+        # V10: this is the SECOND agent-subprocess call site (the first is
+        # provider_fallback._invoke_cli) — reached when provider fallback is
+        # disabled/unavailable. Without env=_build_agent_run_env(), Popen
+        # inherits the full parent env unfiltered, including
+        # DASHBOARD_API_TOKEN/APPROVAL_BRIDGE_TOKEN, making the env-isolation
+        # in provider_fallback.py bypassable just by disabling fallback.
+        try:
+            from provider_fallback import _build_agent_run_env
+            agent_env = _build_agent_run_env()
+        except Exception:
+            # provider_fallback unavailable — apply the same denylist inline
+            # rather than let this fallback become the leak V10 closed.
+            _denylist_exact = {"DASHBOARD_API_TOKEN", "APPROVAL_BRIDGE_TOKEN"}
+            _denylist_prefixes = ("SOCIAL_", "INSTAGRAM_", "LINKEDIN_", "TWITTER_", "DISCORD_")
+            agent_env = {
+                k: v for k, v in os.environ.items()
+                if k not in _denylist_exact and not k.startswith(_denylist_prefixes)
+            }
+
         proc = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
@@ -358,6 +444,7 @@ def _step7_invoke_claude_native(
             text=True,
             cwd=str(WORKSPACE),
             start_new_session=True,  # new process group for clean kill
+            env=agent_env,
         )
 
         try:
@@ -811,8 +898,23 @@ def run_heartbeat(heartbeat_id: str, triggered_by: str = "manual", trigger_id: s
                     return
 
                 # Step 6
-                full_prompt = step6_assemble_context(identity, decision_ctx, hb.get("goal_id"))
-                print(f"[heartbeat_runner] step6 prompt assembled ({len(full_prompt)} chars)", flush=True)
+                trigger_payload = _load_trigger_payload(trigger_id, conn)
+                full_prompt = step6_assemble_context(identity, decision_ctx, hb.get("goal_id"), trigger_payload)
+
+                # Self-healing review loop (Step 6, ADR SPEC 2c): read
+                # active_provider PRE-run (not provider_id, which only
+                # exists post-fallback, Raven-F2) to decide whether the
+                # executor should be asked to review its own "review"-bound
+                # work in-session via subagents. Read-only lookup — does not
+                # touch run_env/Popen construction (Step 4 scope).
+                try:
+                    from provider_fallback import _read_providers_config
+                    active_provider = _read_providers_config().get("active_provider", "nvidia")
+                except Exception:
+                    active_provider = "nvidia"
+                if active_provider == "anthropic":
+                    full_prompt += REVIEW_LOOP_SUBAGENT_INSTRUCTIONS
+                print(f"[heartbeat_runner] step6 prompt assembled ({len(full_prompt)} chars, active_provider={active_provider})", flush=True)
 
                 # Step 7 — Claude CLI subprocess
                 print(f"[heartbeat_runner] step7 invoking claude agent={hb['agent']} max_turns={hb['max_turns']} timeout={hb['timeout_seconds']}s", flush=True)

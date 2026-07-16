@@ -156,6 +156,71 @@ _OUTCOME_SCHEMA = {
     "required": ["action", "result"],
 }
 
+# Self-healing review loop (goal-ticket-unification Step 6, ADR SPEC 2b-2d).
+# A ticket whose executor sets new_status="review" gets a pass/fail verdict
+# before it's allowed to reach resolved — either from raven/oath running
+# in-session (anthropic provider, embedded by heartbeat_runner's prompt
+# addendum) or, the default path, from verdict_via_nvidia below after the
+# provider_fallback lock has already been released. Never a 2nd
+# invoke_with_fallback (mutex is re-entrant-unsafe).
+_VERDICT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "verdict": {"type": "string", "enum": ["pass", "fail"]},
+        "critique": {"type": "string"},
+        "blocking_issues": {"type": "array", "items": {"type": "string"}},
+        "confidence": {"type": "string", "enum": ["high", "medium", "low"]},
+    },
+    "required": ["verdict", "critique"],
+}
+
+# Max fail-bounces (review -> in_progress -> review) before a ticket parks in
+# blocked/review_exhausted for a human. Scoped since the last manual reopen
+# (ticket_activity action='review_reset') so a ticket a human fixes and
+# reopens doesn't inherit its old bounce count (Raven-F4a).
+MAX_REVIEW_BOUNCES = 2
+
+
+def parse_verdict(output) -> dict | None:
+    """Extract a structured review verdict from free-form output.
+
+    Mirrors parse_agent_outcome's candidate-scanning machine but keys on
+    "verdict" instead of "action" — an in-session anthropic run may emit BOTH
+    the outcome JSON and the verdict JSON in the same final message.
+    """
+    if isinstance(output, dict):
+        return output if "verdict" in output else None
+    if not output:
+        return None
+    text = _unwrap_provider_output(str(output))
+
+    candidates: list[str] = []
+    for m in re.finditer(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL):
+        candidates.append(m.group(1))
+    decoder = json.JSONDecoder()
+    idx = 0
+    while True:
+        start = text.find("{", idx)
+        if start == -1:
+            break
+        try:
+            obj, end = decoder.raw_decode(text[start:])
+            if isinstance(obj, dict):
+                candidates.append(json.dumps(obj))
+            idx = start + max(end, 1)
+        except json.JSONDecodeError:
+            idx = start + 1
+
+    for cand in reversed(candidates):
+        try:
+            obj = json.loads(cand)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if isinstance(obj, dict) and "verdict" in obj:
+            return obj
+    return None
+
+
 # Large models that reliably honor response_format=json_schema with good content.
 # A short chain so a 429 on one rotates to the next (NVIDIA is free; the limit is
 # rate, not cost — see the model-chain rationale).
@@ -256,6 +321,71 @@ def structure_via_nvidia(agent_output, agent: str, conn) -> dict | None:
     return None
 
 
+def verdict_via_nvidia(work_report, conn) -> dict | None:
+    """Get a pass/fail review verdict on a work report via NVIDIA (free), HTTP.
+
+    Default path for the self-healing review loop (ADR SPEC 2c): a plain,
+    read-only completion call with response_format=json_schema (strict) on
+    _VERDICT_SCHEMA — no filesystem, no subagents, no mutex. Called AFTER the
+    provider_fallback lock from the executor's run has already been released,
+    so this never nests inside invoke_with_fallback (C1).
+    """
+    import json as _json
+    import urllib.request
+    import urllib.error
+
+    report = _unwrap_provider_output(str(work_report or "")).strip()
+    if not report:
+        return None
+    key, base = _nvidia_key_and_base()
+    if not key:
+        return None
+
+    prompt = (
+        "Você é um revisor cético e rigoroso. Avalie o relatório de trabalho abaixo "
+        "e decida se o trabalho está pronto para ser considerado concluído (pass) ou "
+        "precisa de correção (fail).\n\n"
+        f"Relatório do agente:\n{report[:4000]}\n\n"
+        "Regras:\n"
+        "- verdict='pass' apenas se o relatório descreve um resultado concreto, "
+        "verificado (build/teste passou, evidência real), sem pendências bloqueantes.\n"
+        "- verdict='fail' se falta evidência, se o próprio relatório admite algo "
+        "incompleto/quebrado, ou se a alegação de conclusão não é sustentada.\n"
+        "- critique: 1-3 frases em pt-BR explicando a decisão.\n"
+        "- blocking_issues: lista curta dos problemas que bloqueiam pass (vazio se pass)."
+    )
+    body = {
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.1,
+        "max_tokens": 500,
+        "response_format": {"type": "json_schema",
+                            "json_schema": {"name": "verdict", "schema": _VERDICT_SCHEMA,
+                                            "strict": True}},
+    }
+    for model in _STRUCTURER_MODELS:
+        body["model"] = model
+        try:
+            req = urllib.request.Request(
+                base + "/chat/completions",
+                data=_json.dumps(body).encode("utf-8"),
+                headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=90) as resp:
+                data = _json.loads(resp.read().decode("utf-8"))
+            content = (data.get("choices") or [{}])[0].get("message", {}).get("content")
+            if content:
+                parsed = _json.loads(content)
+                if isinstance(parsed, dict) and "verdict" in parsed:
+                    return parsed
+        except urllib.error.HTTPError as e:
+            if e.code == 429:
+                continue  # rate-limited → next model
+            continue
+        except Exception:  # noqa: BLE001
+            continue
+    return None
+
+
 def structure_via_claude(agent_output, agent: str, conn) -> dict | None:
     """Hybrid fallback: NVIDIA executes (free, heavy), Claude structures (cheap).
 
@@ -333,113 +463,29 @@ def _ticket_title(ticket_id: str, conn) -> str:
         return (row[0] if row[0] else ticket_id)
 
 
-def _advance_goal_for_ticket(ticket_id: str, old_status: str, new_status: str, conn) -> None:
-    """When a ticket linked to a goal becomes resolved/closed, advance the goal.
+def _recompute_goal_from_tickets(goal_id, conn) -> None:
+    """Single source of truth for goals.current_value: COUNT of terminal tickets.
 
-    This is the integration that was missing: the orchestrator moves *tickets*,
-    but goal progress is tracked on the goal counter. Increment once, on the real
-    transition into a terminal status (idempotent — the orchestrator only acts on
-    'open' tickets so a ticket resolves once).
-    """
-    terminal = ("resolved", "closed")
-    if new_status not in terminal or old_status in terminal:
-        return
-    row = conn.execute("SELECT goal_id FROM tickets WHERE id = ?", (ticket_id,)).fetchone()
-    goal_id = (row["goal_id"] if row and hasattr(row, "keys") else (row[0] if row else None))
-    if not goal_id:
-        return
-    g = conn.execute("SELECT current_value, target_value, status FROM goals WHERE id = ?",
-                     (goal_id,)).fetchone()
-    if not g:
-        return
-    cur = (g["current_value"] if hasattr(g, "keys") else g[0]) or 0
-    target = (g["target_value"] if hasattr(g, "keys") else g[1]) or 0
-    gstatus = (g["status"] if hasattr(g, "keys") else g[2])
-    new_val = cur + 1
-    achieved = gstatus == "active" and target and new_val >= target
-    conn.execute(
-        "UPDATE goals SET current_value = ?, status = ?, updated_at = ? WHERE id = ?",
-        (new_val, "achieved" if achieved else gstatus, _now_iso(), goal_id),
-    )
-
-
-def _sync_goal_task_from_ticket(ticket_id: str, new_status: str, conn) -> None:
-    """Mirror a ticket's status onto its linked goal_task, if any — both ways.
-
-    tickets.task_id is a real FK to goal_tasks.id (added 2026-07-15). Without
-    this, resolving a ticket never touched the task it represented — the only
-    correlation was an informal "[GOAL:N] <task title>" naming convention
-    nothing in the codebase read back, so goals silently stopped progressing
-    the moment work moved from goal_tasks to tickets as the unit of work.
-    Runs on every ticket status transition, not just the heartbeat-driven one
-    in _move_ticket, so it applies regardless of which agent or human moves
-    the ticket. Recomputes current_value by COUNTing done tasks (matches
-    routes/goals.py:_recalculate_goal_value) rather than incrementing, so it
-    stays correct even if called more than once for the same ticket.
-
-    Bidirectional since 2026-07-16: forward (resolved/closed -> task done)
-    AND reverse (ticket moved away from resolved/closed -> task reopened).
-    Root cause of the incident that motivated the reverse leg: the Telegram
-    orchestrator (full Bash/tool access, no confirmation gate) self-resolved
-    a "publish post" ticket with a fabricated success comment; once a human
-    correctly walked the ticket back to blocked, the goal_task/goal stayed
-    stuck at the false "done" progress because nothing ever undid it.
-    """
-    if new_status not in ("resolved", "closed"):
-        _reverse_sync_goal_task_from_ticket(ticket_id, conn)
-        return
-    row = conn.execute("SELECT task_id FROM tickets WHERE id = ?", (ticket_id,)).fetchone()
-    task_id = row["task_id"] if row and hasattr(row, "keys") else (row[0] if row else None)
-    if not task_id:
-        return
-    trow = conn.execute("SELECT status, goal_id FROM goal_tasks WHERE id = ?", (task_id,)).fetchone()
-    if not trow:
-        return
-    task_status = trow["status"] if hasattr(trow, "keys") else trow[0]
-    goal_id = trow["goal_id"] if hasattr(trow, "keys") else trow[1]
-    if task_status == "done":
-        return
-    now = _now_iso()
-    conn.execute("UPDATE goal_tasks SET status = 'done', updated_at = ? WHERE id = ?", (now, task_id))
-    _recalc_goal_progress(goal_id, conn, now)
-    conn.commit()
-
-
-def _reverse_sync_goal_task_from_ticket(ticket_id: str, conn) -> None:
-    """Reopen a goal_task if its ticket left resolved/closed while the task
-    is still marked done — see _sync_goal_task_from_ticket docstring.
-    """
-    row = conn.execute("SELECT task_id FROM tickets WHERE id = ?", (ticket_id,)).fetchone()
-    task_id = row["task_id"] if row and hasattr(row, "keys") else (row[0] if row else None)
-    if not task_id:
-        return
-    trow = conn.execute("SELECT status, goal_id FROM goal_tasks WHERE id = ?", (task_id,)).fetchone()
-    if not trow:
-        return
-    task_status = trow["status"] if hasattr(trow, "keys") else trow[0]
-    goal_id = trow["goal_id"] if hasattr(trow, "keys") else trow[1]
-    if task_status != "done":
-        return
-    now = _now_iso()
-    conn.execute("UPDATE goal_tasks SET status = 'open', updated_at = ? WHERE id = ?", (now, task_id))
-    _recalc_goal_progress(goal_id, conn, now)
-    conn.commit()
-
-
-def _recalc_goal_progress(goal_id, conn, now: str) -> None:
-    """Recompute goals.current_value from a COUNT of done tasks, and drop a
-    goal back from 'achieved' to 'active' if progress regresses below target
-    (mirrors the forward auto-achieve check; achieving is not one-way if the
-    underlying tasks weren't actually done).
+    Idempotent recompute (not an increment) so it stays correct no matter how
+    many times it runs for the same goal — reopen/re-resolve, mixed
+    goal_id-only/goal_id+task_id populations, all converge to the same number.
+    goal_tasks is frozen legacy: this function is the only writer of
+    current_value left after goal-ticket-unification (was previously
+    triple/quadruple-written by _advance_goal_for_ticket,
+    _sync_goal_task_from_ticket, trg_task_done_updates_goal, and the
+    current_value field on PATCH /api/goals/{id}).
     """
     if not goal_id:
         return
-    done_count = conn.execute(
-        "SELECT COUNT(*) FROM goal_tasks WHERE goal_id = ? AND status = 'done'", (goal_id,)
+    if not conn.execute("SELECT 1 FROM goals WHERE id = ?", (goal_id,)).fetchone():
+        return
+    done = conn.execute(
+        "SELECT COUNT(*) FROM tickets WHERE goal_id = ? AND status IN ('resolved','closed')",
+        (goal_id,),
     ).fetchone()[0]
     conn.execute(
         "UPDATE goals SET current_value = ?, updated_at = ? WHERE id = ?",
-        (float(done_count), now, goal_id),
+        (float(done), _now_iso(), goal_id),
     )
     conn.execute(
         "UPDATE goals SET status = 'achieved' WHERE id = ? AND current_value >= target_value AND status = 'active'",
@@ -454,16 +500,15 @@ def _recalc_goal_progress(goal_id, conn, now: str) -> None:
 def _move_ticket(ticket_id: str, new_status: str, agent: str, comment: str, conn) -> None:
     """Update ticket status + log a comment and an activity event."""
     now = _now_iso()
-    prev = conn.execute("SELECT status FROM tickets WHERE id = ?", (ticket_id,)).fetchone()
-    old_status = (prev["status"] if prev and hasattr(prev, "keys") else (prev[0] if prev else ""))
+    prev = conn.execute("SELECT goal_id FROM tickets WHERE id = ?", (ticket_id,)).fetchone()
+    goal_id = (prev["goal_id"] if prev and hasattr(prev, "keys") else (prev[0] if prev else None))
     resolved_at = now if new_status in ("resolved", "closed") else None
     conn.execute(
         "UPDATE tickets SET status = ?, updated_at = ?, "
         "resolved_at = COALESCE(?, resolved_at) WHERE id = ?",
         (new_status, now, resolved_at, ticket_id),
     )
-    _advance_goal_for_ticket(ticket_id, old_status, new_status, conn)
-    _sync_goal_task_from_ticket(ticket_id, new_status, conn)
+    _recompute_goal_from_tickets(goal_id, conn)
     if comment:
         import uuid
         conn.execute(
@@ -478,6 +523,77 @@ def _move_ticket(ticket_id: str, new_status: str, agent: str, comment: str, conn
              json.dumps({"new_status": new_status}), now),
         )
     conn.commit()
+
+
+def _last_review_reset_at(ticket_id: str, conn) -> str | None:
+    """created_at of the most recent 'review_reset' activity for this ticket, if any."""
+    row = conn.execute(
+        "SELECT created_at FROM ticket_activity WHERE ticket_id = ? AND action = 'review_reset' "
+        "ORDER BY created_at DESC LIMIT 1",
+        (ticket_id,),
+    ).fetchone()
+    if not row:
+        return None
+    return row["created_at"] if hasattr(row, "keys") else row[0]
+
+
+def _count_review_bounces(ticket_id: str, conn) -> int:
+    """Count of 'review_bounce' activity since the last 'review_reset' (or all-time if none).
+
+    Scoping to the last reset means a manually-reopened ticket (see
+    review_reset semantics in .claude/rules/tickets.md and routes/tickets.py)
+    starts its bounce budget over, instead of inheriting a stale count from a
+    previous review cycle (Raven-F4a).
+    """
+    since = _last_review_reset_at(ticket_id, conn)
+    if since:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM ticket_activity WHERE ticket_id = ? AND action = 'review_bounce' "
+            "AND created_at > ?",
+            (ticket_id, since),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM ticket_activity WHERE ticket_id = ? AND action = 'review_bounce'",
+            (ticket_id,),
+        ).fetchone()
+    return row[0] if row else 0
+
+
+def _apply_review_verdict(ticket_id: str, agent: str, verdict_obj: dict, conn) -> dict:
+    """Route a parsed review verdict: pass -> resolved; fail -> bounce or exhaust.
+
+    Returns {"verdict": "pass"|"fail", "critique": str, "exhausted": bool, "bounce": int}.
+    """
+    verdict = str(verdict_obj.get("verdict", "")).strip().lower()
+    critique = (verdict_obj.get("critique") or "").strip()
+
+    if verdict == "pass":
+        _move_ticket(ticket_id, "resolved", agent, critique or "Revisão: aprovado.", conn)
+        return {"verdict": "pass", "critique": critique, "exhausted": False, "bounce": 0}
+
+    n = _count_review_bounces(ticket_id, conn)
+    if n < MAX_REVIEW_BOUNCES:
+        _move_ticket(ticket_id, "in_progress", agent,
+                     f"Revisão reprovou: {critique}" if critique else "Revisão reprovou.", conn)
+        import uuid
+        conn.execute(
+            "INSERT INTO ticket_activity (id, ticket_id, actor, action, payload, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (str(uuid.uuid4()), ticket_id, f"agent:{agent}", "review_bounce",
+             json.dumps({"critique": critique}), _now_iso()),
+        )
+        conn.commit()
+        return {"verdict": "fail", "critique": critique, "exhausted": False, "bounce": n + 1}
+
+    # Bounces exhausted — own blocked_reason ('review_exhausted'), distinct
+    # from 'agent_blocked' (AC8 separates the two semantics, Raven-F4b), plus
+    # an explicit human notification (never the generic blocked queue).
+    conn.execute("UPDATE tickets SET blocked_reason = 'review_exhausted' WHERE id = ?", (ticket_id,))
+    _move_ticket(ticket_id, "blocked", agent,
+                 f"Revisão esgotou {MAX_REVIEW_BOUNCES} tentativas." +
+                 (f" Última crítica: {critique}" if critique else ""), conn)
+    return {"verdict": "fail", "critique": critique, "exhausted": True, "bounce": n}
 
 
 def apply_outcome(heartbeat_id: str, agent: str, result: dict, conn) -> dict | None:
@@ -534,6 +650,42 @@ def apply_outcome(heartbeat_id: str, agent: str, result: dict, conn) -> dict | N
     if action == "work":
         new_status = _normalize_status(outcome.get("new_status")) or "in_progress"
         title = _ticket_title(ticket_id, conn) if ticket_id else ""
+
+        # Self-healing review loop (Step 6): a ticket the executor thinks is
+        # done doesn't go straight to resolved — it needs a pass/fail verdict
+        # first. Try to parse one already embedded in this same response
+        # (in-session anthropic path, heartbeat_runner's prompt addendum);
+        # if absent (the nvidia default), fetch one via the read-only HTTP
+        # fallback — never a 2nd invoke_with_fallback.
+        if ticket_id and new_status == "review":
+            _move_ticket(ticket_id, "review", agent, summary or "Trabalho enviado para revisão.", conn)
+            verdict = parse_verdict(raw_output) or verdict_via_nvidia(raw_output, conn)
+            if not verdict:
+                # No reviewer available this run — leave parked in review for
+                # a human or the next wake, rather than silently auto-passing.
+                return {
+                    "kind": "result", "agent": agent, "ticket_title": title,
+                    "new_status": "review", "summary": summary or "Aguardando revisão.",
+                }
+            review = _apply_review_verdict(ticket_id, agent, verdict, conn)
+            if review["verdict"] == "pass":
+                return {
+                    "kind": "result", "agent": agent, "ticket_title": title,
+                    "new_status": "resolved", "summary": review["critique"] or "Revisão aprovada.",
+                }
+            if review["exhausted"]:
+                return {
+                    "kind": "blocked", "agent": agent, "ticket_id": ticket_id, "ticket_title": title,
+                    "reason": f"Revisão reprovou {MAX_REVIEW_BOUNCES}x: {review['critique'] or 'sem detalhes'}",
+                    "needs": "Revisar o ticket manualmente — bounces de revisão esgotados.",
+                }
+            return {
+                "kind": "result", "agent": agent, "ticket_title": title,
+                "new_status": "in_progress",
+                "summary": f"Revisão reprovou (bounce {review['bounce']}/{MAX_REVIEW_BOUNCES}): "
+                           f"{review['critique'] or 'sem detalhes'}",
+            }
+
         if ticket_id:
             _move_ticket(ticket_id, new_status, agent, summary or "Trabalho realizado.", conn)
         if not summary:

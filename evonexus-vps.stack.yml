@@ -12,6 +12,10 @@
 ## OMNIROUTE_*, SMTP_*) são preenchidos como variáveis de ambiente
 ## da stack no Portainer. Os placeholders abaixo marcam onde entram.
 ##   DASHBOARD_API_TOKEN        → openssl rand -base64 32
+##   APPROVAL_BRIDGE_TOKEN      → openssl rand -base64 32 (SÓ em
+##     evonexus_dashboard + evonexus_telegram — NUNCA em evonexus_scheduler,
+##     que spawna os subprocessos dos agentes; ver goal-ticket-unification
+##     ADR SPEC 3f / Vault V1c-V2-V10)
 ##   OMNIROUTE_INITIAL_PASSWORD → openssl rand -base64 12 (senha de login)
 ##   OMNIROUTE_JWT_SECRET       → openssl rand -base64 48
 ##   OMNIROUTE_API_KEY_SECRET   → openssl rand -hex 32
@@ -45,6 +49,13 @@ services:
     environment:
       - DASHBOARD_API_TOKEN=${DASHBOARD_API_TOKEN}
       - DASHBOARD_API_USER=${DASHBOARD_API_USER:-admin}
+      ## Validates the Telegram bot's approval-decision calls
+      ## (/api/approvals/*/decision) — dedicated credential, deliberately
+      ## separate from DASHBOARD_API_TOKEN (goal-ticket-unification Vault V1).
+      - APPROVAL_BRIDGE_TOKEN=${APPROVAL_BRIDGE_TOKEN}
+      ## Telegram user ids allowed to press an approve/reject button — comma
+      ## or semicolon-separated (Vault V3, per-individual not per-chat).
+      - APPROVAL_APPROVER_IDS=${APPROVAL_APPROVER_IDS}
       - EVONEXUS_API_URL=http://localhost:8080
       - CORS_ALLOWED_ORIGINS=https://nexus.workflowapi.com.br
       - TZ=America/Sao_Paulo
@@ -121,6 +132,9 @@ services:
     environment:
       - DASHBOARD_API_TOKEN=${DASHBOARD_API_TOKEN}
       - DASHBOARD_API_USER=${DASHBOARD_API_USER:-admin}
+      ## Sends approval-decision calls to the dashboard's bridge-only route —
+      ## see the matching var on evonexus_dashboard above.
+      - APPROVAL_BRIDGE_TOKEN=${APPROVAL_BRIDGE_TOKEN}
       - EVONEXUS_API_URL=http://evonexus-dashboard:8080
       - TELEGRAM_MODE=provider
       - TZ=America/Sao_Paulo

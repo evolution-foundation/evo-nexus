@@ -10,10 +10,12 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 WORKSPACE = Path(__file__).resolve().parent.parent.parent
 
 VALID_WAKE_TRIGGERS = frozenset(
-    {"interval", "new_task", "mention", "manual", "approval_decision"}
+    {"interval", "new_task", "mention", "manual", "approval_decision", "goal_created"}
 )
 
-WakeTrigger = Literal["interval", "new_task", "mention", "manual", "approval_decision"]
+WakeTrigger = Literal[
+    "interval", "new_task", "mention", "manual", "approval_decision", "goal_created"
+]
 
 
 class HeartbeatConfig(BaseModel):

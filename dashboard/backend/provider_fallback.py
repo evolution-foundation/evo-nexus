@@ -404,6 +404,38 @@ class FallbackAttempt:
         return any(term in error for term in fatal_terms)
 
 
+# ── Agent subprocess env isolation (goal-ticket-unification V10) ────────────
+# Two call sites build the env for an agent subprocess: _invoke_cli below,
+# and heartbeat_runner._step7_invoke_claude_native (the legacy direct path,
+# used when provider fallback is disabled/unavailable). Both MUST go through
+# this one helper — agents run with --dangerously-skip-permissions, so
+# whatever lands in their env is theirs to use. Before this, both call sites
+# did `dict(os.environ)` unfiltered, meaning an agent could read
+# DASHBOARD_API_TOKEN out of its own env and call the approval-decision
+# endpoint to approve its own publish, or read social-platform credentials
+# and publish directly instead of going through the approval gate at all
+# (Vault V1c/V2). Denylist, not allowlist, because most of os.environ (PATH,
+# locale, provider config, etc.) legitimately needs to reach the agent.
+_AGENT_ENV_DENYLIST_EXACT = {"DASHBOARD_API_TOKEN", "APPROVAL_BRIDGE_TOKEN"}
+_AGENT_ENV_DENYLIST_PREFIXES = ("SOCIAL_", "INSTAGRAM_", "LINKEDIN_", "TWITTER_", "DISCORD_")
+
+
+def _build_agent_run_env(env_overrides: dict | None = None) -> dict:
+    """Build the subprocess env for an agent run, minus the denylisted keys."""
+    run_env = {
+        k: v for k, v in os.environ.items()
+        if k not in _AGENT_ENV_DENYLIST_EXACT and not k.startswith(_AGENT_ENV_DENYLIST_PREFIXES)
+    }
+    if env_overrides:
+        for k, v in env_overrides.items():
+            if v is not None:
+                run_env[k] = str(v)
+    # Impede o CLI de se auto-migrar pro instalador nativo no meio da run
+    # (mata o processo com exit 1).
+    run_env["DISABLE_AUTOUPDATER"] = "1"
+    return run_env
+
+
 # ── Core invocation ─────────────────────────────────────────────────────────────
 
 def _invoke_cli(
@@ -448,14 +480,7 @@ def _invoke_cli(
             cmd.extend(["--agent", agent])
         cmd.extend(["--", prompt])
 
-    run_env = dict(os.environ)
-    if env_overrides:
-        for k, v in env_overrides.items():
-            if v is not None:
-                run_env[k] = str(v)
-    # Impede o CLI de se auto-migrar pro instalador nativo no meio da run
-    # (mata o processo com exit 1).
-    run_env["DISABLE_AUTOUPDATER"] = "1"
+    run_env = _build_agent_run_env(env_overrides)
 
     # Acquire a per-model inflight lock so concurrent calls cannot pick the same
     # model at the same instant (the canonical cause of burst 429s on shared

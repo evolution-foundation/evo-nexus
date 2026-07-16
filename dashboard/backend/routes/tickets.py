@@ -266,15 +266,31 @@ def create_ticket():
     source_agent = (data.get("source_agent") or "").strip() or None
     source_session_id = (data.get("source_session_id") or "").strip() or None
 
+    # Closed-set validation (ADR "assignee selection"): an assignee_agent must
+    # be a known .claude/agents/*.md slug. Unknown/invalid values would leave
+    # the ticket orphaned (no heartbeat ever queries it) — route to the
+    # clawdia-assistant triage bucket instead and record what was attempted
+    # so a human can reassign it.
+    assignee_agent = (data.get("assignee_agent") or "").strip() or None
+    invalid_assignee = None
+    if assignee_agent and assignee_agent not in _get_agent_slugs():
+        invalid_assignee = assignee_agent
+        assignee_agent = "clawdia-assistant"
+
+    description = data.get("description")
+    if invalid_assignee:
+        note = f"[auto-routed] assignee_agent inválido tentado: '{invalid_assignee}' — reatribuir manualmente."
+        description = f"{description}\n\n{note}" if description else note
+
     now = _now()
     ticket = Ticket(
         id=str(uuid.uuid4()),
         title=title,
-        description=data.get("description"),
+        description=description,
         status=status,
         priority=priority,
         priority_rank=PRIORITY_RANK[priority],
-        assignee_agent=data.get("assignee_agent"),
+        assignee_agent=assignee_agent,
         project_id=data.get("project_id"),
         goal_id=data.get("goal_id"),
         task_id=data.get("task_id"),
@@ -290,6 +306,8 @@ def create_ticket():
         activity_payload["source_agent"] = source_agent
     if source_session_id:
         activity_payload["source_session_id"] = source_session_id
+    if invalid_assignee:
+        activity_payload["invalid_assignee_agent"] = invalid_assignee
     _log_activity(ticket.id, current_user.username, "created", activity_payload)
     db.session.commit()
 
@@ -318,6 +336,13 @@ def update_ticket(ticket_id: str):
         changes["status"] = {"from": old_status, "to": new_status}
         if new_status in ("resolved", "closed") and not ticket.resolved_at:
             ticket.resolved_at = _now()
+        # Manual reopen (a human, via UI/API, walking a ticket back from a
+        # terminal-ish state) resets the review-loop bounce budget — see
+        # heartbeat_outcome._count_review_bounces and .claude/rules/tickets.md.
+        # Distinct from an agent's fail-bounce (review->in_progress, which
+        # INCREMENTS the count) and from a publish-reject (Step 7 scope).
+        if old_status in ("blocked", "resolved", "closed") and new_status in ("open", "in_progress"):
+            _log_activity(ticket_id, current_user.username, "review_reset", {"from": old_status, "to": new_status})
 
     if "priority" in data:
         new_priority = data["priority"]
@@ -358,20 +383,19 @@ def update_ticket(ticket_id: str):
     _log_activity(ticket_id, current_user.username, "status_changed" if "status" in changes else "updated", changes)
     db.session.commit()
 
-    # Mirror onto the linked goal_task (if any) — same sync heartbeat-driven
-    # resolutions get via heartbeat_outcome._move_ticket. Manual/UI/API status
-    # changes need it too, or the goal only progresses when a heartbeat agent
-    # happens to be the one closing the ticket. Fires on ANY status change
-    # (not just into resolved/closed) so a ticket walked BACK from
-    # resolved/closed to blocked/open correctly reopens its goal_task too —
-    # see heartbeat_outcome._sync_goal_task_from_ticket docstring for the
-    # false-publish-claim incident that motivated the reverse leg.
-    if "status" in changes:
+    # Recompute the linked goal's current_value — same single source of truth
+    # heartbeat-driven resolutions get via heartbeat_outcome._move_ticket.
+    # Manual/UI/API status changes need it too, or the goal only progresses
+    # when an agent happens to be the one closing the ticket. Fires on ANY
+    # status change (not just into resolved/closed) so a ticket walked BACK
+    # from resolved/closed to blocked/open correctly drops the goal's count.
+    if "status" in changes and ticket.goal_id:
         import sqlite3
-        from heartbeat_outcome import _sync_goal_task_from_ticket
+        from heartbeat_outcome import _recompute_goal_from_tickets
         _conn = sqlite3.connect(_db_path())
         try:
-            _sync_goal_task_from_ticket(ticket_id, changes["status"]["to"], _conn)
+            _recompute_goal_from_tickets(ticket.goal_id, _conn)
+            _conn.commit()
         finally:
             _conn.close()
 
@@ -536,7 +560,7 @@ def bulk_action():
 
     now = _now()
     updated = 0
-    status_synced_ids: list[tuple[str, str]] = []
+    goal_ids_to_recompute: set[int] = set()
 
     try:
         for tid in ids:
@@ -549,14 +573,18 @@ def bulk_action():
                 ticket.resolved_at = ticket.resolved_at or now
                 ticket.updated_at = now
                 _log_activity(tid, current_user.username, "status_changed", {"from": old, "to": "closed"})
-                status_synced_ids.append((tid, "closed"))
+                if ticket.goal_id:
+                    goal_ids_to_recompute.add(ticket.goal_id)
             elif action == "reopen":
                 old = ticket.status
                 ticket.status = "open"
                 ticket.resolved_at = None
                 ticket.updated_at = now
                 _log_activity(tid, current_user.username, "status_changed", {"from": old, "to": "open"})
-                status_synced_ids.append((tid, "open"))
+                if old in ("blocked", "resolved", "closed"):
+                    _log_activity(tid, current_user.username, "review_reset", {"from": old, "to": "open"})
+                if ticket.goal_id:
+                    goal_ids_to_recompute.add(ticket.goal_id)
             elif action == "delete":
                 db.session.delete(ticket)
                 _log_activity(tid, current_user.username, "deleted", {})
@@ -575,13 +603,14 @@ def bulk_action():
         db.session.rollback()
         return jsonify({"error": f"bulk action failed: {exc}"}), 500
 
-    if status_synced_ids:
+    if goal_ids_to_recompute:
         import sqlite3
-        from heartbeat_outcome import _sync_goal_task_from_ticket
+        from heartbeat_outcome import _recompute_goal_from_tickets
         _conn = sqlite3.connect(_db_path())
         try:
-            for tid, new_status in status_synced_ids:
-                _sync_goal_task_from_ticket(tid, new_status, _conn)
+            for goal_id in goal_ids_to_recompute:
+                _recompute_goal_from_tickets(goal_id, _conn)
+            _conn.commit()
         finally:
             _conn.close()
 

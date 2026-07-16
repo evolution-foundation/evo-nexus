@@ -698,6 +698,12 @@ class Goal(db.Model):
     current_value = db.Column(db.Float, nullable=False, default=0.0)
     due_date = db.Column(db.String(20))
     status = db.Column(db.String(20), nullable=False, default="active")
+    # Self-FK for agent-authored sub-goals (goal-ticket-unification). NULL =
+    # top-level, human-created goal; set = sub-goal proposed by goal-planner.
+    parent_goal_id = db.Column(db.Integer, db.ForeignKey("goals.id", ondelete="SET NULL"), nullable=True)
+    # NULL for top-level goals; 'proposed'|'approved'|'rejected' for sub-goals
+    # awaiting/past the decomposition-gate Telegram approval.
+    decomposition_state = db.Column(db.String(20), nullable=True)
     created_at = db.Column(db.String(30), nullable=False)
     updated_at = db.Column(db.String(30), nullable=False)
 
@@ -716,6 +722,8 @@ class Goal(db.Model):
             "current_value": self.current_value,
             "due_date": self.due_date,
             "status": self.status,
+            "parent_goal_id": self.parent_goal_id,
+            "decomposition_state": self.decomposition_state,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
@@ -792,15 +800,16 @@ class Ticket(db.Model):
     priority_rank = db.Column(db.Integer, nullable=False, default=2)  # derived
     project_id = db.Column(db.Integer, db.ForeignKey("projects.id", ondelete="SET NULL"), nullable=True)
     goal_id = db.Column(db.Integer, db.ForeignKey("goals.id", ondelete="SET NULL"), nullable=True)
-    # Real FK to the specific goal_task this ticket represents (as opposed to
-    # goal_id, which only scopes the ticket to a goal in general). Without
-    # this, resolving a ticket had no reliable way to know which goal_task —
-    # if any — should also flip to done: the only correlation was a "[GOAL:N]
-    # <task title>" naming convention that nothing in the codebase actually
-    # enforced or read back. Confirmed live 2026-07-15: 24 goal_tasks sat
-    # `open` for weeks with their mirrored ticket already `resolved`, because
-    # closing the ticket never touched the task. See _sync_goal_task_from_ticket.
+    # Legacy FK to the goal_task this ticket used to mirror. goal_tasks is now
+    # frozen (goal-ticket-unification): current_value is computed solely from
+    # tickets.goal_id (see heartbeat_outcome._recompute_goal_from_tickets),
+    # so task_id is read-only historical linkage, not a rollup input.
     task_id = db.Column(db.Integer, db.ForeignKey("goal_tasks.id", ondelete="SET NULL"), nullable=True)
+    due_date = db.Column(db.String(20), nullable=True)
+    requires_human_approval = db.Column(db.Integer, nullable=False, default=0)
+    # App-level enum (no CHECK constraint): 'pending_human_approval' |
+    # 'agent_blocked' | 'review_exhausted'. See .claude/rules/tickets.md.
+    blocked_reason = db.Column(db.String(30), nullable=True)
     assignee_agent = db.Column(db.String(100), nullable=True)
     locked_at = db.Column(db.String(30), nullable=True)
     locked_by = db.Column(db.String(100), nullable=True)
@@ -832,6 +841,9 @@ class Ticket(db.Model):
             "project_id": self.project_id,
             "goal_id": self.goal_id,
             "task_id": self.task_id,
+            "due_date": self.due_date,
+            "requires_human_approval": self.requires_human_approval,
+            "blocked_reason": self.blocked_reason,
             "assignee_agent": self.assignee_agent,
             "locked_at": self.locked_at,
             "locked_by": self.locked_by,
@@ -849,6 +861,60 @@ class Ticket(db.Model):
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "resolved_at": self.resolved_at,
+        }
+
+
+class PendingApproval(db.Model):
+    """Shared publish + decomposition Telegram approval gate (goal-ticket-unification)."""
+
+    __tablename__ = "pending_approvals"
+    __table_args__ = (
+        db.CheckConstraint("gate_type IN ('publish','decomposition')", name="ck_approval_gate_type"),
+        db.CheckConstraint(
+            "status IN ('pending','approved','rejected','expired','published')",
+            name="ck_approval_status",
+        ),
+    )
+
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    gate_type = db.Column(db.String(20), nullable=False)
+    ticket_id = db.Column(db.String(36), db.ForeignKey("tickets.id", ondelete="CASCADE"), nullable=True)
+    goal_id = db.Column(db.Integer, db.ForeignKey("goals.id", ondelete="CASCADE"), nullable=True)
+    agent = db.Column(db.String(100), nullable=True)
+    attempt = db.Column(db.Integer, nullable=False, default=0)
+    idempotency_key = db.Column(db.String(200), unique=True, nullable=False)
+    status = db.Column(db.String(20), nullable=False, default="pending")
+    payload = db.Column(db.Text, nullable=True)
+    telegram_chat_id = db.Column(db.String(50), nullable=True)
+    telegram_message_id = db.Column(db.Integer, nullable=True)
+    approver_from_id = db.Column(db.String(50), nullable=True)
+    reject_reason = db.Column(db.Text, nullable=True)
+    decided_by = db.Column(db.String(100), nullable=True)
+    created_at = db.Column(db.String(30), nullable=False)
+    nudged_at = db.Column(db.String(30), nullable=True)
+    decided_at = db.Column(db.String(30), nullable=True)
+    expires_at = db.Column(db.String(30), nullable=False)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "gate_type": self.gate_type,
+            "ticket_id": self.ticket_id,
+            "goal_id": self.goal_id,
+            "agent": self.agent,
+            "attempt": self.attempt,
+            "idempotency_key": self.idempotency_key,
+            "status": self.status,
+            "payload": self.payload,
+            "telegram_chat_id": self.telegram_chat_id,
+            "telegram_message_id": self.telegram_message_id,
+            "approver_from_id": self.approver_from_id,
+            "reject_reason": self.reject_reason,
+            "decided_by": self.decided_by,
+            "created_at": self.created_at,
+            "nudged_at": self.nudged_at,
+            "decided_at": self.decided_at,
+            "expires_at": self.expires_at,
         }
 
 

@@ -90,3 +90,23 @@ heartbeats:
   required_secrets: []
   decision_prompt: ''
   handler: nexus_orchestrator.tick
+- id: goal-planner
+  agent: goal-planner
+  interval_seconds: 86400
+  max_turns: 15
+  timeout_seconds: 300
+  lock_timeout_seconds: 1800
+  wake_triggers:
+  - goal_created
+  - manual
+  enabled: false
+  goal_id: null
+  required_secrets: []
+  decision_prompt: 'You are goal-planner. A top-level Goal was just created — its
+    id is in the Trigger payload above. Decompose it into 2-6 concrete, assignable
+    tickets per your agent instructions (.claude/agents/goal-planner.md), or skip
+    if it already has tickets (idempotency) or there is no goal_id in the trigger
+    payload.
+
+    '
+

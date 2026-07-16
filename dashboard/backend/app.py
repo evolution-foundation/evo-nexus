@@ -247,7 +247,11 @@ with app.app_context():
             CREATE INDEX IF NOT EXISTS idx_goal_tasks_goal_status ON goal_tasks(goal_id, status);
         """)
         _conn.commit()
-    # Always ensure view and trigger exist (idempotent — safe to run on every startup)
+    # Always ensure view exists (idempotent — safe to run on every startup).
+    # trg_task_done_updates_goal used to be recreated here too, but
+    # goals.current_value now has a single source of truth (tickets, see
+    # heartbeat_outcome._recompute_goal_from_tickets) — the trigger is dropped
+    # in the migration below and must never be recreated on boot.
     _cur.executescript("""
         CREATE VIEW IF NOT EXISTS goal_progress_v AS
         SELECT g.id as goal_id, g.slug, g.target_value,
@@ -258,13 +262,6 @@ with app.app_context():
                     ELSE 0 END as pct_complete
         FROM goals g LEFT JOIN goal_tasks t ON t.goal_id = g.id
         GROUP BY g.id;
-        CREATE TRIGGER IF NOT EXISTS trg_task_done_updates_goal
-        AFTER UPDATE OF status ON goal_tasks
-        WHEN NEW.goal_id IS NOT NULL AND NEW.status = 'done' AND OLD.status != 'done'
-        BEGIN
-          UPDATE goals SET current_value = current_value + 1, updated_at = datetime('now') WHERE id = NEW.goal_id;
-          UPDATE goals SET status = 'achieved' WHERE id = NEW.goal_id AND current_value >= target_value AND status = 'active';
-        END;
     """)
     _conn.commit()
     # No seed data — Goals start empty. Users create Mission → Project → Goal via UI
@@ -376,6 +373,84 @@ with app.app_context():
     # --- End plugin provenance migration ---
 
     # --- End tickets migration ---
+
+    # --- goal-ticket-unification: approval + due_date columns on tickets ---
+    _ticket_cols = {row[1] for row in _cur.execute("PRAGMA table_info(tickets)").fetchall()}
+    if "due_date" not in _ticket_cols:
+        _cur.execute("ALTER TABLE tickets ADD COLUMN due_date TEXT")
+        _conn.commit()
+    if "requires_human_approval" not in _ticket_cols:
+        _cur.execute("ALTER TABLE tickets ADD COLUMN requires_human_approval INTEGER NOT NULL DEFAULT 0")
+        _conn.commit()
+    if "blocked_reason" not in _ticket_cols:
+        _cur.execute("ALTER TABLE tickets ADD COLUMN blocked_reason TEXT")
+        _conn.commit()
+    # --- End ticket approval columns ---
+
+    # --- goal-ticket-unification: sub-goal columns on goals ---
+    _goal_cols = {row[1] for row in _cur.execute("PRAGMA table_info(goals)").fetchall()}
+    if "parent_goal_id" not in _goal_cols:
+        _cur.execute("ALTER TABLE goals ADD COLUMN parent_goal_id INTEGER REFERENCES goals(id) ON DELETE SET NULL")
+        _conn.commit()
+    if "decomposition_state" not in _goal_cols:
+        _cur.execute("ALTER TABLE goals ADD COLUMN decomposition_state TEXT")
+        _conn.commit()
+    # --- End goal sub-goal columns ---
+
+    # --- goal-ticket-unification: goal_relations table (decorative this feature) ---
+    _cur.executescript("""
+        CREATE TABLE IF NOT EXISTS goal_relations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            goal_id INTEGER NOT NULL REFERENCES goals(id) ON DELETE CASCADE,
+            related_goal_id INTEGER NOT NULL REFERENCES goals(id) ON DELETE CASCADE,
+            relation_type TEXT NOT NULL DEFAULT 'relates_to'
+                CHECK(relation_type IN ('blocks','depends_on','relates_to')),
+            created_at TEXT NOT NULL,
+            CHECK (goal_id != related_goal_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_goal_relations_goal ON goal_relations(goal_id);
+        CREATE INDEX IF NOT EXISTS idx_goal_relations_related ON goal_relations(related_goal_id);
+    """)
+    _conn.commit()
+    # --- End goal_relations migration ---
+
+    # --- goal-ticket-unification: pending_approvals table (shared publish + decomposition gate) ---
+    _cur.executescript("""
+        CREATE TABLE IF NOT EXISTS pending_approvals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            gate_type TEXT NOT NULL CHECK(gate_type IN ('publish','decomposition')),
+            ticket_id TEXT REFERENCES tickets(id) ON DELETE CASCADE,
+            goal_id INTEGER REFERENCES goals(id) ON DELETE CASCADE,
+            agent TEXT,
+            attempt INTEGER NOT NULL DEFAULT 0,
+            idempotency_key TEXT NOT NULL UNIQUE,
+            status TEXT NOT NULL DEFAULT 'pending'
+                CHECK(status IN ('pending','approved','rejected','expired','published')),
+            payload TEXT,
+            telegram_chat_id TEXT,
+            telegram_message_id INTEGER,
+            approver_from_id TEXT,
+            reject_reason TEXT,
+            decided_by TEXT,
+            created_at TEXT NOT NULL,
+            nudged_at TEXT,
+            decided_at TEXT,
+            expires_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_pending_approvals_status ON pending_approvals(status, expires_at);
+    """)
+    _conn.commit()
+    # --- End pending_approvals migration ---
+
+    # --- goal-ticket-unification: drop legacy goal_tasks-driven rollup trigger ---
+    # current_value now has a single source of truth (tickets — see
+    # heartbeat_outcome._recompute_goal_from_tickets). The CREATE TRIGGER
+    # that used to live in the "Always ensure view and trigger exist" block
+    # above was deleted so it stops being recreated on every boot; this DROP
+    # handles existing DBs that already have the trigger installed.
+    _cur.execute("DROP TRIGGER IF EXISTS trg_task_done_updates_goal")
+    _conn.commit()
+    # --- End trigger drop ---
 
     # --- ticket_activity reconciliation (Feature 1.3, run unconditionally) ---
     # The CREATE TABLE IF NOT EXISTS ticket_activity above lives inside
@@ -851,6 +926,9 @@ PUBLIC_PATHS = {
     "/api/agents/active",
 }
 
+from routes._helpers import valid_approval_bridge_token
+
+
 def _try_api_token_auth():
     """Resolve an Authorization: Bearer <token> header against DASHBOARD_API_TOKEN.
     On match, log in the configured service user for the duration of this request.
@@ -907,6 +985,18 @@ def auth_middleware():
         if path not in PUBLIC_PATHS:
             return jsonify({"error": "Setup required", "needs_setup": True}), 403
 
+    # Approval bridge (goal-ticket-unification V11): the Telegram bot's
+    # callback_query handler calls /api/approvals/*/decision with
+    # APPROVAL_BRIDGE_TOKEN, never DASHBOARD_API_TOKEN — that token alone
+    # doesn't satisfy _try_api_token_auth below, so without this branch the
+    # request 401s before routes/approvals.py's own auth check ever runs.
+    # Deliberately NOT added to PUBLIC_PATHS (that would skip auth entirely)
+    # and NOT folded into _try_api_token_auth (that would let the bridge
+    # token authenticate on every other endpoint too — V11 scopes it to this
+    # one path only).
+    if path.startswith("/api/approvals/") and valid_approval_bridge_token(request.headers.get("Authorization")):
+        return None
+
     # Try API token auth first (Bearer header) for headless agents / CLI tools
     if not current_user.is_authenticated:
         if _try_api_token_auth():
@@ -943,6 +1033,7 @@ from routes.shares import bp as shares_bp
 from routes.heartbeats import bp as heartbeats_bp
 from routes.goals import bp as goals_bp
 from routes.tickets import bp as tickets_bp
+from routes.approvals import bp as approvals_bp
 from routes.health import bp as health_bp
 from routes.knowledge import bp as knowledge_bp
 from routes.knowledge_public import bp as knowledge_public_bp
@@ -1020,6 +1111,7 @@ app.register_blueprint(shares_bp)
 app.register_blueprint(heartbeats_bp)
 app.register_blueprint(goals_bp)
 app.register_blueprint(tickets_bp)
+app.register_blueprint(approvals_bp)
 app.register_blueprint(health_bp)
 app.register_blueprint(knowledge_bp)
 app.register_blueprint(knowledge_public_bp)

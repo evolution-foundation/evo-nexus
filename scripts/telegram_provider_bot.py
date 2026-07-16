@@ -380,6 +380,60 @@ def allowed_chat(chat_id: str, from_id: str) -> bool:
     return chat_id in access.get("groups", {})
 
 
+def approval_approvers() -> set[str]:
+    """Individuals allowed to press an approval button (Vault V3).
+
+    Deliberately per-INDIVIDUAL, not per-chat like allowed_chat() — a Telegram
+    group's `allowed_chat` entry would let any member of that group approve a
+    publish/decomposition gate, which is a materially different (weaker)
+    guarantee than "Felipe personally pressed the button". access.json
+    doesn't have a dedicated "approvers" key yet; it reuses `allowFrom`,
+    which today already only lists individual Telegram user ids (not chat/
+    group ids) for DM pairing — see the seeding in telegram_swarm_entry.sh.
+    An explicit "approvers" list, if ever added to access.json, takes
+    precedence.
+    """
+    access = read_json(ACCESS_FILE, {"allowFrom": [], "approvers": [], "groups": {}})
+    explicit = access.get("approvers")
+    if explicit:
+        return {str(x) for x in explicit}
+    return {str(x) for x in access.get("allowFrom", [])}
+
+
+def decide_approval_via_api(approval_id: int, decision: str, from_id: str) -> dict:
+    """Call POST /api/approvals/{id}/decision with the dedicated bridge token.
+
+    Molde de unblock_ticket (mesmo motivo: o serviço telegram não monta o
+    volume do DB, então a decisão vai pela API REST do dashboard). Usa
+    APPROVAL_BRIDGE_TOKEN — NUNCA DASHBOARD_API_TOKEN — e manda `from_id` no
+    corpo, nunca `decided_by`: quem deriva decided_by é o servidor, depois de
+    revalidar from_id contra a allowlist (Vault V4 — um decided_by vindo do
+    corpo seria forjável por qualquer um com o bridge token).
+    """
+    base_url = os.environ.get("EVONEXUS_API_URL", "").strip().rstrip("/")
+    token = os.environ.get("APPROVAL_BRIDGE_TOKEN", "").strip()
+    if not base_url or not token:
+        return {"ok": False, "toast": "Bridge de aprovação não configurado neste serviço."}
+
+    payload = json.dumps({"decision": decision, "from_id": from_id}).encode()
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    req = urllib.request.Request(
+        f"{base_url}/api/approvals/{approval_id}/decision", data=payload, headers=headers, method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+        label = "aprovada ✅" if decision == "approve" else "rejeitada ❌"
+        return {"ok": True, "toast": f"Decisão registrada: {label}", "body": body}
+    except urllib.error.HTTPError as exc:
+        if exc.code == 409:
+            return {"ok": False, "toast": "Já decidido antes — nada mudou."}
+        body = exc.read().decode("utf-8", "ignore")
+        return {"ok": False, "toast": f"Erro ao decidir (HTTP {exc.code})", "detail": body[:200]}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "toast": f"Erro ao decidir: {exc}"}
+
+
 def active_provider_info() -> tuple[str, str | None, str | None]:
     config = read_json(PROVIDERS_PATH, {"active_provider": "anthropic", "providers": {}})
     provider_id = (
@@ -918,13 +972,41 @@ def main() -> int:
     offset = load_offset()
     while True:
         try:
-            payload = {"timeout": 25, "limit": 20}
+            payload = {
+                "timeout": 25, "limit": 20,
+                "allowed_updates": ["message", "edited_message", "callback_query"],
+            }
             if offset is not None:
                 payload["offset"] = offset
             updates = api(token, "getUpdates", payload, timeout=35).get("result", [])
             for update in updates:
                 offset = int(update["update_id"]) + 1
                 save_offset(offset)
+
+                cq = update.get("callback_query")
+                if cq:
+                    data = cq.get("data") or ""
+                    from_id = str((cq.get("from") or {}).get("id", ""))
+                    cq_message = cq.get("message") or {}
+                    cq_chat_id = str((cq_message.get("chat") or {}).get("id", ""))
+                    m = re.match(r"^apr:(\d+):([ar])$", data)
+                    if m and from_id in approval_approvers():
+                        decision = "approve" if m.group(2) == "a" else "reject"
+                        resp = decide_approval_via_api(int(m.group(1)), decision, from_id)
+                        api(token, "answerCallbackQuery", {"callback_query_id": cq["id"], "text": resp["toast"]})
+                        log(f"approval-decision chat={cq_chat_id} approval={m.group(1)} decision={decision} ok={resp['ok']}")
+                    else:
+                        api(token, "answerCallbackQuery", {"callback_query_id": cq["id"], "text": "não autorizado"})
+                        log(f"approval-decision dropped from_id={from_id} data={data!r}")
+                    # Remove the buttons regardless of outcome (double-press,
+                    # unauthorized, or success) so the message reflects the
+                    # current state instead of inviting another press.
+                    if cq_chat_id and cq_message.get("message_id"):
+                        api(token, "editMessageReplyMarkup", {
+                            "chat_id": cq_chat_id, "message_id": cq_message["message_id"],
+                        })
+                    continue
+
                 message = update.get("message") or update.get("edited_message") or {}
                 text = (message.get("text") or "").strip()
                 chat = message.get("chat") or {}

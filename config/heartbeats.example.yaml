@@ -90,6 +90,30 @@ heartbeats:
       {"action": "work"|"skip", "reason": "<1 sentence>",
       "alerts": [<list of critical items, if any>]}.
 
+  # goal-planner — decomposes a human-authored top-level Goal into tickets.
+  # Event-driven only: wakes on goal_created (fired by POST /api/goals when a
+  # Goal with no parent_goal_id is created), not on an interval. interval_seconds
+  # is a required field but never fires a job since "interval" isn't in
+  # wake_triggers. See .claude/agents/goal-planner.md.
+  - id: goal-planner
+    agent: goal-planner
+    interval_seconds: 86400  # unused placeholder — no "interval" wake trigger
+    max_turns: 15
+    timeout_seconds: 300
+    lock_timeout_seconds: 1800
+    wake_triggers:
+      - goal_created
+      - manual
+    enabled: false
+    goal_id: null
+    required_secrets: []
+    decision_prompt: >
+      You are goal-planner. A top-level Goal was just created — its id is in the
+      Trigger payload above. Decompose it into 2-6 concrete, assignable tickets
+      per your agent instructions (.claude/agents/goal-planner.md), or skip if it
+      already has tickets (idempotency) or there is no goal_id in the trigger
+      payload.
+
   # integrations-health — Wave 2.2r in-process HTTP health check for plugin integrations
   # Runs every 15 minutes; zero Claude CLI invocations (in-process Python handler).
   # Enable via UI toggle after reviewing plugin integrations in /integrations.

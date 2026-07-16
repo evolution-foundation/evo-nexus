@@ -15,6 +15,7 @@ Estratégia de debounce por categoria:
 """
 from __future__ import annotations
 
+import html
 import json
 import os
 import sys
@@ -125,6 +126,53 @@ def send_telegram_alert(text: str) -> bool:
     Telegram rejects/fails the request.
     """
     return _send_telegram(text)
+
+
+def send_approval_request(approval_id: int, title: str, body: str) -> int | None:
+    """Send a Telegram approval prompt with an inline approve/reject keyboard.
+
+    Shared by both goal-ticket-unification gates (publish + decomposition,
+    ADR §3c) — the two gates differ only in what they park, not in how they
+    notify. `title`/`body` are agent-authored content (an agent could write
+    arbitrary text into a ticket/goal payload), so both are HTML-escaped
+    before going into a parse_mode=HTML message (Vault V8) — otherwise a
+    stray `<`/`&` in an agent's summary would either break the Telegram
+    render or, worse, let injected markup control the approval prompt itself.
+    Returns the sent message's message_id (for future reference), or None if
+    Telegram credentials are missing or the send fails.
+    """
+    token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    cid = os.environ.get("TELEGRAM_CHAT_ID", "")
+    if not token or not cid:
+        return None
+    safe_title = html.escape(title or "")
+    safe_body = html.escape(body or "")
+    reply_markup = {
+        "inline_keyboard": [[
+            {"text": "✅ Aprovar", "callback_data": f"apr:{approval_id}:a"},
+            {"text": "❌ Rejeitar", "callback_data": f"apr:{approval_id}:r"},
+        ]]
+    }
+    text = f"🔔 <b>{safe_title}</b>\n\n{safe_body}"
+    try:
+        payload = json.dumps({
+            "chat_id": cid,
+            "text": text,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True,
+            "reply_markup": reply_markup,
+        }).encode()
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
+        req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            result = json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return None
+    if not result.get("ok"):
+        return None
+    _append_bot_memory(cid, text)
+    message_id = (result.get("result") or {}).get("message_id")
+    return int(message_id) if message_id is not None else None
 
 
 def send_whatsapp(text: str, phone: str) -> bool:
