@@ -863,45 +863,50 @@ def save_offset(offset: int) -> None:
 def unblock_ticket(ticket_id: str, reply_text: str, author: str) -> str:
     """Ponte Telegram→ticket: anexa a resposta do humano como comentário e reabre
     o ticket (blocked→open) para o orquestrador retomar. Cada round da entrevista
-    é um ciclo: agente pergunta (blocked) → humano responde (reply) → reabre."""
-    import sqlite3
-    import uuid
-    import datetime
-    db = ROOT / "dashboard" / "data" / "evonexus.db"
-    if not db.exists():
-        return "Banco de tickets não encontrado."
+    é um ciclo: agente pergunta (blocked) → humano responde (reply) → reabre.
+
+    Vai pela API REST do dashboard (EVONEXUS_API_URL + DASHBOARD_API_TOKEN), não
+    por sqlite direto: o serviço telegram não monta o volume
+    evonexus_dashboard_data (só o dashboard monta) — abrir
+    dashboard/data/evonexus.db aqui sempre resultava em "Banco de tickets não
+    encontrado". Confirmado ao vivo 2026-07-15/16.
+    """
+    base_url = os.environ.get("EVONEXUS_API_URL", "").strip().rstrip("/")
+    token = os.environ.get("DASHBOARD_API_TOKEN", "").strip()
+    if not base_url or not token:
+        return "Não consigo desbloquear — EVONEXUS_API_URL/DASHBOARD_API_TOKEN não configurados neste serviço."
+
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
     try:
-        c = sqlite3.connect(str(db))
-        c.row_factory = sqlite3.Row
-        row = c.execute(
-            "SELECT id, title, assignee_agent FROM tickets WHERE id = ? OR id LIKE ?",
-            (ticket_id, ticket_id + "%"),
-        ).fetchone()
-        if not row:
-            c.close()
+        req = urllib.request.Request(f"{base_url}/api/tickets/{ticket_id}", headers=headers)
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            ticket = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
             return f"Ticket {ticket_id[:8]} não encontrado."
-        tid = row["id"]
-        now = datetime.datetime.now(datetime.timezone.utc)
-        # updated_at no passado para o orquestrador reprocessar já no próximo ciclo
-        stale = (now - datetime.timedelta(minutes=20)).isoformat()
-        c.execute(
-            "INSERT INTO ticket_comments (id, ticket_id, author, body, mentions, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (str(uuid.uuid4()), tid, f"human:{author}", reply_text, "[]", now.isoformat()),
+        return f"Erro ao buscar ticket: HTTP {exc.code}"
+    except Exception as exc:  # noqa: BLE001
+        return f"Erro ao buscar ticket: {exc}"
+
+    tid = ticket["id"]
+    try:
+        comment_payload = json.dumps({"body": reply_text, "author": f"human:{author}"}).encode()
+        req = urllib.request.Request(
+            f"{base_url}/api/tickets/{tid}/comments", data=comment_payload, headers=headers, method="POST",
         )
-        c.execute(
-            "INSERT INTO ticket_activity (id, ticket_id, actor, action, payload, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (str(uuid.uuid4()), tid, f"human:{author}", "status_changed",
-             json.dumps({"new_status": "open", "via": "telegram_reply"}), now.isoformat()),
+        urllib.request.urlopen(req, timeout=10).read()
+
+        status_payload = json.dumps({"status": "open"}).encode()
+        req = urllib.request.Request(
+            f"{base_url}/api/tickets/{tid}", data=status_payload, headers=headers, method="PATCH",
         )
-        c.execute("UPDATE tickets SET status='open', updated_at=? WHERE id=?", (stale, tid))
-        c.commit()
-        c.close()
-        return (f"✅ Desbloqueado: {row['title'][:60]}\n"
-                f"Sua resposta foi anexada — {row['assignee_agent']} retoma na próxima rodada.")
-    except Exception as e:  # noqa: BLE001
-        return f"Erro ao desbloquear: {e}"
+        urllib.request.urlopen(req, timeout=10).read()
+    except Exception as exc:  # noqa: BLE001
+        return f"Erro ao desbloquear: {exc}"
+
+    return (f"✅ Desbloqueado: {ticket['title'][:60]}\n"
+            f"Sua resposta foi anexada — {ticket.get('assignee_agent')} retoma na próxima rodada.")
 
 
 def main() -> int:

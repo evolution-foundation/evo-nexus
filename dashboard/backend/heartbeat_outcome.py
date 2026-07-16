@@ -364,7 +364,7 @@ def _advance_goal_for_ticket(ticket_id: str, old_status: str, new_status: str, c
 
 
 def _sync_goal_task_from_ticket(ticket_id: str, new_status: str, conn) -> None:
-    """Mirror a ticket's resolution onto its linked goal_task, if any.
+    """Mirror a ticket's status onto its linked goal_task, if any — both ways.
 
     tickets.task_id is a real FK to goal_tasks.id (added 2026-07-15). Without
     this, resolving a ticket never touched the task it represented — the only
@@ -372,12 +372,21 @@ def _sync_goal_task_from_ticket(ticket_id: str, new_status: str, conn) -> None:
     nothing in the codebase read back, so goals silently stopped progressing
     the moment work moved from goal_tasks to tickets as the unit of work.
     Runs on every ticket status transition, not just the heartbeat-driven one
-    in _move_ticket, so it applies regardless of which agent or human closes
+    in _move_ticket, so it applies regardless of which agent or human moves
     the ticket. Recomputes current_value by COUNTing done tasks (matches
     routes/goals.py:_recalculate_goal_value) rather than incrementing, so it
     stays correct even if called more than once for the same ticket.
+
+    Bidirectional since 2026-07-16: forward (resolved/closed -> task done)
+    AND reverse (ticket moved away from resolved/closed -> task reopened).
+    Root cause of the incident that motivated the reverse leg: the Telegram
+    orchestrator (full Bash/tool access, no confirmation gate) self-resolved
+    a "publish post" ticket with a fabricated success comment; once a human
+    correctly walked the ticket back to blocked, the goal_task/goal stayed
+    stuck at the false "done" progress because nothing ever undid it.
     """
     if new_status not in ("resolved", "closed"):
+        _reverse_sync_goal_task_from_ticket(ticket_id, conn)
         return
     row = conn.execute("SELECT task_id FROM tickets WHERE id = ?", (ticket_id,)).fetchone()
     task_id = row["task_id"] if row and hasattr(row, "keys") else (row[0] if row else None)
@@ -392,19 +401,54 @@ def _sync_goal_task_from_ticket(ticket_id: str, new_status: str, conn) -> None:
         return
     now = _now_iso()
     conn.execute("UPDATE goal_tasks SET status = 'done', updated_at = ? WHERE id = ?", (now, task_id))
-    if goal_id:
-        done_count = conn.execute(
-            "SELECT COUNT(*) FROM goal_tasks WHERE goal_id = ? AND status = 'done'", (goal_id,)
-        ).fetchone()[0]
-        conn.execute(
-            "UPDATE goals SET current_value = ?, updated_at = ? WHERE id = ?",
-            (float(done_count), now, goal_id),
-        )
-        conn.execute(
-            "UPDATE goals SET status = 'achieved' WHERE id = ? AND current_value >= target_value AND status = 'active'",
-            (goal_id,),
-        )
+    _recalc_goal_progress(goal_id, conn, now)
     conn.commit()
+
+
+def _reverse_sync_goal_task_from_ticket(ticket_id: str, conn) -> None:
+    """Reopen a goal_task if its ticket left resolved/closed while the task
+    is still marked done — see _sync_goal_task_from_ticket docstring.
+    """
+    row = conn.execute("SELECT task_id FROM tickets WHERE id = ?", (ticket_id,)).fetchone()
+    task_id = row["task_id"] if row and hasattr(row, "keys") else (row[0] if row else None)
+    if not task_id:
+        return
+    trow = conn.execute("SELECT status, goal_id FROM goal_tasks WHERE id = ?", (task_id,)).fetchone()
+    if not trow:
+        return
+    task_status = trow["status"] if hasattr(trow, "keys") else trow[0]
+    goal_id = trow["goal_id"] if hasattr(trow, "keys") else trow[1]
+    if task_status != "done":
+        return
+    now = _now_iso()
+    conn.execute("UPDATE goal_tasks SET status = 'open', updated_at = ? WHERE id = ?", (now, task_id))
+    _recalc_goal_progress(goal_id, conn, now)
+    conn.commit()
+
+
+def _recalc_goal_progress(goal_id, conn, now: str) -> None:
+    """Recompute goals.current_value from a COUNT of done tasks, and drop a
+    goal back from 'achieved' to 'active' if progress regresses below target
+    (mirrors the forward auto-achieve check; achieving is not one-way if the
+    underlying tasks weren't actually done).
+    """
+    if not goal_id:
+        return
+    done_count = conn.execute(
+        "SELECT COUNT(*) FROM goal_tasks WHERE goal_id = ? AND status = 'done'", (goal_id,)
+    ).fetchone()[0]
+    conn.execute(
+        "UPDATE goals SET current_value = ?, updated_at = ? WHERE id = ?",
+        (float(done_count), now, goal_id),
+    )
+    conn.execute(
+        "UPDATE goals SET status = 'achieved' WHERE id = ? AND current_value >= target_value AND status = 'active'",
+        (goal_id,),
+    )
+    conn.execute(
+        "UPDATE goals SET status = 'active' WHERE id = ? AND current_value < target_value AND status = 'achieved'",
+        (goal_id,),
+    )
 
 
 def _move_ticket(ticket_id: str, new_status: str, agent: str, comment: str, conn) -> None:

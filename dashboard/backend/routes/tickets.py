@@ -361,8 +361,12 @@ def update_ticket(ticket_id: str):
     # Mirror onto the linked goal_task (if any) — same sync heartbeat-driven
     # resolutions get via heartbeat_outcome._move_ticket. Manual/UI/API status
     # changes need it too, or the goal only progresses when a heartbeat agent
-    # happens to be the one closing the ticket.
-    if "status" in changes and changes["status"]["to"] in ("resolved", "closed"):
+    # happens to be the one closing the ticket. Fires on ANY status change
+    # (not just into resolved/closed) so a ticket walked BACK from
+    # resolved/closed to blocked/open correctly reopens its goal_task too —
+    # see heartbeat_outcome._sync_goal_task_from_ticket docstring for the
+    # false-publish-claim incident that motivated the reverse leg.
+    if "status" in changes:
         import sqlite3
         from heartbeat_outcome import _sync_goal_task_from_ticket
         _conn = sqlite3.connect(_db_path())
@@ -532,7 +536,7 @@ def bulk_action():
 
     now = _now()
     updated = 0
-    closed_ids: list[str] = []
+    status_synced_ids: list[tuple[str, str]] = []
 
     try:
         for tid in ids:
@@ -545,13 +549,14 @@ def bulk_action():
                 ticket.resolved_at = ticket.resolved_at or now
                 ticket.updated_at = now
                 _log_activity(tid, current_user.username, "status_changed", {"from": old, "to": "closed"})
-                closed_ids.append(tid)
+                status_synced_ids.append((tid, "closed"))
             elif action == "reopen":
                 old = ticket.status
                 ticket.status = "open"
                 ticket.resolved_at = None
                 ticket.updated_at = now
                 _log_activity(tid, current_user.username, "status_changed", {"from": old, "to": "open"})
+                status_synced_ids.append((tid, "open"))
             elif action == "delete":
                 db.session.delete(ticket)
                 _log_activity(tid, current_user.username, "deleted", {})
@@ -570,13 +575,13 @@ def bulk_action():
         db.session.rollback()
         return jsonify({"error": f"bulk action failed: {exc}"}), 500
 
-    if closed_ids:
+    if status_synced_ids:
         import sqlite3
         from heartbeat_outcome import _sync_goal_task_from_ticket
         _conn = sqlite3.connect(_db_path())
         try:
-            for tid in closed_ids:
-                _sync_goal_task_from_ticket(tid, "closed", _conn)
+            for tid, new_status in status_synced_ids:
+                _sync_goal_task_from_ticket(tid, new_status, _conn)
         finally:
             _conn.close()
 
