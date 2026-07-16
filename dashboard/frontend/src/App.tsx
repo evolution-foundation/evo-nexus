@@ -41,6 +41,7 @@ const HeartbeatsList = lazyDefault(() => import('./pages/Heartbeats'))
 const HeartbeatDetail = lazyNamed(() => import('./pages/Heartbeats'), 'HeartbeatDetail')
 const Activity = lazyDefault(() => import('./pages/Activity'))
 const Goals = lazyDefault(() => import('./pages/Goals'))
+const ProjectsOverview = lazyDefault(() => import('./pages/ProjectsOverview'))
 const Kanban = lazyDefault(() => import('./pages/Kanban'))
 const Plugins = lazyDefault(() => import('./pages/Plugins'))
 const PluginDetail = lazyDefault(() => import('./pages/PluginDetail'))
@@ -267,7 +268,7 @@ function AppContent() {
               {hasPermission('users', 'manage') && <Route path="/roles" element={<Roles />} />}
               {hasPermission('workspace', 'manage') && <Route path="/shares" element={<ShareLinks />} />}
               <Route path="/goals" element={<Goals />} />
-              <Route path="/projects" element={<Goals />} />
+              <Route path="/projects" element={<ProjectsOverview />} />
               <Route path="/plugins" element={<Plugins />} />
               <Route path="/plugins/:slug" element={<PluginDetail />} />
               <Route path="/mcp-servers" element={<McpServers />} />
