@@ -150,22 +150,57 @@ def decide_approval(approval_id: int):
                 payload = {}
             from routes.tickets import _get_agent_slugs
 
-            for t in payload.get("tickets") or []:
-                t_title = (t.get("title") or "").strip()
-                if not t_title:
-                    continue
-                t_priority = t.get("priority") if t.get("priority") in TICKET_PRIORITIES else "medium"
-                t_assignee = t.get("assignee_agent")
-                if t_assignee and t_assignee not in _get_agent_slugs():
-                    t_assignee = "clawdia-assistant"
-                db.session.add(Ticket(
-                    id=str(uuid.uuid4()), title=t_title, description=t.get("description"),
-                    status="open", priority=t_priority, priority_rank=PRIORITY_RANK[t_priority],
-                    assignee_agent=t_assignee, goal_id=row.goal_id,
-                    created_by="system:approval", source_agent="goal-planner",
-                    created_at=now, updated_at=now,
-                ))
-            db.session.commit()
+            # pending_approvals.status and goals.decomposition_state are
+            # already committed to 'approved' above (CAS point of no return —
+            # a 2nd decision on this approval_id 409s, and goal-planner
+            # refuses to re-propose a goal whose decomposition_state is
+            # non-null). If this loop dies partway, silently leaving zero
+            # tickets behind an "approved" state would be a real data-loss
+            # bug: the human sees the Telegram approval succeed and never
+            # learns nothing was actually created. isinstance guards the
+            # common malformed-payload case (goal-planner double-encoding
+            # "tickets" as a string, etc.) without losing the rest of the
+            # batch; the try/except is defense in depth for anything else,
+            # and always alerts + re-raises rather than swallowing.
+            created = 0
+            try:
+                for t in payload.get("tickets") or []:
+                    if not isinstance(t, dict):
+                        continue
+                    t_title = (t.get("title") or "").strip()
+                    if not t_title:
+                        continue
+                    t_priority = t.get("priority") if t.get("priority") in TICKET_PRIORITIES else "medium"
+                    t_assignee = t.get("assignee_agent")
+                    if t_assignee and t_assignee not in _get_agent_slugs():
+                        t_assignee = "clawdia-assistant"
+                    db.session.add(Ticket(
+                        id=str(uuid.uuid4()), title=t_title, description=t.get("description"),
+                        status="open", priority=t_priority, priority_rank=PRIORITY_RANK[t_priority],
+                        assignee_agent=t_assignee, goal_id=row.goal_id,
+                        created_by="system:approval", source_agent="goal-planner",
+                        created_at=now, updated_at=now,
+                    ))
+                    created += 1
+                db.session.commit()
+            except Exception as exc:
+                db.session.rollback()
+                from notifications import send_telegram_alert
+                send_telegram_alert(
+                    f"⚠️ Aprovação de decomposição #{approval_id} (Goal #{row.goal_id}) foi "
+                    f"registrada como aprovada, mas a criação dos tickets falhou: {exc}. "
+                    f"Nenhum ticket foi criado e a aprovação já foi consumida (não pode ser "
+                    f"repetida) — intervenção manual necessária."
+                )
+                raise
+
+            if created == 0 and (payload.get("tickets") or []):
+                from notifications import send_telegram_alert
+                send_telegram_alert(
+                    f"⚠️ Aprovação de decomposição #{approval_id} (Goal #{row.goal_id}) foi "
+                    f"aprovada, mas nenhum ticket válido foi encontrado no payload — confira "
+                    f"manualmente."
+                )
         # reject: decomposition_state='rejected' already set above, zero
         # tickets created — nothing else to do.
         #

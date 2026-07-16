@@ -206,6 +206,69 @@ def test_decomposition_reject_creates_zero_tickets(client):
     assert goal["decomposition_state"] == "rejected"
 
 
+def test_decomposition_approve_skips_malformed_ticket_entries(client):
+    """A non-dict entry in payload["tickets"] (e.g. goal-planner double-encoding
+    a string) must not lose the rest of the batch — skip it, create the valid
+    ones."""
+    _, sub_id = _create_subgoal(client, "d6")
+    payload = {
+        "title": "t", "body": "b",
+        "tickets": ["not-a-dict", {"title": "Valid Ticket"}, 42, None],
+    }
+    create_resp = client.post("/api/approvals", json={
+        "gate_type": "decomposition", "goal_id": sub_id, "agent": "goal-planner", "payload": payload,
+    })
+    approval_id = create_resp.get_json()["id"]
+
+    decision_resp = client.post(
+        f"/api/approvals/{approval_id}/decision",
+        json={"decision": "approve", "from_id": "12345"},
+        headers=_bridge_headers(),
+    )
+    assert decision_resp.status_code == 200, decision_resp.get_json()
+
+    tickets = client.get(f"/api/tickets?goal_id={sub_id}").get_json()["tickets"]
+    assert len(tickets) == 1
+    assert tickets[0]["title"] == "Valid Ticket"
+
+
+def test_decomposition_approve_ticket_creation_failure_alerts_and_reraises(client):
+    """The approval row and goals.decomposition_state are already committed to
+    'approved' BEFORE the ticket-creation loop runs (CAS point of no return —
+    a 2nd decision on this approval_id 409s). If the loop dies mid-way anyway
+    (some exception the isinstance guard doesn't catch), silently losing the
+    tickets behind an already-'approved' state would be real data loss: the
+    human sees the Telegram approval succeed and never learns nothing was
+    created. Must alert + re-raise, never swallow."""
+    _, sub_id = _create_subgoal(client, "d7")
+    payload = {
+        "title": "t", "body": "b",
+        "tickets": [{"title": "Ticket A", "assignee_agent": "bolt-executor"}],
+    }
+    create_resp = client.post("/api/approvals", json={
+        "gate_type": "decomposition", "goal_id": sub_id, "agent": "goal-planner", "payload": payload,
+    })
+    approval_id = create_resp.get_json()["id"]
+
+    with patch("routes.tickets._get_agent_slugs", side_effect=RuntimeError("boom")), \
+         patch("notifications.send_telegram_alert") as mock_alert:
+        with pytest.raises(RuntimeError):
+            client.post(
+                f"/api/approvals/{approval_id}/decision",
+                json={"decision": "approve", "from_id": "12345"},
+                headers=_bridge_headers(),
+            )
+
+    mock_alert.assert_called_once()
+    assert "falhou" in mock_alert.call_args[0][0]
+    assert str(approval_id) in mock_alert.call_args[0][0]
+
+    # Zero tickets created — the alert exists precisely because this state
+    # (approved but empty) can't self-heal via a retry.
+    tickets = client.get(f"/api/tickets?goal_id={sub_id}").get_json()["tickets"]
+    assert tickets == []
+
+
 def test_decomposition_approve_never_dispatches_goal_created(client):
     """R1 (ADR Sign-off reservation): approving a decomposition creates tickets
     directly from the payload — it must NEVER re-dispatch goal_created, which
