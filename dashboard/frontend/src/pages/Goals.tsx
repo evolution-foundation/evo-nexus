@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
+import { useSearchParams } from 'react-router-dom'
 import {
   Target, ChevronDown, ChevronRight, Plus, RefreshCw,
   CheckCircle2, Circle, Clock, XCircle, PauseCircle,
@@ -362,6 +363,138 @@ function ProjectCard({
   )
 }
 
+// ---- Create Mission Modal ----
+
+function CreateMissionModal({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
+  const [form, setForm] = useState({
+    slug: '', title: '', description: '', target_metric: '', target_value: '', due_date: '', status: 'active',
+  })
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+
+  const handleSubmit = async () => {
+    if (!form.slug || !form.title) { setError('Slug and title are required'); return }
+    setLoading(true)
+    try {
+      await apiFetch('/api/missions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...form,
+          target_value: form.target_value ? Number(form.target_value) : undefined,
+        }),
+      })
+      onCreated()
+      onClose()
+    } catch (e: any) {
+      setError(e.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <Modal title="Create Mission" onClose={onClose}>
+      {error && <div className="text-red-400 text-xs mb-3">{error}</div>}
+      <Field label="Slug (unique identifier)">
+        <Input value={form.slug} onChange={(e) => setForm({ ...form, slug: e.target.value })} placeholder="evo-revenue-1m-q4-2026" />
+      </Field>
+      <Field label="Title">
+        <Input value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} placeholder="Evolution MRR $1M Q4 2026" />
+      </Field>
+      <Field label="Description">
+        <Input value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder="Optional description" />
+      </Field>
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="Target metric">
+          <Input value={form.target_metric} onChange={(e) => setForm({ ...form, target_metric: e.target.value })} placeholder="MRR" />
+        </Field>
+        <Field label="Target value">
+          <Input type="number" value={form.target_value} onChange={(e) => setForm({ ...form, target_value: e.target.value })} placeholder="1000000" />
+        </Field>
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="Due date">
+          <Input type="date" value={form.due_date} onChange={(e) => setForm({ ...form, due_date: e.target.value })} />
+        </Field>
+        <Field label="Status">
+          <Select value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}>
+            <option value="active">Active</option>
+            <option value="on-hold">On Hold</option>
+          </Select>
+        </Field>
+      </div>
+      <div className="flex justify-end gap-2 mt-4">
+        <button onClick={onClose} className="px-4 py-2 text-sm text-[#667085] hover:text-white transition-colors">Cancel</button>
+        <button
+          onClick={handleSubmit}
+          disabled={loading}
+          className="px-4 py-2 text-sm bg-[#00FFA7] text-black font-semibold rounded-lg hover:bg-[#00FFA7]/90 transition-colors disabled:opacity-50"
+        >
+          {loading ? 'Creating...' : 'Create'}
+        </button>
+      </div>
+    </Modal>
+  )
+}
+
+// ---- Create Project Modal ----
+
+function CreateProjectModal({ missionId, onClose, onCreated }: { missionId: number; onClose: () => void; onCreated: () => void }) {
+  const [form, setForm] = useState({ slug: '', title: '', description: '', status: 'active' })
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+
+  const handleSubmit = async () => {
+    if (!form.slug || !form.title) { setError('Slug and title are required'); return }
+    setLoading(true)
+    try {
+      await apiFetch('/api/projects', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...form, mission_id: missionId }),
+      })
+      onCreated()
+      onClose()
+    } catch (e: any) {
+      setError(e.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <Modal title="Create Project" onClose={onClose}>
+      {error && <div className="text-red-400 text-xs mb-3">{error}</div>}
+      <Field label="Slug (unique identifier)">
+        <Input value={form.slug} onChange={(e) => setForm({ ...form, slug: e.target.value })} placeholder="evo-ai" />
+      </Field>
+      <Field label="Title">
+        <Input value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} placeholder="Evo AI" />
+      </Field>
+      <Field label="Description">
+        <Input value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder="Optional description" />
+      </Field>
+      <Field label="Status">
+        <Select value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}>
+          <option value="active">Active</option>
+          <option value="on-hold">On Hold</option>
+        </Select>
+      </Field>
+      <div className="flex justify-end gap-2 mt-4">
+        <button onClick={onClose} className="px-4 py-2 text-sm text-[#667085] hover:text-white transition-colors">Cancel</button>
+        <button
+          onClick={handleSubmit}
+          disabled={loading}
+          className="px-4 py-2 text-sm bg-[#00FFA7] text-black font-semibold rounded-lg hover:bg-[#00FFA7]/90 transition-colors disabled:opacity-50"
+        >
+          {loading ? 'Creating...' : 'Create'}
+        </button>
+      </div>
+    </Modal>
+  )
+}
+
 // ---- Create Goal Modal ----
 
 function CreateGoalModal({ projectId, onClose, onCreated }: { projectId: number; onClose: () => void; onCreated: () => void }) {
@@ -507,6 +640,7 @@ type DueFilter = 'all' | 'overdue' | 'this-week' | 'this-month'
 
 export default function Goals() {
   const { t } = useTranslation()
+  const [searchParams] = useSearchParams()
   const [missions, setMissions] = useState<Mission[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -514,6 +648,8 @@ export default function Goals() {
   const [dueFilter, setDueFilter] = useState<DueFilter>('all')
   const [createGoalForProject, setCreateGoalForProject] = useState<number | null>(null)
   const [createTaskForGoal, setCreateTaskForGoal] = useState<number | null>(null)
+  const [showCreateMission, setShowCreateMission] = useState(false)
+  const [createProjectForMission, setCreateProjectForMission] = useState<number | null>(null)
 
   const load = useCallback(async () => {
     try {
@@ -545,6 +681,14 @@ export default function Goals() {
   }, [])
 
   useEffect(() => { load() }, [load])
+
+  useEffect(() => {
+    if (loading) return
+    const projectId = searchParams.get('project')
+    if (!projectId) return
+    const el = document.getElementById(`project-${projectId}`)
+    el?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  }, [loading, missions, searchParams])
 
   const handleTaskStatusChange = async (taskId: number, status: string) => {
     try {
@@ -629,12 +773,20 @@ export default function Goals() {
             <p className="text-xs text-[#667085]">Mission → Project → Goal → Task hierarchy</p>
           </div>
         </div>
-        <button
-          onClick={load}
-          className="flex items-center gap-2 px-3 py-1.5 text-xs text-[#667085] hover:text-white border border-[#21262d] rounded-lg hover:border-[#344054] transition-colors"
-        >
-          <RefreshCw size={12} /> Refresh
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setShowCreateMission(true)}
+            className="flex items-center gap-2 px-3 py-1.5 text-xs bg-[#00FFA7]/15 text-[#00FFA7] border border-[#00FFA7]/30 rounded-lg hover:bg-[#00FFA7]/25 transition-colors"
+          >
+            <Plus size={12} /> {t('goals.newMission')}
+          </button>
+          <button
+            onClick={load}
+            className="flex items-center gap-2 px-3 py-1.5 text-xs text-[#667085] hover:text-white border border-[#21262d] rounded-lg hover:border-[#344054] transition-colors"
+          >
+            <RefreshCw size={12} /> Refresh
+          </button>
+        </div>
       </div>
 
       {/* Top urgent goals stats */}
@@ -692,9 +844,15 @@ export default function Goals() {
       {filteredMissions.length === 0 ? (
         <div className="text-center py-16 px-4">
           <p className="text-sm text-[#e6edf3] mb-2">Nenhuma Mission criada ainda.</p>
-          <p className="text-xs text-[#667085] max-w-md mx-auto">
-            Missions são os objetivos de topo da sua organização. Projects e Goals descendem delas. Use a skill <code className="text-[#00FFA7]">/create-goal</code> para criar a primeira.
+          <p className="text-xs text-[#667085] max-w-md mx-auto mb-4">
+            Missions são os objetivos de topo da sua organização. Projects e Goals descendem delas.
           </p>
+          <button
+            onClick={() => setShowCreateMission(true)}
+            className="px-4 py-2 text-sm bg-[#00FFA7] text-black font-semibold rounded-lg hover:bg-[#00FFA7]/90 transition-colors"
+          >
+            Criar sua primeira Mission
+          </button>
         </div>
       ) : (
         filteredMissions.map((mission) => (
@@ -730,21 +888,41 @@ export default function Goals() {
               <p className="text-xs text-[#667085] px-2">No projects in this mission.</p>
             ) : (
               (mission.projects || []).map((project) => (
-                <ProjectCard
-                  key={project.id}
-                  project={project}
-                  onTaskStatusChange={handleTaskStatusChange}
-                  onRecalculate={handleRecalculate}
-                  onCreateGoal={(pid) => setCreateGoalForProject(pid)}
-                  onCreateTask={(gid) => setCreateTaskForGoal(gid)}
-                />
+                <div id={`project-${project.id}`} key={project.id}>
+                  <ProjectCard
+                    project={project}
+                    onTaskStatusChange={handleTaskStatusChange}
+                    onRecalculate={handleRecalculate}
+                    onCreateGoal={(pid) => setCreateGoalForProject(pid)}
+                    onCreateTask={(gid) => setCreateTaskForGoal(gid)}
+                  />
+                </div>
               ))
             )}
+            <button
+              onClick={() => setCreateProjectForMission(mission.id)}
+              className="flex items-center gap-1 text-xs text-[#667085] hover:text-[#00FFA7] transition-colors mt-1 px-2"
+            >
+              <Plus size={12} /> {t('goals.newProject')}
+            </button>
           </div>
         ))
       )}
 
       {/* Modals */}
+      {showCreateMission && (
+        <CreateMissionModal
+          onClose={() => setShowCreateMission(false)}
+          onCreated={load}
+        />
+      )}
+      {createProjectForMission !== null && (
+        <CreateProjectModal
+          missionId={createProjectForMission}
+          onClose={() => setCreateProjectForMission(null)}
+          onCreated={load}
+        />
+      )}
       {createGoalForProject !== null && (
         <CreateGoalModal
           projectId={createGoalForProject}

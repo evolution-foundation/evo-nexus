@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
-import { useToast } from './Toast'
 import Markdown from './Markdown'
 import { AgentAvatar } from './AgentAvatar'
 import TerminalHudPanel from './TerminalHudPanel'
+import CreateTicketModal, { type CreatedTicket } from './CreateTicketModal'
 import { useNotifications } from '../context/NotificationContext'
 import {
   Send, Square, ChevronDown, ChevronRight,
@@ -96,7 +96,6 @@ type Status = 'idle' | 'connecting' | 'running' | 'error'
 
 export default function AgentChat({ agent, sessionId, accentColor = '#00FFA7', externalLoading = false, externalError = null, onPendingCountChange, onNeedsAttention, workingDir: _workingDir, threadTicketId: _threadTicketId, onTurnCompleted }: AgentChatProps) {
   const { dismissBySession } = useNotifications()
-  const toast = useToast()
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [input, setInput] = useState('')
   const [status, setStatus] = useState<Status>('idle')
@@ -107,6 +106,7 @@ export default function AgentChat({ agent, sessionId, accentColor = '#00FFA7', e
   const [ticketId, setTicketId] = useState<string | null>(null)
   const [tickets, setTickets] = useState<{ id: string; title: string; status: string }[]>([])
   const [showTicketPicker, setShowTicketPicker] = useState(false)
+  const [showCreateTicketModal, setShowCreateTicketModal] = useState(false)
   const [allSkills, setAllSkills] = useState<SkillItem[]>([])
   const [slashPopup, setSlashPopup] = useState<SlashPopup>({
     open: false, query: '', items: [], selectedIndex: 0, anchorStart: -1,
@@ -472,28 +472,9 @@ export default function AgentChat({ agent, sessionId, accentColor = '#00FFA7', e
     }
   }, [sessionId])
 
-  const createAndBindTicket = useCallback(async () => {
-    const title = prompt('New ticket title:')
-    if (!title?.trim()) return
-    try {
-      const res = await fetch('/api/tickets', {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          title: title.trim(),
-          assignee_agent: agent,
-          priority: 'medium',
-          status: 'open',
-        }),
-      })
-      if (!res.ok) throw new Error('Failed to create')
-      const ticket = await res.json()
-      await bindTicket(ticket.id)
-    } catch (err: any) {
-      toast.error('Falha ao criar ticket', err?.message)
-    }
-  }, [agent, bindTicket])
+  const handleTicketCreated = useCallback(async (ticket: CreatedTicket) => {
+    await bindTicket(ticket.id)
+  }, [bindTicket])
 
   const respondToApproval = useCallback((requestId: string, approved: boolean) => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return
@@ -1108,7 +1089,7 @@ export default function AgentChat({ agent, sessionId, accentColor = '#00FFA7', e
             </button>
           )}
           <button
-            onClick={createAndBindTicket}
+            onClick={() => { setShowTicketPicker(false); setShowCreateTicketModal(true) }}
             className="w-full text-left px-3 py-2 text-xs text-[#e6edf3] hover:bg-white/5 border-b border-[#21262d] flex items-center gap-2"
             style={{ color: accentColor }}
           >
@@ -1591,6 +1572,14 @@ export default function AgentChat({ agent, sessionId, accentColor = '#00FFA7', e
           50% { opacity: 1; }
         }
       `}</style>
+
+      {showCreateTicketModal && (
+        <CreateTicketModal
+          onClose={() => setShowCreateTicketModal(false)}
+          onCreated={handleTicketCreated}
+          defaultAssigneeAgent={agent}
+        />
+      )}
     </div>
   )
 }

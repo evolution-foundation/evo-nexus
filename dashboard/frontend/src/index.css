@@ -1,5 +1,14 @@
 @import "tailwindcss";
 
+@theme {
+  /* Ticket system typography (Kanban card + CreateTicketModal) — a distinct
+     display face for titles, paired with a technical mono for meta/IDs.
+     Scoped as an additive utility; does not touch the app-wide `font-mono`
+     token used elsewhere. */
+  --font-display: 'Space Grotesk', sans-serif;
+  --font-ticket-mono: 'JetBrains Mono', ui-monospace, monospace;
+}
+
 :root {
   --evo-green: #00FFA7;
   --bg-primary: #0C111D;

@@ -10,6 +10,7 @@ import {
   Eye,
   Lock,
   Minus,
+  Plus,
   RefreshCw,
   Search,
   Ticket,
@@ -18,6 +19,7 @@ import {
 import { AgentIcon } from '../components/AgentIcon'
 import { useToast } from '../components/Toast'
 import { api } from '../lib/api'
+import CreateTicketModal, { type CreatedTicket } from '../components/CreateTicketModal'
 
 type TicketStatus = 'open' | 'in_progress' | 'blocked' | 'review' | 'resolved' | 'closed' | 'archived'
 type TicketPriority = 'urgent' | 'high' | 'medium' | 'low'
@@ -59,6 +61,13 @@ const PRIORITY_TONE: Record<TicketPriority, string> = {
   low: 'text-[#667085] border-[#344054] bg-[#21262d]',
 }
 
+const PRIORITY_RAIL: Record<TicketPriority, string> = {
+  urgent: 'bg-red-500',
+  high: 'bg-orange-400',
+  medium: 'bg-yellow-400',
+  low: 'bg-[#344054]',
+}
+
 function formatAge(iso: string): string {
   const diff = Date.now() - new Date(iso).getTime()
   const minutes = Math.max(1, Math.floor(diff / 60000))
@@ -76,6 +85,7 @@ export default function Kanban() {
   const [error, setError] = useState<string | null>(null)
   const [query, setQuery] = useState('')
   const [updating, setUpdating] = useState<string | null>(null)
+  const [showCreateModal, setShowCreateModal] = useState(false)
 
   const fetchTickets = useCallback(async () => {
     setLoading(true)
@@ -121,6 +131,10 @@ export default function Kanban() {
     }
   }
 
+  const handleTicketCreated = (ticket: CreatedTicket) => {
+    setTickets((current) => [ticket as unknown as TicketItem, ...current])
+  }
+
   return (
     <div className="min-h-screen bg-[#0C111D]">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between mb-6">
@@ -151,6 +165,13 @@ export default function Kanban() {
             <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
             Atualizar
           </button>
+          <button
+            onClick={() => setShowCreateModal(true)}
+            className="flex items-center gap-2 px-3 py-2 text-xs font-semibold bg-[#00FFA7] text-black rounded-lg hover:bg-[#00FFA7]/90 transition-colors"
+          >
+            <Plus size={14} />
+            Novo ticket
+          </button>
         </div>
       </div>
 
@@ -161,7 +182,7 @@ export default function Kanban() {
       )}
 
       <div className="overflow-x-auto pb-4">
-        <div className="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-6 gap-3 min-w-[1440px] md:min-w-[1180px]">
+        <div className="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-6 gap-3 md:min-w-[1180px] xl:min-w-[1440px]">
           {STATUSES.map((column) => {
             const items = grouped[column.id] || []
             return (
@@ -185,8 +206,13 @@ export default function Kanban() {
                     items.map((ticket) => (
                       <article
                         key={ticket.id}
-                        className="group bg-[#0C111D] border border-[#21262d] hover:border-[#344054] rounded-lg p-3 transition-colors"
+                        className="group relative overflow-hidden bg-[#0C111D] border border-[#21262d] hover:border-[#344054] rounded-lg pl-3.5 pr-3 py-3 transition-colors"
                       >
+                        <span
+                          aria-hidden="true"
+                          className={`absolute left-0 top-0 bottom-0 w-[3px] ${PRIORITY_RAIL[ticket.priority]}`}
+                        />
+
                         <button
                           onClick={() => navigate(`/tickets/${ticket.id}`)}
                           className="w-full text-left"
@@ -198,27 +224,29 @@ export default function Kanban() {
                               <Ticket size={14} className="text-[#667085] mt-0.5" />
                             )}
                             <div className="min-w-0 flex-1">
-                              <div className="flex items-start gap-1">
-                                <h2 className="text-sm font-medium text-[#e6edf3] leading-snug line-clamp-2">{ticket.title}</h2>
+                              <div className="flex items-start gap-1.5">
+                                <h2 className="font-display text-[13.5px] font-semibold text-[#e6edf3] leading-snug tracking-tight line-clamp-2">
+                                  {ticket.title}
+                                </h2>
                                 {ticket.locked_at && <Lock size={12} className="text-orange-400 shrink-0 mt-0.5" aria-label={`Locked by ${ticket.locked_by || 'agent'}`} />}
                               </div>
                               {ticket.description && (
-                                <p className="mt-1 text-xs text-[#667085] line-clamp-2">{ticket.description}</p>
+                                <p className="mt-1 text-xs text-[#8b949e] leading-relaxed line-clamp-2">{ticket.description}</p>
                               )}
                             </div>
                           </div>
                         </button>
 
                         <div className="mt-3 flex items-center justify-between gap-2">
-                          <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[10px] font-medium ${PRIORITY_TONE[ticket.priority]}`}>
+                          <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border font-ticket-mono text-[10px] font-medium uppercase tracking-wide ${PRIORITY_TONE[ticket.priority]}`}>
                             {PRIORITY_ICON[ticket.priority]}
                             {ticket.priority}
                           </span>
-                          <span className="text-[10px] text-[#667085]">{formatAge(ticket.updated_at)}</span>
+                          <span className="font-ticket-mono text-[10px] text-[#667085]">{formatAge(ticket.updated_at)}</span>
                         </div>
 
-                        <div className="mt-2 flex items-center justify-between gap-2">
-                          <span className="text-[10px] text-[#667085] truncate font-mono">
+                        <div className="mt-2.5 pt-2.5 border-t border-[#21262d]/60 flex items-center justify-between gap-2">
+                          <span className="font-ticket-mono text-[10px] text-[#667085] truncate">
                             {ticket.assignee_agent ? `@${ticket.assignee_agent}` : 'sem agente'}
                           </span>
                           <select
@@ -243,9 +271,24 @@ export default function Kanban() {
         </div>
       </div>
 
-      <div className="mt-2 text-xs text-[#667085]">
-        {tickets.length === 0 && !loading && 'Nenhum ticket ativo. Crie um em /routines ou via heartbeat para aparecer aqui.'}
-      </div>
+      {tickets.length === 0 && !loading && (
+        <div className="mt-2 flex items-center justify-center gap-3 text-xs text-[#667085]">
+          Nenhum ticket ativo ainda.
+          <button
+            onClick={() => setShowCreateModal(true)}
+            className="flex items-center gap-1.5 text-[#00FFA7] hover:underline"
+          >
+            <Plus size={12} /> Criar o primeiro ticket
+          </button>
+        </div>
+      )}
+
+      {showCreateModal && (
+        <CreateTicketModal
+          onClose={() => setShowCreateModal(false)}
+          onCreated={handleTicketCreated}
+        />
+      )}
     </div>
   )
 }
