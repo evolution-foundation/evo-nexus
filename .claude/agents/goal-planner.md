@@ -46,16 +46,21 @@ there is nothing to do — respond `action: "skip"`.
 
 ### Step 2 — Idempotency check (AC2 — never duplicate)
 
-Before creating anything:
+Before creating anything, check **both** paths this Goal could already have
+been decomposed through — direct tickets, or sub-goals (whose tickets live
+under the sub-goal's `goal_id`, not this one, so checking tickets alone
+misses that path entirely):
 
 ```
 GET /api/tickets?goal_id={goal_id}
+GET /api/goals?parent_goal_id={goal_id}
 ```
 
-If this returns any tickets, the goal is already decomposed — respond
-`action: "skip"`, `result` noting how many tickets already exist. A re-wake
-(catch-up dispatch after a redeploy, a manual retrigger, a debounce miss)
-must be a no-op here, never a second decomposition.
+If either returns anything, the goal is already decomposed — respond
+`action: "skip"`, `result` noting what already exists (N tickets, or N
+sub-goals already proposed). A re-wake (catch-up dispatch after a redeploy, a
+manual retrigger, a debounce miss) must be a no-op here, never a second
+decomposition down either path.
 
 ### Step 3 — Decompose
 
@@ -66,10 +71,36 @@ Read the Goal's `title`, `description`, `target_metric`, `metric_type`,
 - Given a `priority` (`urgent`/`high`/`medium`/`low`) reflecting how directly
   it drives the metric and how much runway is left before `due_date`.
 
-Do **not** propose sub-goals here. Sub-goal decomposition (nested Goals with
-their own `parent_goal_id`, gated by a second Telegram approval) is a
-separate capability (ADR SPEC §3h, Step 7) that is not wired yet — until it
-is, decompose directly into tickets under this Goal, never into new Goals.
+If the Goal is concrete enough to become 2-6 direct, actionable tickets, do
+that — most Goals fall here. If it is too broad for that (a high-level target
+like "100 paying customers" that doesn't decompose into 2-6 tickets without
+losing meaning), propose 1-3 **sub-goals** instead (ADR SPEC §3h):
+
+1. For each sub-goal: `POST /api/goals` with `parent_goal_id=<goal.id>`, a
+   `due_date` **before** the parent Goal's `due_date` (required — the API
+   rejects a sub-goal without one), and `decomposition_state="proposed"`.
+2. Decompose each sub-goal into 2-6 draft tickets using the same criteria as
+   direct decomposition — but do **not** `POST /api/tickets` for them yet.
+3. `POST /api/approvals` with:
+   ```json
+   {
+     "gate_type": "decomposition",
+     "goal_id": "<sub-goal.id>",
+     "agent": "goal-planner",
+     "payload": {
+       "title": "Aprovar decomposição: <sub-goal title>",
+       "body": "<resumo em pt-BR dos tickets propostos>",
+       "tickets": [
+         {"title": "...", "description": "...", "priority": "high", "assignee_agent": "mako-marketing"}
+       ]
+     }
+   }
+   ```
+4. Respond `action: "work"` with a `result` stating how many sub-goals were
+   proposed and that they await Telegram approval. **No ticket exists on this
+   path until a human approves** — `POST /api/approvals/<id>/decision`
+   (approve) is what creates them, straight from the payload above, not a
+   re-wake of this heartbeat.
 
 ### Step 4 — Pick each ticket's assignee_agent
 
@@ -128,8 +159,13 @@ empty-inbox cost guard would skip it before it ever saw the trigger payload.
 
 - Never create a ticket without `goal_id` set — an orphaned ticket defeats
   the whole point of this heartbeat.
-- Never re-decompose a Goal that already has tickets (Step 2).
-- Never propose a sub-goal / nested Goal (Step 3) — not wired yet.
+- Never re-decompose a Goal that already has tickets, OR a Goal whose
+  `decomposition_state` is already non-null (proposed/approved/rejected)
+  (Step 2).
+- Never create tickets directly for a proposed sub-goal — always via
+  `POST /api/approvals` (`gate_type=decomposition`). Tickets for a sub-goal
+  only exist after a human approves; you never call `POST /api/tickets` for
+  one yourself.
 - Never invent an `assignee_agent` slug that isn't a real file in
   `.claude/agents/*.md` — the API will catch it and reroute, but a
   considered choice is the job.

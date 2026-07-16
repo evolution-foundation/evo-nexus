@@ -27,8 +27,9 @@ Notification policy (decided with Felipe 2026-06-17):
 from __future__ import annotations
 
 import json
+import os
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 # Valid ticket states (see .claude/rules/tickets.md)
 _VALID_STATUS = {"open", "in_progress", "blocked", "review", "resolved", "closed"}
@@ -152,9 +153,25 @@ _OUTCOME_SCHEMA = {
         "new_status": {"type": ["string", "null"]},
         "blocked_reason": {"type": "string"},
         "needs": {"type": "string"},
+        "publish_intent": {"type": ["boolean", "null"]},
+        "publish_target": {"type": ["string", "null"]},
     },
-    "required": ["action", "result"],
+    # publish_intent is required (not just present-with-default) so the
+    # strict json_schema call is forced to emit it explicitly — the publish
+    # gate below is fail-closed and only trusts an EXPLICIT False (Vault V5).
+    "required": ["action", "result", "publish_intent"],
 }
+
+# goal-ticket-unification Step 7 (ADR SPEC 3g) — agents that can cause a
+# ticket to represent a public post/message. Mirrors STATE_MONITOR_AGENTS
+# (heartbeat_runner.py) as a constant + env override pattern.
+PUBLISHING_AGENTS = set(
+    (os.environ.get("PUBLISHING_AGENTS") or "pixel-social-media,mako-marketing,pulse-community").split(",")
+)
+# Closed set (Vault V9) — never build a URL/call from an arbitrary agent-supplied string.
+PUBLISH_CHANNELS = set(
+    (os.environ.get("PUBLISH_CHANNELS") or "instagram,linkedin,x,youtube,discord,whatsapp").split(",")
+)
 
 # Self-healing review loop (goal-ticket-unification Step 6, ADR SPEC 2b-2d).
 # A ticket whose executor sets new_status="review" gets a pass/fail verdict
@@ -287,7 +304,11 @@ def structure_via_nvidia(agent_output, agent: str, conn) -> dict | None:
         "- action='blocked' se depende de algo que só o humano fornece (credencial, "
         "acesso, dado, decisão). Preencha blocked_reason e needs.\n"
         "- action='skip' SOMENTE se nada acionável foi feito.\n"
-        "- result: 1 frase em pt-BR com o resultado concreto. ticket_id: o id tratado."
+        "- result: 1 frase em pt-BR com o resultado concreto. ticket_id: o id tratado.\n"
+        "- publish_intent: true se o resultado é algo que seria publicado externamente "
+        "(post, mensagem, conteúdo pronto pra sair); false se o agente decidiu "
+        "explicitamente NÃO publicar agora (rascunho, aguardando revisão); null se a "
+        "tarefa não envolve publicação alguma."
     )
     body = {
         "messages": [{"role": "user", "content": prompt}],
@@ -532,6 +553,105 @@ def _move_ticket(ticket_id: str, new_status: str, agent: str, comment: str, conn
     conn.commit()
 
 
+def _maybe_park_for_publish(ticket_id: str, agent: str, outcome: dict, title: str, conn) -> dict | None:
+    """Gate a publishing agent's resolve/close behind human Telegram approval.
+
+    Fail-closed (Vault V5/V9, ADR SPEC 3g): only an EXPLICIT publish_intent=False
+    bypasses the gate — absent/None (e.g. the free-form parse_agent_outcome path,
+    where the field may simply be missing) still gates. Returns None when there's
+    nothing to gate (not a publishing agent, or intent explicitly False); a
+    "blocked"/"result" notification spec otherwise (see apply_outcome's contract).
+    """
+    if agent not in PUBLISHING_AGENTS:
+        return None
+    if outcome.get("publish_intent") is False:
+        return None
+
+    target = outcome.get("publish_target")
+    if target not in PUBLISH_CHANNELS:
+        reason = f"publish_target inválido: {target!r}"
+        conn.execute("UPDATE tickets SET blocked_reason = 'agent_blocked' WHERE id = ?", (ticket_id,))
+        _move_ticket(ticket_id, "blocked", agent, reason, conn)
+        return {
+            "kind": "blocked", "agent": agent, "ticket_id": ticket_id, "ticket_title": title,
+            "reason": reason, "needs": "Revisar manualmente.",
+        }
+
+    # Idempotency key scoped by attempt (Vault V7) — a prior rejected/expired
+    # row for this ticket must not collide with this fresh park.
+    attempt = conn.execute(
+        "SELECT COUNT(*) FROM pending_approvals WHERE ticket_id = ? AND gate_type = 'publish'",
+        (ticket_id,),
+    ).fetchone()[0]
+    idempotency_key = f"publish:{ticket_id}:{attempt}"
+    now = _now_iso()
+    expires_at = (datetime.now(timezone.utc) + timedelta(hours=8)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    payload = {
+        "title": f"Aprovar publicação: {title}",
+        "body": (outcome.get("result") or "")[:1000],
+        "outcome": outcome,
+    }
+    conn.execute(
+        "INSERT OR IGNORE INTO pending_approvals "
+        "(gate_type, ticket_id, agent, attempt, idempotency_key, status, payload, created_at, expires_at) "
+        "VALUES ('publish', ?, ?, ?, ?, 'pending', ?, ?, ?)",
+        (ticket_id, agent, attempt, idempotency_key, json.dumps(payload, ensure_ascii=False), now, expires_at),
+    )
+    conn.commit()
+    approval_row = conn.execute(
+        "SELECT id FROM pending_approvals WHERE idempotency_key = ?", (idempotency_key,)
+    ).fetchone()
+    approval_id = approval_row["id"] if hasattr(approval_row, "keys") else approval_row[0]
+
+    conn.execute(
+        "UPDATE tickets SET blocked_reason = 'pending_human_approval', requires_human_approval = 1 WHERE id = ?",
+        (ticket_id,),
+    )
+    _move_ticket(ticket_id, "blocked", agent, "Aguardando aprovação humana para publicar.", conn)
+
+    from notifications import send_approval_request
+    message_id = send_approval_request(approval_id, payload["title"], payload["body"])
+    if message_id is not None:
+        conn.execute(
+            "UPDATE pending_approvals SET telegram_message_id = ? WHERE id = ?",
+            (message_id, approval_id),
+        )
+        conn.commit()
+
+    return {
+        "kind": "result", "agent": agent, "ticket_title": title,
+        "new_status": "blocked", "summary": "Aguardando aprovação humana para publicar (Telegram).",
+    }
+
+
+def _run_publish_action(approval_row, conn) -> dict:
+    """Execute the actual publish effect for an approved publish-gate approval.
+
+    Security-critical (ADR SPEC 3f — this is the real incident that motivated
+    this whole feature: an orchestrator once fabricated "published
+    successfully" without actually publishing). NEVER return published=True
+    without genuine confirmation from the external platform's API.
+
+    Checked at build time: .claude/skills/int-instagram/scripts/instagram_client.py
+    and .claude/skills/int-linkedin/scripts/linkedin_client.py are read-only
+    analytics clients (profile/recent_posts/insights) — neither exposes a
+    publish/create_media call, so there is no automated publish path for any
+    PUBLISH_CHANNELS target today. This always returns published=False with a
+    clear detail; that is intentional scope (ADR Consequences: "publicação
+    real automatizada por plataforma é follow-up"), not a stub to silently
+    fill in later.
+    """
+    try:
+        payload = json.loads(approval_row.payload or "{}")
+    except (ValueError, TypeError):
+        payload = {}
+    target = (payload.get("outcome") or {}).get("publish_target")
+    return {
+        "published": False,
+        "detail": f"Aprovado, mas publicação em {target!r} requer ação manual (sem integração automatizada).",
+    }
+
+
 def _last_review_reset_at(ticket_id: str, conn) -> str | None:
     """created_at of the most recent 'review_reset' activity for this ticket, if any."""
     row = conn.execute(
@@ -676,6 +796,9 @@ def apply_outcome(heartbeat_id: str, agent: str, result: dict, conn) -> dict | N
                 }
             review = _apply_review_verdict(ticket_id, agent, verdict, conn)
             if review["verdict"] == "pass":
+                gate = _maybe_park_for_publish(ticket_id, agent, outcome, title, conn)
+                if gate is not None:
+                    return gate
                 return {
                     "kind": "result", "agent": agent, "ticket_title": title,
                     "new_status": "resolved", "summary": review["critique"] or "Revisão aprovada.",
@@ -694,6 +817,10 @@ def apply_outcome(heartbeat_id: str, agent: str, result: dict, conn) -> dict | N
             }
 
         if ticket_id:
+            if new_status in ("resolved", "closed"):
+                gate = _maybe_park_for_publish(ticket_id, agent, outcome, title, conn)
+                if gate is not None:
+                    return gate
             _move_ticket(ticket_id, new_status, agent, summary or "Trabalho realizado.", conn)
         if not summary:
             return None  # worked but reported nothing meaningful → stay silent

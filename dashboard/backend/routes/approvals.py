@@ -9,20 +9,37 @@ sub-goal tickets) is wired in Step 7 — see the TODO markers below.
 
 from __future__ import annotations
 
+import json
 import os
 import re
-from datetime import datetime, timezone
+import sqlite3
+import uuid
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from flask import Blueprint, jsonify, request
+from flask_login import current_user
 
-from models import db
+from models import db, has_permission, Ticket, TICKET_PRIORITIES, PRIORITY_RANK
 from routes._helpers import valid_approval_bridge_token
 
 bp = Blueprint("approvals", __name__)
 
+WORKSPACE = Path(__file__).resolve().parent.parent.parent.parent
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+
+def _db_path() -> str:
+    return str(WORKSPACE / "dashboard" / "data" / "evonexus.db")
+
+
+def _require(action: str, resource: str = "goals"):
+    if not has_permission(current_user.role, resource, action):
+        return jsonify({"error": "Forbidden"}), 403
+    return None
 
 
 def _approver_allowlist() -> set[str]:
@@ -82,23 +99,154 @@ def decide_approval(approval_id: int):
     db.session.commit()
 
     row = db.session.execute(
-        db.text("SELECT gate_type, ticket_id, goal_id FROM pending_approvals WHERE id=:id"),
+        db.text("SELECT gate_type, ticket_id, goal_id, agent, payload FROM pending_approvals WHERE id=:id"),
         {"id": approval_id},
     ).fetchone()
 
     if row.gate_type == "publish":
-        # TODO(Step7): invocar _run_publish_action + _move_ticket aqui —
-        # infra do endpoint (auth/idempotência/correlação) só, sem efeito de
-        # negócio (ver ADR SPEC 3e, condição do escopo deste Step).
-        pass
+        from heartbeat_outcome import _move_ticket, _run_publish_action
+
+        conn = sqlite3.connect(_db_path())
+        try:
+            if decision == "approve":
+                result = _run_publish_action(row, conn)
+                if result["published"]:
+                    conn.execute(
+                        "UPDATE pending_approvals SET status='published' WHERE id=?", (approval_id,)
+                    )
+                    _move_ticket(row.ticket_id, "resolved", row.agent or "system",
+                                 f"Publicado: {result['detail']}", conn)
+                else:
+                    # Approved but nothing was actually published (no automated
+                    # integration for the target) — back to in_progress, not
+                    # resolved, so the ticket doesn't silently claim completion.
+                    _move_ticket(row.ticket_id, "in_progress", row.agent or "system",
+                                 f"Aprovado mas publicação falhou/pendente: {result['detail']}", conn)
+                    conn.execute(
+                        "UPDATE tickets SET blocked_reason=NULL, requires_human_approval=0 WHERE id=?",
+                        (row.ticket_id,),
+                    )
+            else:
+                _move_ticket(row.ticket_id, "in_progress", row.agent or "system",
+                             f"Publicação rejeitada: {reason or 'sem motivo informado'}", conn)
+                conn.execute(
+                    "UPDATE tickets SET blocked_reason=NULL, requires_human_approval=0 WHERE id=?",
+                    (row.ticket_id,),
+                )
+            conn.commit()
+        finally:
+            conn.close()
     else:  # decomposition
         db.session.execute(
             db.text("UPDATE goals SET decomposition_state=:s, updated_at=:t WHERE id=:id"),
             {"s": new_status, "t": now, "id": row.goal_id},
         )
         db.session.commit()
-        # TODO(Step7): consumir aprovação sem re-disparar goal_created — ver
-        # ADR reserva R1 — é aqui que a criação de tickets a partir do
-        # payload aprovado aconteceria.
+
+        if new_status == "approved":
+            try:
+                payload = json.loads(row.payload or "{}")
+            except (ValueError, TypeError):
+                payload = {}
+            from routes.tickets import _get_agent_slugs
+
+            for t in payload.get("tickets") or []:
+                t_title = (t.get("title") or "").strip()
+                if not t_title:
+                    continue
+                t_priority = t.get("priority") if t.get("priority") in TICKET_PRIORITIES else "medium"
+                t_assignee = t.get("assignee_agent")
+                if t_assignee and t_assignee not in _get_agent_slugs():
+                    t_assignee = "clawdia-assistant"
+                db.session.add(Ticket(
+                    id=str(uuid.uuid4()), title=t_title, description=t.get("description"),
+                    status="open", priority=t_priority, priority_rank=PRIORITY_RANK[t_priority],
+                    assignee_agent=t_assignee, goal_id=row.goal_id,
+                    created_by="system:approval", source_agent="goal-planner",
+                    created_at=now, updated_at=now,
+                ))
+            db.session.commit()
+        # reject: decomposition_state='rejected' already set above, zero
+        # tickets created — nothing else to do.
+        #
+        # R1 (ADR Sign-off — Raven's reservation, closed here): deliberately
+        # NEVER call dispatch("goal-planner", "goal_created", ...) from this
+        # branch. A re-dispatch would bypass create_goal's `parent_goal_id IS
+        # NULL` guard (that guard only covers goal CREATION, not this
+        # approval-triggered re-wake) and let sub-goals nest to arbitrary
+        # depth. The tickets from an approved decomposition are created
+        # directly above, straight from the payload the human already saw
+        # and approved — no heartbeat is woken to re-decompose anything.
 
     return jsonify({"status": "ok", "approval_id": approval_id, "decision": new_status}), 200
+
+
+@bp.route("/api/approvals", methods=["POST"])
+def create_approval():
+    """Propose a pending_approvals row (goal-planner's decomposition-gate write
+    path, ADR SPEC 3h/Step 7). goal-planner has no chat surface — it calls this
+    via EvoClient with DASHBOARD_API_TOKEN — so `attempt` is computed
+    server-side (Vault V7) rather than trusted from the caller, keeping the
+    idempotency-key scoping correct even if goal-planner retries a call.
+    """
+    denied = _require("execute")
+    if denied:
+        return denied
+
+    data = request.get_json(silent=True) or {}
+    gate_type = data.get("gate_type")
+    if gate_type not in ("publish", "decomposition"):
+        return jsonify({"error": "gate_type must be 'publish' or 'decomposition'"}), 400
+
+    goal_id = data.get("goal_id")
+    ticket_id = data.get("ticket_id")
+    agent = data.get("agent")
+    payload = data.get("payload") or {}
+
+    if gate_type == "decomposition":
+        if not goal_id:
+            return jsonify({"error": "goal_id is required for gate_type=decomposition"}), 400
+        attempt = db.session.execute(
+            db.text("SELECT COUNT(*) FROM pending_approvals WHERE goal_id=:g AND gate_type='decomposition'"),
+            {"g": goal_id},
+        ).scalar() or 0
+        idempotency_key = f"decomp:{goal_id}:{attempt}"
+    else:
+        if not ticket_id:
+            return jsonify({"error": "ticket_id is required for gate_type=publish"}), 400
+        attempt = db.session.execute(
+            db.text("SELECT COUNT(*) FROM pending_approvals WHERE ticket_id=:t AND gate_type='publish'"),
+            {"t": ticket_id},
+        ).scalar() or 0
+        idempotency_key = f"publish:{ticket_id}:{attempt}"
+
+    now = _now()
+    expires_at = (datetime.now(timezone.utc) + timedelta(hours=8)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+    db.session.execute(
+        db.text(
+            "INSERT OR IGNORE INTO pending_approvals "
+            "(gate_type, ticket_id, goal_id, agent, attempt, idempotency_key, status, payload, created_at, expires_at) "
+            "VALUES (:gt, :tid, :gid, :a, :att, :k, 'pending', :p, :c, :e)"
+        ),
+        {
+            "gt": gate_type, "tid": ticket_id, "gid": goal_id, "a": agent, "att": attempt,
+            "k": idempotency_key, "p": json.dumps(payload, ensure_ascii=False), "c": now, "e": expires_at,
+        },
+    )
+    db.session.commit()
+
+    row = db.session.execute(
+        db.text("SELECT id FROM pending_approvals WHERE idempotency_key=:k"), {"k": idempotency_key}
+    ).fetchone()
+
+    from notifications import send_approval_request
+    message_id = send_approval_request(row.id, payload.get("title") or "Aprovação pendente", payload.get("body") or "")
+    if message_id is not None:
+        db.session.execute(
+            db.text("UPDATE pending_approvals SET telegram_message_id=:m WHERE id=:id"),
+            {"m": message_id, "id": row.id},
+        )
+        db.session.commit()
+
+    return jsonify({"id": row.id, "idempotency_key": idempotency_key, "status": "pending"}), 201

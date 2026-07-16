@@ -197,10 +197,13 @@ def list_goals():
     project_id = request.args.get("project_id", type=int)
     status_filter = request.args.get("status")
     due_filter = request.args.get("due_date")
+    parent_goal_id = request.args.get("parent_goal_id", type=int)
 
     q = Goal.query
     if project_id:
         q = q.filter_by(project_id=project_id)
+    if parent_goal_id:
+        q = q.filter_by(parent_goal_id=parent_goal_id)
     if status_filter:
         q = q.filter_by(status=status_filter)
 
