@@ -43,6 +43,7 @@ const Activity = lazyDefault(() => import('./pages/Activity'))
 const Goals = lazyDefault(() => import('./pages/Goals'))
 const ProjectsOverview = lazyDefault(() => import('./pages/ProjectsOverview'))
 const Kanban = lazyDefault(() => import('./pages/Kanban'))
+const Approvals = lazyDefault(() => import('./pages/Approvals'))
 const Plugins = lazyDefault(() => import('./pages/Plugins'))
 const PluginDetail = lazyDefault(() => import('./pages/PluginDetail'))
 const McpServers = lazyDefault(() => import('./pages/McpServers'))
@@ -278,6 +279,7 @@ function AppContent() {
               {hasPermission('tickets', 'view') && <Route path="/kanban" element={<Kanban />} />}
               {hasPermission('tickets', 'view') && <Route path="/issues" element={<Navigate to="/topics" replace />} />}
               {hasPermission('tickets', 'view') && <Route path="/tickets/:id" element={<TicketDetail />} />}
+              {hasPermission('goals', 'view') && <Route path="/approvals" element={<Approvals />} />}
               {hasPermission('knowledge', 'view') && (
                 <>
                   {/* Top-level Knowledge shell: only Connections + Settings */}

@@ -17,7 +17,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, request, g
 from flask_login import current_user
 
 from models import db, has_permission, Ticket, TICKET_PRIORITIES, PRIORITY_RANK, GoalProject, Goal
@@ -78,8 +78,52 @@ def decide_approval(approval_id: int):
     if not from_id or from_id not in _approver_allowlist():
         return jsonify({"error": "not an approver"}), 403
     decided_by = f"telegram:{from_id}"
-
     reason = str(data.get("reason") or "")[:500]
+
+    return _apply_decision(approval_id, decision, decided_by, reason, from_id)
+
+
+@bp.route("/api/approvals/<int:approval_id>/dashboard-decision", methods=["POST"])
+def decide_approval_via_dashboard(approval_id: int):
+    """Fallback decision path from the dashboard's own /approvals page
+    (panorama 2026-07-17, item 1) — for when the Telegram message got lost
+    or several Missions/Projects are mid-approval at once. Deliberately a
+    SEPARATE, narrower gate than the normal `_require` pattern:
+
+    - g.auth_via_api_token must be falsy — rejects DASHBOARD_API_TOKEN bearer
+      auth outright, even though that token maps to an admin `current_user`
+      and would otherwise pass `_require("manage")`. Many agents hold that
+      token via EvoClient; letting it decide approvals here would silently
+      reopen the exact hole V1 closed for /decision (an agent approving its
+      own publish/decomposition gate). Only a real browser session (cookie
+      set at /login, not a per-request Bearer login) may reach this line.
+    - current_user.role must be exactly "admin" (superadmin), not just
+      whatever role happens to have "manage" on the goals resource.
+    """
+    if getattr(g, "auth_via_api_token", False):
+        return jsonify({"error": "forbidden — use the Telegram approval flow for API/agent callers"}), 403
+    if not current_user.is_authenticated or current_user.role != "admin":
+        return jsonify({"error": "forbidden"}), 403
+
+    data = request.get_json(silent=True) or {}
+    decision = data.get("decision")
+    if decision not in ("approve", "reject"):
+        return jsonify({"error": "decision must be 'approve' or 'reject'"}), 400
+
+    decided_by = f"dashboard:{current_user.username}"
+    reason = str(data.get("reason") or "")[:500]
+
+    return _apply_decision(approval_id, decision, decided_by, reason, approver_from_id=None)
+
+
+def _apply_decision(approval_id: int, decision: str, decided_by: str, reason: str,
+                     approver_from_id: str | None) -> tuple:
+    """Shared effect logic for both decision entry points above — the atomic
+    checkout and the per-gate_type business effect (publish/decompose/
+    project_suggestion/goal_suggestion) are identical regardless of which
+    channel (Telegram bridge token vs dashboard session) made the call; only
+    the auth check and decided_by provenance differ between callers.
+    """
     new_status = "approved" if decision == "approve" else "rejected"
     now = _now()
 
@@ -91,7 +135,7 @@ def decide_approval(approval_id: int):
             "UPDATE pending_approvals SET status=:s, decided_at=:t, decided_by=:b, "
             "reject_reason=:r, approver_from_id=:f WHERE id=:id AND status='pending'"
         ),
-        {"s": new_status, "t": now, "b": decided_by, "r": reason, "f": from_id, "id": approval_id},
+        {"s": new_status, "t": now, "b": decided_by, "r": reason, "f": approver_from_id, "id": approval_id},
     )
     if cur.rowcount == 0:
         db.session.rollback()
@@ -407,6 +451,72 @@ def _render_structured_items(gate_type: str, payload: dict) -> str:
     if len(titled) > 10:
         lines.append(f"… e mais {len(titled) - 10}")
     return "\n".join(lines)
+
+
+def _approval_to_dict(row) -> dict:
+    try:
+        payload = json.loads(row.payload or "{}")
+    except (ValueError, TypeError):
+        payload = {}
+    context_line = _gate_context_line(row.gate_type, row.mission_id, row.project_id, row.goal_id)
+    items_block = _render_structured_items(row.gate_type, payload)
+    return {
+        "id": row.id,
+        "gate_type": row.gate_type,
+        "status": row.status,
+        "agent": row.agent,
+        "ticket_id": row.ticket_id,
+        "goal_id": row.goal_id,
+        "mission_id": row.mission_id,
+        "project_id": row.project_id,
+        "title": payload.get("title"),
+        "body": payload.get("body"),
+        "context": context_line or None,
+        "items_preview": items_block.strip() or None,
+        "created_at": row.created_at,
+        "expires_at": row.expires_at,
+        "decided_at": row.decided_at,
+        "decided_by": row.decided_by,
+    }
+
+
+@bp.route("/api/approvals", methods=["GET"])
+def list_approvals():
+    """Dashboard fallback visibility (panorama 2026-07-17, item 1) — before
+    this, pending_approvals only ever surfaced as a Telegram message with no
+    equivalent view in the dashboard itself. Read-only; deciding still goes
+    through decide_approval_via_dashboard below."""
+    denied = _require("view")
+    if denied:
+        return denied
+    status_filter = request.args.get("status", "pending")
+    gate_type_filter = request.args.get("gate_type")
+
+    query = "SELECT * FROM pending_approvals WHERE 1=1"
+    params: dict = {}
+    if status_filter and status_filter != "all":
+        query += " AND status=:status"
+        params["status"] = status_filter
+    if gate_type_filter:
+        query += " AND gate_type=:gate_type"
+        params["gate_type"] = gate_type_filter
+    query += " ORDER BY created_at DESC LIMIT 100"
+
+    rows = db.session.execute(db.text(query), params).fetchall()
+    return jsonify({"approvals": [_approval_to_dict(r) for r in rows]})
+
+
+@bp.route("/api/approvals/<int:approval_id>", methods=["GET"])
+def get_approval(approval_id: int):
+    denied = _require("view")
+    if denied:
+        return denied
+    row = db.session.execute(
+        db.text("SELECT * FROM pending_approvals WHERE id=:id"), {"id": approval_id}
+    ).fetchone()
+    if not row:
+        return jsonify({"error": "not found"}), 404
+    return jsonify(_approval_to_dict(row))
 
 
 @bp.route("/api/approvals", methods=["POST"])

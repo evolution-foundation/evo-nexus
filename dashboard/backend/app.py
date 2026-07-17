@@ -8,7 +8,7 @@ from pathlib import Path
 from datetime import timedelta
 
 from dotenv import load_dotenv
-from flask import Flask, send_from_directory, request, jsonify
+from flask import Flask, send_from_directory, request, jsonify, g
 from flask_cors import CORS
 from flask_login import LoginManager, current_user, login_user
 
@@ -1060,6 +1060,13 @@ def _try_api_token_auth():
     """Resolve an Authorization: Bearer <token> header against DASHBOARD_API_TOKEN.
     On match, log in the configured service user for the duration of this request.
     Returns True if a valid token was found and applied, False otherwise.
+
+    Sets g.auth_via_api_token = True on success — any route that must be
+    reachable ONLY by a real human sitting at a logged-in browser session
+    (not by an agent that happens to hold DASHBOARD_API_TOKEN, which many
+    do via EvoClient) checks this flag. See
+    routes/approvals.py::decide_approval_via_dashboard for the concrete case
+    this exists for (panorama 2026-07-17, item 1).
     """
     expected = os.environ.get("DASHBOARD_API_TOKEN", "").strip()
     if not expected:
@@ -1081,6 +1088,7 @@ def _try_api_token_auth():
         return False
     # Log in for this request only (no remember cookie)
     login_user(user, remember=False, fresh=False)
+    g.auth_via_api_token = True
     return True
 
 

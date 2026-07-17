@@ -8,7 +8,7 @@ import {
   Brain, Plug, DollarSign, FolderOpen, Cpu,
   Monitor, Users, ScrollText, LogOut, Menu, X, Shield, BookOpen, Library, Database,
   ArrowUpCircle, ChevronDown, Webhook, HardDriveDownload, Settings, Share2, Heart, Target, Activity, Package,
-  Puzzle, Terminal, Columns3, FolderKanban,
+  Puzzle, Terminal, Columns3, FolderKanban, CheckCircle2,
 } from 'lucide-react'
 import {
   getAllPluginSidebarGroups,
@@ -60,6 +60,9 @@ const navGroups: NavGroup[] = [
       { to: '/projects', labelKey: 'projects', icon: FolderKanban, resource: 'goals' },
       { to: '/goals', labelKey: 'goals', icon: Target, resource: 'goals' },
       { to: '/kanban', labelKey: 'kanban', icon: Columns3, resource: 'tickets' },
+      // Fallback de visibilidade/aprovação — antes só existia como mensagem
+      // no Telegram (panorama 2026-07-17, item 1).
+      { to: '/approvals', labelKey: 'approvals', icon: CheckCircle2, resource: 'goals' },
       { to: '/agents', labelKey: 'agents', icon: Bot, resource: 'agents' },
       { to: '/skills', labelKey: 'skills', icon: Zap, resource: 'skills' },
       { to: '/heartbeats', labelKey: 'heartbeats', icon: Heart, resource: 'heartbeats' },

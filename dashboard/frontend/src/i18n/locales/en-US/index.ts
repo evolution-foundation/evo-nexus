@@ -184,6 +184,7 @@ const translations = {
       projects: 'Projects',
       goals: 'Goals',
       kanban: 'Kanban',
+      approvals: 'Approvals',
       tasks: 'Tasks',
       triggers: 'Triggers',
       routines: 'Routines',
