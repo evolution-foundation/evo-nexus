@@ -12,6 +12,7 @@ Run:
 from __future__ import annotations
 
 import importlib
+import json
 import sqlite3
 import sys
 import uuid
@@ -491,13 +492,105 @@ def test_publish_intent_missing_still_gates_fail_closed(conn):
     assert row["status"] == "blocked"
 
 
-def test_run_publish_action_never_claims_published(conn):
-    """No automated publish integration exists for any target today — this
-    must always report published=False, never fabricate success (the exact
-    incident that motivated this ADR)."""
+def test_run_publish_action_requires_exact_content(conn):
     class _Row:
         payload = '{"outcome": {"publish_target": "instagram"}}'
 
     result = heartbeat_outcome._run_publish_action(_Row(), conn)
     assert result["published"] is False
-    assert "instagram" in result["detail"]
+    assert "publish_content" in result["detail"]
+
+
+class _PostizResponse:
+    def __init__(self, body):
+        self._body = body
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self._body
+
+
+def test_run_publish_action_confirms_postiz_published(conn):
+    class _Row:
+        payload = json.dumps({"outcome": {
+            "publish_target": "linkedin",
+            "publish_content": "Texto exato aprovado.",
+            "publish_media": [],
+        }})
+
+    env = {
+        "POSTIZ_URL": "https://postiz.example.com",
+        "POSTIZ_API_KEY": "postiz-key",
+        "POSTIZ_PUBLISH_TIMEOUT_SECONDS": "1",
+        "POSTIZ_PUBLISH_POLL_SECONDS": "0.1",
+    }
+    get_responses = [
+        _PostizResponse([{
+            "id": "int-linkedin", "identifier": "linkedin", "disabled": False,
+        }]),
+        _PostizResponse({"posts": [{"id": "post-1", "state": "PUBLISHED"}]}),
+    ]
+    with patch.dict("os.environ", env, clear=False), \
+         patch("heartbeat_outcome.requests.get", side_effect=get_responses) as mock_get, \
+         patch("heartbeat_outcome.requests.post", return_value=_PostizResponse([
+             {"postId": "post-1", "integration": "int-linkedin"}
+         ])) as mock_post:
+        result = heartbeat_outcome._run_publish_action(_Row(), conn)
+
+    assert result["published"] is True
+    assert "PUBLISHED" in result["detail"]
+    assert mock_get.call_count == 2
+    sent = mock_post.call_args.kwargs["json"]
+    assert sent["type"] == "now"
+    assert sent["posts"][0]["integration"]["id"] == "int-linkedin"
+    assert sent["posts"][0]["value"][0]["content"] == "Texto exato aprovado."
+    assert sent["posts"][0]["settings"] == {"__type": "linkedin"}
+
+
+def test_run_publish_action_rejects_ambiguous_integration(conn):
+    class _Row:
+        payload = json.dumps({"outcome": {
+            "publish_target": "linkedin", "publish_content": "Texto", "publish_media": [],
+        }})
+
+    integrations = [
+        {"id": "int-1", "identifier": "linkedin", "disabled": False},
+        {"id": "int-2", "identifier": "linkedin", "disabled": False},
+    ]
+    with patch.dict("os.environ", {
+        "POSTIZ_URL": "https://postiz.example.com", "POSTIZ_API_KEY": "key",
+    }, clear=False), patch(
+        "heartbeat_outcome.requests.get", return_value=_PostizResponse(integrations)
+    ), patch("heartbeat_outcome.requests.post") as mock_post:
+        result = heartbeat_outcome._run_publish_action(_Row(), conn)
+
+    assert result["published"] is False
+    assert "inequívoca" in result["detail"]
+    mock_post.assert_not_called()
+
+
+def test_run_publish_action_instagram_requires_allowlisted_media(conn):
+    class _Row:
+        payload = json.dumps({"outcome": {
+            "publish_target": "instagram",
+            "publish_content": "Legenda aprovada.",
+            "publish_media": ["https://evil.example/image.jpg"],
+        }})
+
+    with patch.dict("os.environ", {
+        "POSTIZ_URL": "https://postiz.example.com",
+        "POSTIZ_API_KEY": "key",
+        "POSTIZ_ALLOWED_MEDIA_HOSTS": "cdn.example.com",
+    }, clear=False), patch(
+        "heartbeat_outcome.requests.get",
+        return_value=_PostizResponse([{
+            "id": "int-instagram", "identifier": "instagram", "disabled": False,
+        }]),
+    ), patch("heartbeat_outcome.requests.post") as mock_post:
+        result = heartbeat_outcome._run_publish_action(_Row(), conn)
+
+    assert result["published"] is False
+    assert "URL de mídia inválida" in result["detail"]
+    mock_post.assert_not_called()

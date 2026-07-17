@@ -294,10 +294,13 @@ na própria resposta.
 
 ## Responda SOMENTE com este JSON — nada antes, nada depois, tudo em uma linha:
 
-{{"action": "work"|"skip"|"blocked", "ticket_id": "<id da inbox ou null>", "result": "<resultado concreto em pt-BR>", "new_status": "in_progress"|"review"|"resolved"|null, "blocked_reason": "<por que travou, se blocked>", "needs": "<o que precisa do Felipe, se blocked>"}}
+{{"action": "work"|"skip"|"blocked", "ticket_id": "<id da inbox ou null>", "result": "<resultado concreto em pt-BR>", "new_status": "in_progress"|"review"|"resolved"|null, "blocked_reason": "<por que travou, se blocked>", "needs": "<o que precisa do Felipe, se blocked>", "publish_intent": true|false|null, "publish_target": "instagram"|"linkedin"|null, "publish_content": "<texto EXATO a publicar ou null>", "publish_media": ["<URL HTTPS de mídia>"]|null}}
 
 `result` deve dizer o RESULTADO entregue, não "analisei" — ex.: "Plano P0: 3 canais
 (WhatsApp, IG, e-mail), oferta X, 1 post/dia; sucesso = 20 leads", não "vou montar o plano".
+Se `publish_intent=true`, `publish_content` é obrigatório e deve conter o texto
+final completo; nunca coloque somente um resumo em `result`. Para Instagram,
+`publish_media` deve conter ao menos uma URL HTTPS da mídia final.
 """
 
     # Inject goal chain context (F1.2) if goal_id is set
@@ -432,7 +435,7 @@ def _step7_invoke_claude_native(
         except Exception:
             # provider_fallback unavailable — apply the same denylist inline
             # rather than let this fallback become the leak V10 closed.
-            _denylist_exact = {"APPROVAL_BRIDGE_TOKEN"}
+            _denylist_exact = {"APPROVAL_BRIDGE_TOKEN", "POSTIZ_API_KEY"}
             _denylist_prefixes = ("SOCIAL_", "INSTAGRAM_", "LINKEDIN_", "TWITTER_", "DISCORD_")
             agent_env = {
                 k: v for k, v in os.environ.items()

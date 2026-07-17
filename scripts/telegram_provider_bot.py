@@ -428,7 +428,12 @@ def decide_approval_via_api(approval_id: int, decision: str, from_id: str) -> di
         f"{base_url}/api/approvals/{approval_id}/decision", data=payload, headers=headers, method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        # Publish approval can synchronously wait for Postiz to confirm
+        # state=PUBLISHED (dashboard default: up to 90s). Keep the bot's HTTP
+        # timeout slightly above that window instead of failing at 15s while
+        # the server continues publishing in the background.
+        timeout = float(os.environ.get("APPROVAL_DECISION_TIMEOUT_SECONDS", "105"))
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             body = json.loads(resp.read().decode("utf-8"))
         label = "aprovada ✅" if decision == "approve" else "rejeitada ❌"
         return {"ok": True, "toast": f"Decisão registrada: {label}", "body": body}

@@ -53,9 +53,18 @@ services:
       ## (/api/approvals/*/decision) — dedicated credential, deliberately
       ## separate from DASHBOARD_API_TOKEN (goal-ticket-unification Vault V1).
       - APPROVAL_BRIDGE_TOKEN=${APPROVAL_BRIDGE_TOKEN}
+      - APPROVAL_DECISION_TIMEOUT_SECONDS=${APPROVAL_DECISION_TIMEOUT_SECONDS:-105}
       ## Telegram user ids allowed to press an approve/reject button — comma
       ## or semicolon-separated (Vault V3, per-individual not per-chat).
       - APPROVAL_APPROVER_IDS=${APPROVAL_APPROVER_IDS}
+      ## Postiz is called only by the dashboard after human approval.
+      - POSTIZ_URL=${POSTIZ_URL}
+      - POSTIZ_API_KEY=${POSTIZ_API_KEY}
+      - POSTIZ_INTEGRATION_INSTAGRAM_ID=${POSTIZ_INTEGRATION_INSTAGRAM_ID}
+      - POSTIZ_INTEGRATION_LINKEDIN_ID=${POSTIZ_INTEGRATION_LINKEDIN_ID}
+      - POSTIZ_ALLOWED_MEDIA_HOSTS=${POSTIZ_ALLOWED_MEDIA_HOSTS}
+      - POSTIZ_PUBLISH_TIMEOUT_SECONDS=${POSTIZ_PUBLISH_TIMEOUT_SECONDS:-90}
+      - POSTIZ_PUBLISH_POLL_SECONDS=${POSTIZ_PUBLISH_POLL_SECONDS:-3}
       - EVONEXUS_API_URL=http://localhost:8080
       - CORS_ALLOWED_ORIGINS=https://nexus.workflowapi.com.br
       - TZ=America/Sao_Paulo
@@ -135,6 +144,7 @@ services:
       ## Sends approval-decision calls to the dashboard's bridge-only route —
       ## see the matching var on evonexus_dashboard above.
       - APPROVAL_BRIDGE_TOKEN=${APPROVAL_BRIDGE_TOKEN}
+      - APPROVAL_DECISION_TIMEOUT_SECONDS=${APPROVAL_DECISION_TIMEOUT_SECONDS:-105}
       - EVONEXUS_API_URL=http://evonexus-dashboard:8080
       - TELEGRAM_MODE=provider
       - TZ=America/Sao_Paulo

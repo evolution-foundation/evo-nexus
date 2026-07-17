@@ -1,17 +1,20 @@
 #!/usr/bin/env python3
-"""Local EvoNexus goal writer.
+"""EvoNexus Mission → Project → Goal → Task helper.
 
-This is intentionally DB-local because agent sessions do not reliably share the
-dashboard browser auth cookie. The dashboard API remains the UI path; this script
-is the trusted local automation path for the /create-goal skill.
+Goal creation deliberately goes through POST /api/goals so the dashboard can
+emit the goal_created trigger for goal-planner. The remaining hierarchy helpers
+stay DB-local for backwards compatibility with the skill's existing workflow.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sqlite3
+import urllib.error
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -52,6 +55,49 @@ def connect() -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys=ON")
     return conn
+
+
+def _load_workspace_env() -> None:
+    env_path = workspace_root() / ".env"
+    if not env_path.exists():
+        return
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+
+
+def api_post(path: str, payload: dict[str, Any]) -> dict[str, Any]:
+    _load_workspace_env()
+    base_url = os.environ.get("EVONEXUS_API_URL", "").strip()
+    if not base_url:
+        port = os.environ.get("FLASK_PORT", "8080").strip() or "8080"
+        base_url = f"http://localhost:{port}"
+    token = os.environ.get("DASHBOARD_API_TOKEN", "").strip()
+    if not token:
+        raise SystemExit(
+            "DASHBOARD_API_TOKEN is required to create goals through POST /api/goals"
+        )
+
+    request = urllib.request.Request(
+        f"{base_url.rstrip('/')}/{path.lstrip('/')}",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise SystemExit(f"EvoNexus API returned HTTP {exc.code}: {detail}") from exc
+    except urllib.error.URLError as exc:
+        raise SystemExit(f"Could not reach EvoNexus API at {base_url}: {exc.reason}") from exc
 
 
 def create_mission(conn: sqlite3.Connection, args: argparse.Namespace) -> dict[str, Any]:
@@ -160,29 +206,22 @@ def create_goal(conn: sqlite3.Connection, args: argparse.Namespace) -> dict[str,
     elif target_value is None:
         raise SystemExit("--target-value is required unless metric_type=boolean")
 
-    ts = now()
-    conn.execute(
-        """INSERT INTO goals
-           (slug, project_id, title, description, target_metric, metric_type, target_value, current_value, due_date, status, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (
-            slug,
-            project["id"],
-            args.title,
-            args.description,
-            args.target_metric,
-            metric_type,
-            target_value,
-            args.current_value,
-            args.due_date,
-            args.status,
-            ts,
-            ts,
-        ),
+    goal = api_post(
+        "/api/goals",
+        {
+            "slug": slug,
+            "project_id": project["id"],
+            "title": args.title,
+            "description": args.description,
+            "target_metric": args.target_metric,
+            "metric_type": metric_type,
+            "target_value": target_value,
+            "current_value": args.current_value,
+            "due_date": args.due_date,
+            "status": args.status,
+        },
     )
-    conn.commit()
-    row = conn.execute("SELECT * FROM goals WHERE slug=?", (slug,)).fetchone()
-    return row_to_dict(row) | {"created": True, "project": project}
+    return goal | {"created": True, "project": project}
 
 
 def create_task(conn: sqlite3.Connection, args: argparse.Namespace) -> dict[str, Any]:

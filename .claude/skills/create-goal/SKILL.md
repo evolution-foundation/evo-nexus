@@ -50,7 +50,10 @@ For a Mission:
 
 ## Step 3: Write to Nexus
 
-Use the local writer script. Do **not** rely on browser auth, cookies, or `DASHBOARD_API_TOKEN`; OpenClaude sessions may not share dashboard auth state.
+Use the helper script. Goal creation calls `POST /api/goals` with
+`DASHBOARD_API_TOKEN`, so top-level Goals trigger `goal-planner`. Browser auth
+and cookies are not required. The dashboard API must be running and the token
+must be available in the environment or workspace `.env`.
 
 List the current hierarchy first:
 

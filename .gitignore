@@ -157,3 +157,6 @@ config/social.env
 # ── One-off integration test scaffolding (may contain hardcoded creds) ──
 scripts/ghost_integration_test.py
 .git-rewrite
+
+# Local Portainer import with Postiz secrets
+/postiz-vps.env

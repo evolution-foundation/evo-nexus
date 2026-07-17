@@ -1,0 +1,330 @@
+## ============================================================================
+## Postiz — Docker Swarm / Portainer stack for workflowapi.com.br
+##
+## Public URL: https://post.workflowapi.com.br
+## Existing dependencies:
+##   * Traefik attached to the external overlay network `network_public`
+##   * Shared PostgreSQL service reachable as `postgres_postgres` on that network
+##
+## Before deploying, run scripts/bootstrap_postiz_database.sh on the manager.
+## Configure every ${...} variable in Portainer's stack environment editor.
+## ============================================================================
+version: "3.8"
+
+services:
+  postiz-db-bootstrap:
+    image: postgres:16-alpine
+    environment:
+      PGHOST: ${POSTIZ_DATABASE_HOST:-postgres_postgres}
+      PGPORT: "5432"
+      PGUSER: postgres
+      PGPASSWORD: ${POSTGRES_ADMIN_PASSWORD}
+      POSTIZ_DB_PASSWORD: ${POSTIZ_DB_PASSWORD}
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        until pg_isready -h "$$PGHOST" -p "$$PGPORT" -U "$$PGUSER" -d postgres; do
+          echo "Waiting for shared PostgreSQL at $$PGHOST:$$PGPORT..."
+          sleep 3
+        done
+        psql --dbname postgres --set ON_ERROR_STOP=1 \
+          --set db_password="$$POSTIZ_DB_PASSWORD" <<'SQL'
+        SELECT format('CREATE ROLE postiz_user LOGIN PASSWORD %L', :'db_password')
+        WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'postiz_user') \gexec
+
+        SELECT 'CREATE DATABASE postiz_db_local OWNER postiz_user'
+        WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'postiz_db_local') \gexec
+
+        ALTER ROLE postiz_user WITH LOGIN PASSWORD :'db_password';
+        GRANT ALL PRIVILEGES ON DATABASE postiz_db_local TO postiz_user;
+        SQL
+        echo "Postiz database bootstrap completed."
+    networks:
+      - network_public
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      restart_policy:
+        condition: none
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 128M
+
+  postiz:
+    image: ghcr.io/gitroomhq/postiz-app:latest
+
+    environment:
+      MAIN_URL: https://${POSTIZ_DOMAIN:-post.workflowapi.com.br}
+      FRONTEND_URL: https://${POSTIZ_DOMAIN:-post.workflowapi.com.br}
+      NEXT_PUBLIC_BACKEND_URL: https://${POSTIZ_DOMAIN:-post.workflowapi.com.br}/api
+      BACKEND_INTERNAL_URL: http://localhost:3000
+
+      JWT_SECRET: ${POSTIZ_JWT_SECRET}
+      DATABASE_URL: postgresql://postiz_user:${POSTIZ_DB_PASSWORD}@${POSTIZ_DATABASE_HOST:-postgres_postgres}:5432/postiz_db_local
+      REDIS_URL: redis://postiz-redis:6379
+      TEMPORAL_ADDRESS: temporal:7233
+
+      IS_GENERAL: "true"
+      DISABLE_REGISTRATION: ${POSTIZ_DISABLE_REGISTRATION:-false}
+      API_LIMIT: ${POSTIZ_API_LIMIT:-100}
+      NX_ADD_PLUGINS: "false"
+      TZ: ${TZ:-America/Bahia}
+
+      STORAGE_PROVIDER: local
+      UPLOAD_DIRECTORY: /uploads
+      NEXT_PUBLIC_UPLOAD_DIRECTORY: /uploads
+      NEXT_PUBLIC_UPLOAD_STATIC_DIRECTORY: /uploads
+
+      ## Meta app credentials are used by Facebook and Instagram.
+      FACEBOOK_APP_ID: ${FACEBOOK_APP_ID:-}
+      FACEBOOK_APP_SECRET: ${FACEBOOK_APP_SECRET:-}
+      LINKEDIN_CLIENT_ID: ${LINKEDIN_CLIENT_ID:-}
+      LINKEDIN_CLIENT_SECRET: ${LINKEDIN_CLIENT_SECRET:-}
+      YOUTUBE_CLIENT_ID: ${YOUTUBE_CLIENT_ID:-}
+      YOUTUBE_CLIENT_SECRET: ${YOUTUBE_CLIENT_SECRET:-}
+
+      ## Postiz uses EMAIL_* names, not the N8N_SMTP_* names from n8n.
+      ## Enabling a provider makes new LOCAL accounts require email activation.
+      EMAIL_PROVIDER: ${EMAIL_PROVIDER:-nodemailer}
+      EMAIL_FROM_ADDRESS: ${EMAIL_FROM_ADDRESS:-workflowapistudio@gmail.com}
+      EMAIL_FROM_NAME: ${EMAIL_FROM_NAME:-Omni Nexus}
+      EMAIL_HOST: ${EMAIL_HOST:-smtp.gmail.com}
+      EMAIL_PORT: ${EMAIL_PORT:-587}
+      EMAIL_SECURE: ${EMAIL_SECURE:-false}
+      EMAIL_USER: ${EMAIL_USER:-workflowapistudio@gmail.com}
+      EMAIL_PASS: ${EMAIL_PASS}
+
+      ## Optional providers. Leave blank until needed.
+      X_URL: ${X_URL:-}
+      X_API_KEY: ${X_API_KEY:-}
+      X_API_SECRET: ${X_API_SECRET:-}
+      THREADS_APP_ID: ${THREADS_APP_ID:-}
+      THREADS_APP_SECRET: ${THREADS_APP_SECRET:-}
+      TIKTOK_CLIENT_ID: ${TIKTOK_CLIENT_ID:-}
+      TIKTOK_CLIENT_SECRET: ${TIKTOK_CLIENT_SECRET:-}
+      REDDIT_CLIENT_ID: ${REDDIT_CLIENT_ID:-}
+      REDDIT_CLIENT_SECRET: ${REDDIT_CLIENT_SECRET:-}
+      PINTEREST_CLIENT_ID: ${PINTEREST_CLIENT_ID:-}
+      PINTEREST_CLIENT_SECRET: ${PINTEREST_CLIENT_SECRET:-}
+      DISCORD_CLIENT_ID: ${DISCORD_CLIENT_ID:-}
+      DISCORD_CLIENT_SECRET: ${DISCORD_CLIENT_SECRET:-}
+      DISCORD_BOT_TOKEN_ID: ${DISCORD_BOT_TOKEN_ID:-}
+
+    volumes:
+      - postiz_config:/config
+      - postiz_uploads:/uploads
+
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          node -e "fetch('http://localhost:3000/auth/can-register')
+          .then(r=>{if(!r.ok)process.exit(1)})
+          .catch(()=>process.exit(1))"
+      interval: 20s
+      timeout: 10s
+      retries: 15
+      start_period: 120s
+
+    networks:
+      postiz_internal:
+        aliases:
+          - postiz
+      network_public:
+
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      restart_policy:
+        condition: any
+        delay: 10s
+      update_config:
+        order: stop-first
+        failure_action: rollback
+      resources:
+        limits:
+          cpus: "2.00"
+          memory: 3072M
+        reservations:
+          cpus: "0.50"
+          memory: 768M
+      labels:
+        - traefik.enable=true
+        - traefik.docker.network=network_public
+        - traefik.http.routers.postiz.rule=Host(`${POSTIZ_DOMAIN:-post.workflowapi.com.br}`)
+        - traefik.http.routers.postiz.entrypoints=websecure
+        - traefik.http.routers.postiz.tls=true
+        - traefik.http.routers.postiz.tls.certresolver=letsencryptresolver
+        - traefik.http.routers.postiz.service=postiz
+        - traefik.http.services.postiz.loadbalancer.server.port=5000
+        - traefik.http.services.postiz.loadbalancer.passHostHeader=true
+
+  postiz-redis:
+    image: redis:7.2-alpine
+    command: ["redis-server", "--appendonly", "yes", "--save", "60", "1"]
+    volumes:
+      - postiz_redis:/data
+    networks:
+      postiz_internal:
+        aliases:
+          - postiz-redis
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      restart_policy:
+        condition: any
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 256M
+
+  temporal-postgresql:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: temporal
+      POSTGRES_PASSWORD: ${TEMPORAL_DB_PASSWORD}
+      POSTGRES_DB: temporal
+      TZ: ${TZ:-America/Bahia}
+    volumes:
+      - temporal_postgres:/var/lib/postgresql/data
+    networks:
+      postiz_internal:
+        aliases:
+          - temporal-postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U temporal -d temporal"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      restart_policy:
+        condition: any
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 768M
+
+  temporal-elasticsearch:
+    image: elasticsearch:7.17.27
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      cluster.routing.allocation.disk.threshold_enabled: "true"
+      cluster.routing.allocation.disk.watermark.low: 5gb
+      cluster.routing.allocation.disk.watermark.high: 3gb
+      cluster.routing.allocation.disk.watermark.flood_stage: 2gb
+      ES_JAVA_OPTS: -Xms512m -Xmx512m
+    volumes:
+      - temporal_elasticsearch:/usr/share/elasticsearch/data
+    networks:
+      postiz_internal:
+        aliases:
+          - temporal-elasticsearch
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9200/_cluster/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 30
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      restart_policy:
+        condition: any
+      resources:
+        limits:
+          cpus: "1.00"
+          memory: 1024M
+        reservations:
+          memory: 512M
+
+  temporal:
+    image: temporalio/auto-setup:1.28.1
+    environment:
+      DB: postgres12
+      DB_PORT: "5432"
+      POSTGRES_USER: temporal
+      POSTGRES_PWD: ${TEMPORAL_DB_PASSWORD}
+      POSTGRES_SEEDS: temporal-postgresql
+      ENABLE_ES: "true"
+      ES_SEEDS: temporal-elasticsearch
+      ES_VERSION: v7
+      TEMPORAL_NAMESPACE: default
+    networks:
+      postiz_internal:
+        aliases:
+          - temporal
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - 'timeout 5 bash -c "</dev/tcp/$(hostname)/7233"'
+      interval: 15s
+      timeout: 6s
+      retries: 10
+      start_period: 120s
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      restart_policy:
+        condition: any
+        delay: 10s
+      resources:
+        limits:
+          cpus: "1.00"
+          memory: 1024M
+
+  temporal-ui:
+    image: temporalio/ui:2.34.0
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_CORS_ORIGINS: https://${POSTIZ_DOMAIN:-post.workflowapi.com.br}
+    networks:
+      postiz_internal:
+        aliases:
+          - temporal-ui
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      restart_policy:
+        condition: any
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 256M
+
+volumes:
+  postiz_config:
+  postiz_uploads:
+  postiz_redis:
+  temporal_postgres:
+  temporal_elasticsearch:
+
+networks:
+  postiz_internal:
+    driver: overlay
+    attachable: true
+  network_public:
+    external: true
+    name: network_public
