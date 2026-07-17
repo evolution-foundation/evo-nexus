@@ -181,94 +181,101 @@ export default function Kanban() {
         </div>
       )}
 
-      <div className="overflow-x-auto pb-4">
-        <div className="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-6 gap-3 md:min-w-[1180px] xl:min-w-[1440px]">
-          {STATUSES.map((column) => {
-            const items = grouped[column.id] || []
-            return (
-              <section key={column.id} className="bg-[#161b22] border border-[#21262d] rounded-xl min-h-[520px] min-w-[220px] flex flex-col">
-                <header className="flex items-center justify-between px-3 py-3 border-b border-[#21262d]">
-                  <span className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-full border text-xs font-medium ${column.tone}`}>
-                    {column.icon}
-                    {column.label}
-                  </span>
-                  <span className="text-xs text-[#667085]">{items.length}</span>
-                </header>
+      {/* Mobile/tablet (<xl): horizontal snap-scroll, one column at a time — avoids
+          stacking 6 full-height sections vertically (~3000px of scroll). At xl+
+          (1280px), enough width exists for all 6 columns side by side without
+          scrolling, so we drop the scroll/snap behavior and let the grid share
+          the viewport naturally instead of forcing a hardcoded min-width that
+          exceeded common 1280-1439px desktop/laptop viewports and cropped them. */}
+      <div className="flex xl:grid xl:grid-cols-6 gap-3 pb-4 overflow-x-auto xl:overflow-visible snap-x snap-mandatory xl:snap-none -mx-4 px-4 xl:mx-0 xl:px-0">
+        {STATUSES.map((column) => {
+          const items = grouped[column.id] || []
+          return (
+            <section
+              key={column.id}
+              className="bg-[#161b22] border border-[#21262d] rounded-xl min-h-[420px] xl:min-h-[520px] w-[85vw] sm:w-[320px] xl:w-auto shrink-0 xl:shrink flex flex-col snap-start xl:snap-align-none"
+            >
+              <header className="flex items-center justify-between px-3 py-3 border-b border-[#21262d]">
+                <span className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-full border text-xs font-medium ${column.tone}`}>
+                  {column.icon}
+                  {column.label}
+                </span>
+                <span className="text-xs text-[#667085]">{items.length}</span>
+              </header>
 
-                <div className="flex-1 p-2 space-y-2">
-                  {loading ? (
-                    <div className="text-xs text-[#667085] px-2 py-6 text-center">Carregando...</div>
-                  ) : items.length === 0 ? (
-                    <div className="text-xs text-[#667085] px-2 py-6 text-center border border-dashed border-[#21262d] rounded-lg">
-                      Vazio
-                    </div>
-                  ) : (
-                    items.map((ticket) => (
-                      <article
-                        key={ticket.id}
-                        className="group relative overflow-hidden bg-[#0C111D] border border-[#21262d] hover:border-[#344054] rounded-lg pl-3.5 pr-3 py-3 transition-colors"
+              <div className="flex-1 p-2 space-y-2">
+                {loading ? (
+                  <div className="text-xs text-[#667085] px-2 py-6 text-center">Carregando...</div>
+                ) : items.length === 0 ? (
+                  <div className="text-xs text-[#667085] px-2 py-6 text-center border border-dashed border-[#21262d] rounded-lg">
+                    Vazio
+                  </div>
+                ) : (
+                  items.map((ticket) => (
+                    <article
+                      key={ticket.id}
+                      className="group relative overflow-hidden bg-[#0C111D] border border-[#21262d] hover:border-[#344054] rounded-lg pl-3.5 pr-3 py-3 transition-colors"
+                    >
+                      <span
+                        aria-hidden="true"
+                        className={`absolute left-0 top-0 bottom-0 w-[3px] ${PRIORITY_RAIL[ticket.priority]}`}
+                      />
+
+                      <button
+                        onClick={() => navigate(`/tickets/${ticket.id}`)}
+                        className="w-full text-left"
                       >
-                        <span
-                          aria-hidden="true"
-                          className={`absolute left-0 top-0 bottom-0 w-[3px] ${PRIORITY_RAIL[ticket.priority]}`}
-                        />
-
-                        <button
-                          onClick={() => navigate(`/tickets/${ticket.id}`)}
-                          className="w-full text-left"
-                        >
-                          <div className="flex items-start gap-2">
-                            {ticket.is_thread ? (
-                              ticket.assignee_agent ? <AgentIcon agent={ticket.assignee_agent} size={18} /> : <Ticket size={14} className="text-[#00FFA7] mt-0.5" />
-                            ) : (
-                              <Ticket size={14} className="text-[#667085] mt-0.5" />
-                            )}
-                            <div className="min-w-0 flex-1">
-                              <div className="flex items-start gap-1.5">
-                                <h2 className="font-display text-[13.5px] font-semibold text-[#e6edf3] leading-snug tracking-tight line-clamp-2">
-                                  {ticket.title}
-                                </h2>
-                                {ticket.locked_at && <Lock size={12} className="text-orange-400 shrink-0 mt-0.5" aria-label={`Locked by ${ticket.locked_by || 'agent'}`} />}
-                              </div>
-                              {ticket.description && (
-                                <p className="mt-1 text-xs text-[#8b949e] leading-relaxed line-clamp-2">{ticket.description}</p>
-                              )}
+                        <div className="flex items-start gap-2">
+                          {ticket.is_thread ? (
+                            ticket.assignee_agent ? <AgentIcon agent={ticket.assignee_agent} size={18} /> : <Ticket size={14} className="text-[#00FFA7] mt-0.5" />
+                          ) : (
+                            <Ticket size={14} className="text-[#667085] mt-0.5" />
+                          )}
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-start gap-1.5">
+                              <h2 className="font-display text-[13.5px] font-semibold text-[#e6edf3] leading-snug tracking-tight line-clamp-2">
+                                {ticket.title}
+                              </h2>
+                              {ticket.locked_at && <Lock size={12} className="text-orange-400 shrink-0 mt-0.5" aria-label={`Locked by ${ticket.locked_by || 'agent'}`} />}
                             </div>
+                            {ticket.description && (
+                              <p className="mt-1 text-xs text-[#8b949e] leading-relaxed line-clamp-2">{ticket.description}</p>
+                            )}
                           </div>
-                        </button>
-
-                        <div className="mt-3 flex items-center justify-between gap-2">
-                          <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border font-ticket-mono text-[10px] font-medium uppercase tracking-wide ${PRIORITY_TONE[ticket.priority]}`}>
-                            {PRIORITY_ICON[ticket.priority]}
-                            {ticket.priority}
-                          </span>
-                          <span className="font-ticket-mono text-[10px] text-[#667085]">{formatAge(ticket.updated_at)}</span>
                         </div>
+                      </button>
 
-                        <div className="mt-2.5 pt-2.5 border-t border-[#21262d]/60 flex items-center justify-between gap-2">
-                          <span className="font-ticket-mono text-[10px] text-[#667085] truncate">
-                            {ticket.assignee_agent ? `@${ticket.assignee_agent}` : 'sem agente'}
-                          </span>
-                          <select
-                            value={ticket.status}
-                            disabled={updating === ticket.id}
-                            onChange={(e) => moveTicket(ticket, e.target.value as TicketStatus)}
-                            className="max-w-[112px] bg-[#161b22] border border-[#21262d] rounded-md px-2 py-1 text-[11px] text-[#e6edf3] focus:outline-none focus:border-[#00FFA7]/50 disabled:opacity-60"
-                            aria-label="Mover ticket"
-                          >
-                            {STATUSES.map((s) => (
-                              <option key={s.id} value={s.id}>{s.label}</option>
-                            ))}
-                          </select>
-                        </div>
-                      </article>
-                    ))
-                  )}
-                </div>
-              </section>
-            )
-          })}
-        </div>
+                      <div className="mt-3 flex items-center justify-between gap-2">
+                        <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border font-ticket-mono text-[10px] font-medium uppercase tracking-wide ${PRIORITY_TONE[ticket.priority]}`}>
+                          {PRIORITY_ICON[ticket.priority]}
+                          {ticket.priority}
+                        </span>
+                        <span className="font-ticket-mono text-[10px] text-[#667085]">{formatAge(ticket.updated_at)}</span>
+                      </div>
+
+                      <div className="mt-2.5 pt-2.5 border-t border-[#21262d]/60 flex items-center justify-between gap-2">
+                        <span className="font-ticket-mono text-[10px] text-[#667085] truncate">
+                          {ticket.assignee_agent ? `@${ticket.assignee_agent}` : 'sem agente'}
+                        </span>
+                        <select
+                          value={ticket.status}
+                          disabled={updating === ticket.id}
+                          onChange={(e) => moveTicket(ticket, e.target.value as TicketStatus)}
+                          className="max-w-[112px] bg-[#161b22] border border-[#21262d] rounded-md px-2 py-1 text-[11px] text-[#e6edf3] focus:outline-none focus:border-[#00FFA7]/50 disabled:opacity-60"
+                          aria-label="Mover ticket"
+                        >
+                          {STATUSES.map((s) => (
+                            <option key={s.id} value={s.id}>{s.label}</option>
+                          ))}
+                        </select>
+                      </div>
+                    </article>
+                  ))
+                )}
+              </div>
+            </section>
+          )
+        })}
       </div>
 
       {tickets.length === 0 && !loading && (
