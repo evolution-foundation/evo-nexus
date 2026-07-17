@@ -242,15 +242,22 @@ Copie os `id` das integrações cujo `identifier` seja `instagram` e `linkedin`.
 
 ## 6. Conectar o Omni Nexus ao Postiz
 
-Na stack que executa o fork Omni Nexus, configure no serviço
-`evonexus_dashboard`:
+Duas formas — escolha uma:
+
+**Via UI (sem Portainer, recomendado):** abra `nexus.workflowapi.com.br →
+Integrações`. Os cards **Postiz** e **MinIO / S3 Media** já aparecem (são
+integrações de primeira classe). Preencha os campos e salve — a UI grava no
+`.env` do volume e aplica na hora (`load_dotenv override` + `os.environ`), sem
+mexer no Portainer nem reiniciar.
+
+**Via Portainer (durável entre redeploys):** no serviço `evonexus_dashboard`:
 
 ```text
 POSTIZ_URL=https://post.workflowapi.com.br
 POSTIZ_API_KEY=<API key do Postiz>
 POSTIZ_INTEGRATION_INSTAGRAM_ID=<id retornado pela API>
 POSTIZ_INTEGRATION_LINKEDIN_ID=<id retornado pela API>
-POSTIZ_ALLOWED_MEDIA_HOSTS=post.workflowapi.com.br,<seu-cdn-ou-storage>
+POSTIZ_ALLOWED_MEDIA_HOSTS=s3.workflowapi.com.br,post.workflowapi.com.br
 POSTIZ_PUBLISH_TIMEOUT_SECONDS=90
 POSTIZ_PUBLISH_POLL_SECONDS=3
 ```
@@ -263,6 +270,29 @@ APPROVAL_DECISION_TIMEOUT_SECONDS=105
 
 `POSTIZ_API_KEY` deve existir somente no dashboard. O código remove essa chave
 do ambiente dos subprocessos dos agentes.
+
+### MinIO / S3 para mídia (Opção A — agentes fazem upload)
+
+O Instagram exige uma URL pública de mídia. Os agentes publicadores geram a
+imagem e sobem no bucket público via o skill `int-minio`, depois passam a URL
+em `publish_media`. Configure (UI ou Portainer) no dashboard **e** nos serviços
+`evonexus_telegram` / `evonexus_scheduler` (qualquer processo que dispara
+agente):
+
+```text
+MINIO_ENDPOINT=https://s3.workflowapi.com.br
+MINIO_ACCESS_KEY=<access key>
+MINIO_SECRET_KEY=<secret key>
+MINIO_BUCKET=post
+MINIO_PUBLIC_BASE=https://s3.workflowapi.com.br
+```
+
+O bucket `post` precisa ter **leitura pública** (bucket policy — o "set
+public"). Ao contrário do `POSTIZ_API_KEY`, o `MINIO_SECRET_KEY` **fica
+disponível aos agentes** (eles precisam pra upload). Isso não fura o gate: subir
+imagem num bucket não é publicar — o post no Instagram ainda exige sua aprovação
+no Telegram. Garanta que `s3.workflowapi.com.br` esteja em
+`POSTIZ_ALLOWED_MEDIA_HOSTS`.
 
 ## 7. Teste end-to-end
 

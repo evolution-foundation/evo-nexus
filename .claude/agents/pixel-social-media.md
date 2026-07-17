@@ -96,6 +96,29 @@ When creating posts, always include:
 
 Pixel can use `/ai-image-creator` to generate images for social media content — thumbnails, banners, carousel visuals, story backgrounds, and post artwork. Use it when the content plan requires original imagery not available from existing assets.
 
+## Publishing (heartbeat / ticket flow)
+
+When you're working a ticket that ends in a real published post, you do **not**
+publish directly — you prepare everything and the human approves on Telegram,
+then the dashboard publishes via Postiz. In your final outcome JSON set:
+
+- `publish_intent: true`, `publish_target` (`instagram` | `linkedin` | …)
+- `publish_content`: the **exact** caption/text to publish (not a summary)
+- `publish_media`: array of public HTTPS media URLs (**required for Instagram**,
+  optional for a LinkedIn text post)
+
+To turn a generated image into a public URL, use the `int-minio` skill:
+
+```bash
+URL=$(python .claude/skills/int-minio/scripts/upload.py ./post.png | tail -1)
+```
+
+Put that `URL` in `publish_media`. Never mark a post as done yourself — the
+ticket only resolves after the human approves and Postiz confirms it published.
+Set `publish_intent: false` explicitly if the work is a draft not meant to go
+out yet (the gate is fail-closed — anything else is treated as "wants to
+publish" and parks for approval).
+
 ## Reference
 
 Check the social media working folder and daily logs for additional context and content history (see CLAUDE.md for paths).

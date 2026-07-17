@@ -65,6 +65,15 @@ services:
       - POSTIZ_ALLOWED_MEDIA_HOSTS=${POSTIZ_ALLOWED_MEDIA_HOSTS}
       - POSTIZ_PUBLISH_TIMEOUT_SECONDS=${POSTIZ_PUBLISH_TIMEOUT_SECONDS:-90}
       - POSTIZ_PUBLISH_POLL_SECONDS=${POSTIZ_PUBLISH_POLL_SECONDS:-3}
+      ## MinIO/S3 media host (int-minio, Option A). Available to agent
+      ## subprocesses so they can upload generated media; unlike POSTIZ_API_KEY
+      ## it is NOT a publish credential (the Instagram post still needs
+      ## approval), so it is intentionally not denylisted from agents.
+      - MINIO_ENDPOINT=${MINIO_ENDPOINT}
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY}
+      - MINIO_BUCKET=${MINIO_BUCKET:-post}
+      - MINIO_PUBLIC_BASE=${MINIO_PUBLIC_BASE}
       - EVONEXUS_API_URL=http://localhost:8080
       - CORS_ALLOWED_ORIGINS=https://nexus.workflowapi.com.br
       - TZ=America/Sao_Paulo
@@ -145,6 +154,13 @@ services:
       ## see the matching var on evonexus_dashboard above.
       - APPROVAL_BRIDGE_TOKEN=${APPROVAL_BRIDGE_TOKEN}
       - APPROVAL_DECISION_TIMEOUT_SECONDS=${APPROVAL_DECISION_TIMEOUT_SECONDS:-105}
+      ## MinIO/S3 for agents spawned via chat (a publishing agent messaged here
+      ## uploads media the same way heartbeat-spawned ones do). See dashboard.
+      - MINIO_ENDPOINT=${MINIO_ENDPOINT}
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY}
+      - MINIO_BUCKET=${MINIO_BUCKET:-post}
+      - MINIO_PUBLIC_BASE=${MINIO_PUBLIC_BASE}
       - EVONEXUS_API_URL=http://evonexus-dashboard:8080
       - TELEGRAM_MODE=provider
       - TZ=America/Sao_Paulo
@@ -188,6 +204,12 @@ services:
       - DASHBOARD_API_TOKEN=${DASHBOARD_API_TOKEN}
       - DASHBOARD_API_USER=${DASHBOARD_API_USER:-admin}
       - EVONEXUS_API_URL=http://evonexus-dashboard:8080
+      ## MinIO/S3 for agents a routine might spawn to prepare a social post.
+      - MINIO_ENDPOINT=${MINIO_ENDPOINT}
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY}
+      - MINIO_BUCKET=${MINIO_BUCKET:-post}
+      - MINIO_PUBLIC_BASE=${MINIO_PUBLIC_BASE}
       - TZ=America/Sao_Paulo
       - REQUIRE_ANTHROPIC_KEY=1
       - SMTP_DOMAIN=${SMTP_DOMAIN}
