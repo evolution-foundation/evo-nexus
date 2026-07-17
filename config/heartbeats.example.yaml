@@ -174,6 +174,43 @@ heartbeats:
       already has Goals (idempotency) or there is no project_id in the
       trigger payload.
 
+  # pixel-growth-6h — keeps the content-ticket queue topped up for any Goal
+  # Pixel already touches, so the growth funnel never stalls between human
+  # check-ins. State-monitor agent (see STATE_MONITOR_AGENTS in
+  # heartbeat_runner.py) — it must run even with an empty ticket inbox,
+  # because an empty inbox for a content Goal is exactly the case it exists
+  # to fix. See workspace/development/features/growth-content-heartbeat/.
+  - id: pixel-growth-6h
+    agent: pixel-social-media
+    interval_seconds: 21600  # 6 hours — content isn't as time-urgent as CS/finance
+    max_turns: 15
+    timeout_seconds: 300
+    lock_timeout_seconds: 1800
+    wake_triggers:
+      - interval
+      - manual
+      - mention
+    enabled: false
+    goal_id: null
+    required_secrets: []
+    decision_prompt: >
+      You are Pixel, the social media agent, waking up in growth-heartbeat
+      mode to keep the content pipeline full — not to write content directly.
+      List active Goals (GET /api/goals?status=active) that already have at
+      least one ticket assigned to you (GET /api/tickets?assignee_agent=pixel-social-media&goal_id=<id>)
+      — those are the content/growth Goals you own. For each, count YOUR
+      tickets in status open/in_progress linked to it. If that count is below
+      3 and the Goal is not achieved/cancelled/past its due_date, propose up to
+      3 new, concrete content tickets (specific titles, not generic "create a
+      post") via POST /api/tickets with assignee_agent=pixel-social-media and
+      goal_id set — check existing titles first so you never propose a near-
+      duplicate. Never set publish_intent here or publish anything directly —
+      that stays gated behind the existing Telegram approval + Postiz
+      confirmation flow. If every Goal you own already has enough queued
+      work, action=skip. Respond with JSON:
+      {"action": "work"|"skip", "reason": "<1 sentence>",
+      "goals_topped_up": [<list of goal ids you created tickets for, if any>]}.
+
   # integrations-health — Wave 2.2r in-process HTTP health check for plugin integrations
   # Runs every 15 minutes; zero Claude CLI invocations (in-process Python handler).
   # Enable via UI toggle after reviewing plugin integrations in /integrations.

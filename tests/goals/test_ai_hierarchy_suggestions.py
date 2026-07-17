@@ -362,3 +362,91 @@ def test_decision_double_press_project_suggestion_is_noop_409(client):
             headers=_bridge_headers(),
         )
         assert second.status_code == 409
+
+
+# ---------------------------------------------------------------------------
+# Telegram approval body — mission/project context + rendered items list
+# (Telegram audit fix, 2026-07-17): must not depend on the agent's free-text
+# body alone to convey what's actually being proposed.
+# ---------------------------------------------------------------------------
+
+def test_project_suggestion_telegram_body_has_mission_context_and_items(client):
+    mission_id = _create_mission(client)  # title="Evolution MRR"
+    payload = {
+        "title": "Aprovar Projects", "body": "resumo curto",
+        "projects": [
+            {"slug": "evo-ai", "title": "Evo AI", "description": "CRM"},
+            {"slug": "evo-summit", "title": "Evolution Summit"},
+        ],
+    }
+    with patch("notifications.send_approval_request") as mock_send:
+        mock_send.return_value = None
+        resp = client.post("/api/approvals", json={
+            "gate_type": "project_suggestion", "mission_id": mission_id,
+            "agent": "project-planner", "payload": payload,
+        })
+    assert resp.status_code == 201, resp.get_json()
+    mock_send.assert_called_once()
+    _, sent_title, sent_body = mock_send.call_args[0]
+    assert "Evolution MRR" in sent_body
+    assert "Evo AI" in sent_body
+    assert "Evolution Summit" in sent_body
+    assert "resumo curto" in sent_body
+
+
+def test_goal_suggestion_telegram_body_has_project_context_and_items(client):
+    mission_id = _create_mission(client)
+    project_id = _create_project(client, mission_id=mission_id, suffix="ctx")
+    payload = {
+        "title": "Aprovar Goals", "body": "resumo",
+        "goals": [{"slug": "g-ctx-1", "title": "100 clientes pagantes", "metric_type": "count", "target_value": 100}],
+    }
+    with patch("notifications.send_approval_request") as mock_send:
+        mock_send.return_value = None
+        resp = client.post("/api/approvals", json={
+            "gate_type": "goal_suggestion", "project_id": project_id,
+            "agent": "goal-suggester", "payload": payload,
+        })
+    assert resp.status_code == 201, resp.get_json()
+    _, _, sent_body = mock_send.call_args[0]
+    assert "Project ctx" in sent_body
+    assert "100 clientes pagantes" in sent_body
+
+
+def test_decomposition_telegram_body_has_goal_and_project_context(client):
+    mission_id = _create_mission(client)
+    project_id = _create_project(client, mission_id=mission_id, suffix="decomp")
+    with patch("heartbeat_dispatcher.dispatch"):
+        goal_resp = client.post("/api/goals", json={
+            "slug": "g-decomp", "title": "Meta de Decomposição", "project_id": project_id,
+        })
+    goal_id = goal_resp.get_json()["id"]
+
+    payload = {
+        "title": "Aprovar decomposição", "body": "resumo",
+        "tickets": [{"title": "Escrever 5 posts"}, {"title": "Gravar 1 reel"}],
+    }
+    with patch("notifications.send_approval_request") as mock_send:
+        mock_send.return_value = None
+        resp = client.post("/api/approvals", json={
+            "gate_type": "decomposition", "goal_id": goal_id,
+            "agent": "goal-planner", "payload": payload,
+        })
+    assert resp.status_code == 201, resp.get_json()
+    _, _, sent_body = mock_send.call_args[0]
+    assert "Meta de Decomposição" in sent_body
+    assert "Escrever 5 posts" in sent_body
+    assert "Gravar 1 reel" in sent_body
+
+
+def test_telegram_body_skips_items_block_when_payload_has_no_list(client):
+    mission_id = _create_mission(client)
+    payload = {"title": "t", "body": "b"}  # no "projects" key at all
+    with patch("notifications.send_approval_request") as mock_send:
+        mock_send.return_value = None
+        client.post("/api/approvals", json={
+            "gate_type": "project_suggestion", "mission_id": mission_id,
+            "agent": "project-planner", "payload": payload,
+        })
+    _, _, sent_body = mock_send.call_args[0]
+    assert "Itens propostos" not in sent_body

@@ -356,6 +356,59 @@ def decide_approval(approval_id: int):
     return jsonify({"status": "ok", "approval_id": approval_id, "decision": new_status}), 200
 
 
+def _gate_context_line(gate_type: str, mission_id, project_id, goal_id) -> str:
+    """Mission/Project context line so an approval doesn't get lost among
+    several Sistema Britto missions/projects being decomposed in parallel —
+    the Telegram audit's médio-priority gap #3, generalized across gates."""
+    try:
+        if gate_type == "project_suggestion" and mission_id:
+            row = db.session.execute(
+                db.text("SELECT title FROM missions WHERE id=:i"), {"i": mission_id}
+            ).fetchone()
+            if row:
+                return f"Missão: {row[0]}"
+        elif gate_type == "goal_suggestion" and project_id:
+            row = db.session.execute(
+                db.text("SELECT title FROM projects WHERE id=:i"), {"i": project_id}
+            ).fetchone()
+            if row:
+                return f"Projeto: {row[0]}"
+        elif gate_type == "decomposition" and goal_id:
+            row = db.session.execute(
+                db.text(
+                    "SELECT g.title AS goal_title, p.title AS project_title "
+                    "FROM goals g LEFT JOIN projects p ON p.id = g.project_id WHERE g.id=:i"
+                ),
+                {"i": goal_id},
+            ).fetchone()
+            if row:
+                return f"Projeto: {row[1] or '—'} · Meta: {row[0]}"
+    except Exception:
+        return ""
+    return ""
+
+
+def _render_structured_items(gate_type: str, payload: dict) -> str:
+    """Render the actual proposed items (titles) from payload, independent of
+    whatever free text the agent wrote in payload["body"]. Closes the gap
+    where the structured list only reliably lives in the DB, not in what the
+    human actually sees on Telegram (Telegram audit finding #2)."""
+    key = {"decomposition": "tickets", "project_suggestion": "projects", "goal_suggestion": "goals"}.get(gate_type)
+    if not key:
+        return ""
+    items = payload.get(key)
+    if not isinstance(items, list) or not items:
+        return ""
+    titled = [item["title"] for item in items if isinstance(item, dict) and item.get("title")]
+    if not titled:
+        return ""
+    lines = [f"\nItens propostos ({len(titled)}):"]
+    lines.extend(f"• {t}" for t in titled[:10])
+    if len(titled) > 10:
+        lines.append(f"… e mais {len(titled) - 10}")
+    return "\n".join(lines)
+
+
 @bp.route("/api/approvals", methods=["POST"])
 def create_approval():
     """Propose a pending_approvals row (goal-planner's decomposition-gate write
@@ -440,8 +493,15 @@ def create_approval():
         db.text("SELECT id FROM pending_approvals WHERE idempotency_key=:k"), {"k": idempotency_key}
     ).fetchone()
 
+    body_parts = [
+        _gate_context_line(gate_type, mission_id, project_id, goal_id),
+        payload.get("body") or "",
+        _render_structured_items(gate_type, payload),
+    ]
+    telegram_body = "\n".join(p for p in body_parts if p).strip()[:1500]
+
     from notifications import send_approval_request
-    message_id = send_approval_request(row.id, payload.get("title") or "Aprovação pendente", payload.get("body") or "")
+    message_id = send_approval_request(row.id, payload.get("title") or "Aprovação pendente", telegram_body)
     if message_id is not None:
         db.session.execute(
             db.text("UPDATE pending_approvals SET telegram_message_id=:m WHERE id=:id"),

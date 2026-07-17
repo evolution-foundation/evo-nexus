@@ -610,6 +610,65 @@ def _move_ticket(ticket_id: str, new_status: str, agent: str, comment: str, conn
     conn.commit()
 
 
+def _publish_context_line(ticket_id: str, conn) -> str:
+    """Mission/Project context line so an approval doesn't get lost among
+    several Sistema Britto projects being worked in parallel — the ticket
+    only carries goal_id, so walk goal -> project -> mission."""
+    try:
+        row = conn.execute(
+            "SELECT p.title AS project_title, m.title AS mission_title "
+            "FROM tickets t "
+            "LEFT JOIN goals g ON g.id = t.goal_id "
+            "LEFT JOIN projects p ON p.id = g.project_id "
+            "LEFT JOIN missions m ON m.id = p.mission_id "
+            "WHERE t.id = ?",
+            (ticket_id,),
+        ).fetchone()
+    except Exception:
+        return ""
+    if not row:
+        return ""
+    project_title = row["project_title"] if hasattr(row, "keys") else row[0]
+    mission_title = row["mission_title"] if hasattr(row, "keys") else row[1]
+    if not project_title and not mission_title:
+        return ""
+    return f"Missão: {mission_title or '—'} · Projeto: {project_title or '—'}"
+
+
+def _build_publish_approval_body(target: str, outcome: dict, context_line: str = "") -> str:
+    """Build the Telegram approval body from what will ACTUALLY be published.
+
+    Trust-critical fix: this used to show outcome["result"] — the agent's
+    free-text summary — while _run_publish_action later publishes
+    outcome["publish_content"]/publish_media, a DIFFERENT pair of fields.
+    A human approving the summary never saw the exact text/media going live.
+    Show the real publish_content/publish_media here so "aprovar" means
+    "aprovei exatamente isto", not "aprovei um resumo disso".
+    """
+    content = (outcome.get("publish_content") or "").strip()
+    media_urls = outcome.get("publish_media") or []
+    if not isinstance(media_urls, list):
+        media_urls = []
+
+    lines = [context_line] if context_line else []
+    lines.append(f"Plataforma: {target}")
+    if content:
+        lines.append("")
+        lines.append("Texto que será publicado:")
+        lines.append(content[:800])
+    else:
+        # Should never reach here in practice — _run_publish_action fails
+        # closed on empty publish_content — but never show a blank approval.
+        lines.append("")
+        lines.append("⚠️ publish_content vazio — a publicação será recusada até isso ser preenchido.")
+    if media_urls:
+        lines.append("")
+        lines.append("Mídia:")
+        lines.extend(f"🖼 {u}" for u in media_urls[:5])
+
+    return "\n".join(lines)[:1500]
+
+
 def _maybe_park_for_publish(ticket_id: str, agent: str, outcome: dict, title: str, conn) -> dict | None:
     """Gate a publishing agent's resolve/close behind human Telegram approval.
 
@@ -645,7 +704,7 @@ def _maybe_park_for_publish(ticket_id: str, agent: str, outcome: dict, title: st
     expires_at = (datetime.now(timezone.utc) + timedelta(hours=8)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
     payload = {
         "title": f"Aprovar publicação: {title}",
-        "body": (outcome.get("result") or "")[:1000],
+        "body": _build_publish_approval_body(target, outcome, _publish_context_line(ticket_id, conn)),
         "outcome": outcome,
     }
     conn.execute(

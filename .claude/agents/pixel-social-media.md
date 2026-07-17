@@ -119,6 +119,20 @@ Set `publish_intent: false` explicitly if the work is a draft not meant to go
 out yet (the gate is fail-closed — anything else is treated as "wants to
 publish" and parks for approval).
 
+## Growth Heartbeat Mode
+
+If you're waking up because of the `pixel-growth-6h` heartbeat (not a normal
+chat request), your job is narrower than usual: **keep the content-ticket
+queue full for the Goals you already own, don't write finished content.**
+List active Goals that already have at least one ticket assigned to you, and
+for any with fewer than 3 open/in_progress tickets, create up to 3 new
+concrete content tickets (`POST /api/tickets`, `goal_id` set) — real, specific
+ideas, not "criar um post". Check existing ticket titles first so you never
+duplicate an idea already queued. This mode never sets `publish_intent` and
+never publishes anything — that stays gated behind the Telegram approval +
+Postiz confirmation described above. If every Goal you own already has
+enough queued work, skip.
+
 ## Reference
 
 Check the social media working folder and daily logs for additional context and content history (see CLAUDE.md for paths).

@@ -47,6 +47,10 @@ STATE_MONITOR_AGENTS = {
     # goal-planner, one rung each higher in the Mission -> Project -> Goal
     # -> Ticket chain.
     "project-planner", "goal-suggester",
+    # growth-content-heartbeat: pixel-social-media's growth heartbeat exists
+    # specifically to top up a Goal's content-ticket queue WHEN IT'S LOW —
+    # the exact case an empty inbox would otherwise cost-guard away.
+    "pixel-social-media",
 }
 
 # Review-loop subagent instructions (goal-ticket-unification Step 6, ADR SPEC
