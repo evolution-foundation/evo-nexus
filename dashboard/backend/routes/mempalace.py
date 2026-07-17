@@ -212,6 +212,7 @@ def add_source():
     path = data.get("path", "").strip()
     label = data.get("label", "").strip()
     wing = data.get("wing", "").strip() or None
+    room = data.get("room", "").strip() or None
 
     if not path:
         return jsonify({"error": "path is required"}), 400
@@ -235,11 +236,74 @@ def add_source():
         "path": str(resolved),
         "label": label or resolved.name,
         "wing": wing,
+        "room": room,
         "added_at": datetime.now(timezone.utc).isoformat(),
         "last_indexed": None,
     })
     _save_sources(sources)
     return jsonify({"status": "added", "sources": sources}), 201
+
+
+def sync_project_source(*, workspace_folder_path: str, mission_title: str | None, project_slug: str) -> None:
+    """Upsert a MemPalace source for a Project's workspace folder.
+
+    Hierarchy mapping (confirmed with Felipe): Mission -> Wing, Project ->
+    Room. Called from routes/goals.py whenever a Project is created/updated
+    with a non-null workspace_folder_path — mirrors how goal_created wakes
+    goal-planner, but here it's a plain upsert, not an agent trigger.
+
+    Best-effort: MemPalace being uninstalled, the path not existing yet, or
+    any other failure must never block project creation — this is purely
+    additive bookkeeping for semantic search, not part of the goals data
+    model's correctness.
+    """
+    try:
+        resolved = Path(workspace_folder_path).expanduser().resolve()
+        if not resolved.is_dir():
+            return
+        wing = (mission_title or "sem-missao").strip() or "sem-missao"
+        room = project_slug.strip()
+        if not room:
+            return
+
+        sources = _load_sources()
+        found = False
+        for s in sources:
+            if s["path"] == str(resolved):
+                s["wing"] = wing
+                s["room"] = room
+                found = True
+        if not found:
+            sources.append({
+                "path": str(resolved),
+                "label": room,
+                "wing": wing,
+                "room": room,
+                "added_at": datetime.now(timezone.utc).isoformat(),
+                "last_indexed": None,
+            })
+        _save_sources(sources)
+
+        # ensure_mempalace_yaml (the worker) only writes rooms/wing when the
+        # folder has NO mempalace.yaml yet — a no-op for a folder mined
+        # before this sync existed. Patch the still-untouched auto-generated
+        # default ("general", the only room) so re-mining routes content to
+        # the Project's own room without clobbering a hand-customized config
+        # (multiple rooms, or a room already renamed by the user).
+        yaml_path = resolved / "mempalace.yaml"
+        if yaml_path.exists():
+            try:
+                import yaml as _yaml
+                cfg = _yaml.safe_load(yaml_path.read_text(encoding="utf-8")) or {}
+                rooms = cfg.get("rooms") or []
+                if len(rooms) == 1 and rooms[0].get("name") == "general":
+                    cfg["wing"] = wing
+                    cfg["rooms"] = [{"name": room, "description": "All project files"}]
+                    yaml_path.write_text(_yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")
+            except Exception:  # noqa: BLE001
+                pass
+    except Exception:  # noqa: BLE001
+        pass
 
 
 @bp.route("/api/mempalace/sources/<int:idx>", methods=["DELETE"])
@@ -288,7 +352,7 @@ def mine():
         "palace_path": str(PALACE_DIR),
         "status_file": str(MINING_STATUS_FILE),
         "targets": [
-            {"path": t["path"], "wing": t.get("wing") or None}
+            {"path": t["path"], "wing": t.get("wing") or None, "room": t.get("room") or None}
             for t in targets
         ],
     }

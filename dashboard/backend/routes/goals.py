@@ -26,6 +26,25 @@ def _now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
+def _sync_mempalace_for_project(p: GoalProject) -> None:
+    """Best-effort MemPalace source sync (Mission -> Wing, Project -> Room).
+
+    Never raises — a MemPalace hiccup must not fail a project create/update.
+    """
+    if not p.workspace_folder_path:
+        return
+    try:
+        from routes.mempalace import sync_project_source
+        mission_title = p.mission.title if p.mission_id and p.mission else None
+        sync_project_source(
+            workspace_folder_path=p.workspace_folder_path,
+            mission_title=mission_title,
+            project_slug=p.slug,
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _db_path() -> str:
     return str(WORKSPACE / "dashboard" / "data" / "evonexus.db")
 
@@ -156,6 +175,7 @@ def create_project():
     db.session.add(p)
     db.session.commit()
     audit(current_user, "create", "goals", f"Created project #{p.id}: {p.title}")
+    _sync_mempalace_for_project(p)
     return jsonify(p.to_dict()), 201
 
 
@@ -172,6 +192,7 @@ def patch_project(project_id: int):
     p.updated_at = _now()
     db.session.commit()
     audit(current_user, "update", "goals", f"Updated project #{p.id}: {p.title}")
+    _sync_mempalace_for_project(p)
     return jsonify(p.to_dict())
 
 

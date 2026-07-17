@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
-import { FolderKanban, RefreshCw, Target } from 'lucide-react'
+import { FolderKanban, Plus, RefreshCw, Target } from 'lucide-react'
+import CreateProjectModal, { type CreatedProject } from '../components/CreateProjectModal'
 
 // ---- Types (mirrors Goals.tsx) ----
 
@@ -71,6 +72,7 @@ export default function ProjectsOverview() {
   const [rows, setRows] = useState<ProjectRow[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [showCreate, setShowCreate] = useState(false)
 
   const load = async () => {
     try {
@@ -123,20 +125,34 @@ export default function ProjectsOverview() {
           <FolderKanban size={20} className="text-[#00FFA7]" />
           <div>
             <h1 className="text-white font-semibold text-lg">{t('nav.projects')}</h1>
-            <p className="text-xs text-[#667085]">Read-only overview — click a project to open it in Goals</p>
+            <p className="text-xs text-[#667085]">Clique num projeto pra abrir em Goals</p>
           </div>
         </div>
-        <button
-          onClick={load}
-          className="flex items-center gap-2 px-3 py-1.5 text-xs text-[#667085] hover:text-white border border-[#21262d] rounded-lg hover:border-[#344054] transition-colors"
-        >
-          <RefreshCw size={12} /> Refresh
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={load}
+            className="flex items-center gap-2 px-3 py-1.5 text-xs text-[#667085] hover:text-white border border-[#21262d] rounded-lg hover:border-[#344054] transition-colors"
+          >
+            <RefreshCw size={12} /> Refresh
+          </button>
+          <button
+            onClick={() => setShowCreate(true)}
+            className="flex items-center gap-2 px-3 py-1.5 text-xs font-semibold bg-[#00FFA7] text-black rounded-lg hover:bg-[#00FFA7]/90 transition-colors"
+          >
+            <Plus size={12} /> Novo projeto
+          </button>
+        </div>
       </div>
 
       {rows.length === 0 ? (
         <div className="text-center py-16 px-4">
-          <p className="text-sm text-[#e6edf3]">No projects yet.</p>
+          <p className="text-sm text-[#e6edf3] mb-3">Nenhum projeto ainda.</p>
+          <button
+            onClick={() => setShowCreate(true)}
+            className="inline-flex items-center gap-1.5 text-sm text-[#00FFA7] hover:underline"
+          >
+            <Plus size={14} /> Criar o primeiro projeto
+          </button>
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -165,6 +181,13 @@ export default function ProjectsOverview() {
             </button>
           ))}
         </div>
+      )}
+
+      {showCreate && (
+        <CreateProjectModal
+          onClose={() => setShowCreate(false)}
+          onCreated={(_project: CreatedProject) => load()}
+        />
       )}
     </div>
   )

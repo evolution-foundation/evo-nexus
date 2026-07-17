@@ -6,6 +6,7 @@ import {
   CheckCircle2, Circle, Clock, XCircle, PauseCircle,
   X, Ticket as TicketIcon, ArrowUp, Minus, ArrowDown,
 } from 'lucide-react'
+import CreateProjectModal from '../components/CreateProjectModal'
 
 // ---- Types ----
 
@@ -530,62 +531,6 @@ function CreateMissionModal({ onClose, onCreated }: { onClose: () => void; onCre
   )
 }
 
-// ---- Create Project Modal ----
-
-function CreateProjectModal({ missionId, onClose, onCreated }: { missionId: number; onClose: () => void; onCreated: () => void }) {
-  const [form, setForm] = useState({ slug: '', title: '', description: '', status: 'active' })
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState('')
-
-  const handleSubmit = async () => {
-    if (!form.slug || !form.title) { setError('Slug and title are required'); return }
-    setLoading(true)
-    try {
-      await apiFetch('/api/projects', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...form, mission_id: missionId }),
-      })
-      onCreated()
-      onClose()
-    } catch (e: any) {
-      setError(e.message)
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  return (
-    <Modal title="Create Project" onClose={onClose}>
-      {error && <div className="text-red-400 text-xs mb-3">{error}</div>}
-      <Field label="Slug (unique identifier)">
-        <Input value={form.slug} onChange={(e) => setForm({ ...form, slug: e.target.value })} placeholder="evo-ai" />
-      </Field>
-      <Field label="Title">
-        <Input value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} placeholder="Evo AI" />
-      </Field>
-      <Field label="Description">
-        <Input value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder="Optional description" />
-      </Field>
-      <Field label="Status">
-        <Select value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}>
-          <option value="active">Active</option>
-          <option value="on-hold">On Hold</option>
-        </Select>
-      </Field>
-      <div className="flex justify-end gap-2 mt-4">
-        <button onClick={onClose} className="px-4 py-2 text-sm text-[#667085] hover:text-white transition-colors">Cancel</button>
-        <button
-          onClick={handleSubmit}
-          disabled={loading}
-          className="px-4 py-2 text-sm bg-[#00FFA7] text-black font-semibold rounded-lg hover:bg-[#00FFA7]/90 transition-colors disabled:opacity-50"
-        >
-          {loading ? 'Creating...' : 'Create'}
-        </button>
-      </div>
-    </Modal>
-  )
-}
 
 // ---- Create Goal Modal ----
 
@@ -1014,7 +959,7 @@ export default function Goals() {
       )}
       {createProjectForMission !== null && (
         <CreateProjectModal
-          missionId={createProjectForMission}
+          defaultMissionId={createProjectForMission}
           onClose={() => setCreateProjectForMission(null)}
           onCreated={load}
         />

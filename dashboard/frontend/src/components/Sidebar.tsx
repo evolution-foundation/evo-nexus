@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next'
 import { useAuth } from '../context/AuthContext'
 import NotificationBell from './NotificationBell'
 import {
-  LayoutDashboard, Bot, Clock, Zap, Layout, Calendar, CalendarClock,
+  LayoutDashboard, Bot, Clock, Zap, Layout, Calendar,
   Brain, Plug, DollarSign, FolderOpen, Cpu,
   Monitor, Users, ScrollText, LogOut, Menu, X, Shield, BookOpen, Library, Database,
   ArrowUpCircle, ChevronDown, Webhook, HardDriveDownload, Settings, Share2, Heart, Target, Activity, Package,
@@ -52,16 +52,20 @@ const navGroups: NavGroup[] = [
     key: 'operations',
     collapsible: true,
     items: [
+      // Ordem pedida pelo Felipe: hierarquia de trabalho primeiro
+      // (Projetos → Metas → Kanban), depois o resto do time. 'Tasks'
+      // removido do menu — as tarefas de trabalho real hoje são tickets,
+      // visíveis no Kanban (goal-ticket-unification); a rota /tasks
+      // continua existindo, só não aparece mais aqui.
+      { to: '/projects', labelKey: 'projects', icon: FolderKanban, resource: 'goals' },
+      { to: '/goals', labelKey: 'goals', icon: Target, resource: 'goals' },
+      { to: '/kanban', labelKey: 'kanban', icon: Columns3, resource: 'tickets' },
       { to: '/agents', labelKey: 'agents', icon: Bot, resource: 'agents' },
       { to: '/skills', labelKey: 'skills', icon: Zap, resource: 'skills' },
-      { to: '/routines', labelKey: 'routines', icon: Clock, resource: 'routines' },
-      { to: '/tasks', labelKey: 'tasks', icon: CalendarClock, resource: 'tasks' },
-      { to: '/triggers', labelKey: 'triggers', icon: Webhook, resource: 'triggers' },
       { to: '/heartbeats', labelKey: 'heartbeats', icon: Heart, resource: 'heartbeats' },
+      { to: '/routines', labelKey: 'routines', icon: Clock, resource: 'routines' },
+      { to: '/triggers', labelKey: 'triggers', icon: Webhook, resource: 'triggers' },
       { to: '/activity', labelKey: 'activity', icon: Activity, resource: 'scheduler' },
-      { to: '/goals', labelKey: 'goals', icon: Target, resource: 'goals' },
-      { to: '/projects', labelKey: 'projects', icon: FolderKanban, resource: 'goals' },
-      { to: '/kanban', labelKey: 'kanban', icon: Columns3, resource: 'tickets' },
       { to: '/templates', labelKey: 'templates', icon: Layout, resource: 'templates' },
     ],
   },
