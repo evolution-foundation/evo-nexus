@@ -28,6 +28,7 @@
 
 <p align="center">
   <a href="https://sistemabritto.com.br">Sistema Britto</a> &middot;
+  <a href="#como-funciona-passo-a-passo-guia-sem-jargão">Como funciona (guia sem jargão)</a> &middot;
   <a href="https://github.com/evolution-foundation/evo-nexus">Projeto original</a> &middot;
   <a href="#deploy-completo-na-vps-passo-a-passo">Deploy na VPS</a> &middot;
   <a href="#omniroute--o-gateway-de-ia-da-stack">OmniRoute</a> &middot;
@@ -47,6 +48,8 @@ O [EvoNexus](https://github.com/evolution-foundation/evo-nexus) é uma camada op
 
 O **Omni-Nexus** é a camada de upgrade do [Sistema Britto](https://sistemabritto.com.br) em cima disso, com um objetivo claro: **rodar o EvoNexus inteiro numa VPS com Docker Swarm, sem depender de nenhum gateway de IA externo e sem exigir login claude.ai** — usando o provider que você quiser, inclusive vários ao mesmo tempo com fallback automático.
 
+> Se você não é técnico e só quer entender **o que esse sistema faz pela sua empresa e como usá-lo no dia a dia**, vá direto para [Como funciona, passo a passo (guia sem jargão)](#como-funciona-passo-a-passo-guia-sem-jargão). O restante deste README é a documentação técnica do deploy e da infraestrutura.
+
 ### O upgrade em resumo
 
 | Camada | O que foi adicionado |
@@ -56,6 +59,65 @@ O **Omni-Nexus** é a camada de upgrade do [Sistema Britto](https://sistemabritt
 | **Telegram multi-provider** | Bot em modo `provider`: responde pelo provider ativo, troca de provider no chat com `/provider`, áudio (Whisper/Groq), imagens, leitura de URLs e memória por conversa — sem login claude.ai |
 | **Pipeline de deploy VPS** | GitHub Actions → imagens no seu Docker Hub → stack de exemplo para Portainer/Traefik com volumes persistentes e backups SQLite consistentes |
 | **Hardening** | Dezenas de correções de produção: precedência de chaves por provider, auto-updater do CLI travado, trust/permissions como root em container, recuperação de EIO no terminal, allowlist do Telegram re-seedada a cada boot |
+
+---
+
+## Como funciona, passo a passo (guia sem jargão)
+
+Esqueça "gateway", "Swarm" e "provider" por um momento. Esta seção explica **o que o sistema faz** e **como você usa isso no seu trabalho**, sem pressupor conhecimento técnico.
+
+### A ideia central
+
+Você não fica configurando ferramenta nem escrevendo prompt o dia inteiro. Você diz **o que quer alcançar**, o sistema quebra isso em passos concretos, um time de agentes de IA especializados executa, e você só aparece pra **aprovar ou corrigir o rumo** — pelo dashboard ou pelo Telegram, do celular.
+
+O ciclo é sempre o mesmo, em 4 níveis, cada um mais concreto que o anterior:
+
+```
+Missão            "o que eu quero pra minha empresa" (ex.: faturar R$1M até dez/2026)
+  └─ Projeto       uma frente de trabalho (ex.: "Evo AI", "Lançamento do curso X")
+       └─ Meta      um número que prova progresso (ex.: "100 clientes pagantes", "vender 200 vagas")
+            └─ Ticket   uma tarefa real, do tamanho de uma tarde (ex.: "escrever 5 posts pro Instagram")
+```
+
+Você só precisa criar o topo (a Missão). **A partir daí a IA sugere o resto** — os Projetos, as Metas de cada projeto, e a quebra de cada Meta em Tickets — e cada sugestão só se torna real depois que você aprova ou rejeita, geralmente com um toque no Telegram. Nada é criado por trás das suas costas.
+
+### O passo a passo na prática
+
+1. **Você cria uma Missão** — a página `/goals` no dashboard, ou simplesmente descreve o objetivo pra IA. Ex.: "Quero R$1M de faturamento até dezembro."
+2. **A IA sugere Projetos** — em minutos, você recebe no Telegram algo como: *"Sugiro 3 projetos pra essa missão: Evo AI, Evento X e Academia Y. Aprovar?"* Um toque e os projetos existem.
+3. **A IA sugere Metas por Projeto** — pra cada projeto aprovado, chega outra sugestão: *"Pro projeto Evo AI, sugiro as metas: 100 clientes pagantes até 30/06, lançar a v2 da cobrança."* Aprovar de novo.
+4. **A IA quebra cada Meta em Tickets** — tarefas do tamanho certo pra alguém (humano ou agente) executar essa semana, já com prioridade e responsável sugeridos.
+5. **Os agentes trabalham os Tickets** — cada Ticket tem um agente-dono (ex.: Pixel pra conteúdo de redes sociais, Nex pra propostas comerciais, Flux pra financeiro). Eles avançam o trabalho sozinhos entre as reuniões — é o mecanismo de **heartbeat**: o agente "acorda" de tempos em tempos, olha a fila de tickets dele, decide se há algo a fazer, e age.
+6. **O progresso sobe sozinho** — quando um Ticket é resolvido, a Meta correspondente avança automaticamente; quando todas as Metas de um Projeto terminam, o Projeto se marca como concluído. Você acompanha em `/goals` sem precisar atualizar planilha nenhuma.
+7. **Você só entra pra decidir, não pra operar** — cada rung acima (Missão→Projeto, Projeto→Meta, Meta→Ticket) para numa aprovação. Publicar conteúdo real nas redes também para numa aprovação antes de ir ao ar. A IA propõe; você decide.
+
+### Onde você vê tudo isso
+
+| Página | Pra que serve |
+|---|---|
+| **Projetos** | Suas frentes de trabalho ativas, criar novo projeto |
+| **Metas** | A árvore Missão → Projeto → Meta, com % de progresso |
+| **Kanban** | Os Tickets — o trabalho real, dia a dia |
+| **Agentes** | Seu "time": 38 especialistas (financeiro, comercial, social media, jurídico, dados, etc.) |
+| **Habilidades** | O que cada agente sabe fazer (190+ skills prontas) |
+| **Heartbeats** | Quais agentes estão em modo proativo e com que frequência acordam |
+| **Rotinas** | Relatórios e ações automáticas em horário fixo (briefing de manhã, fechamento do dia, etc.) |
+| **Gatilhos** | Eventos que acordam um agente na hora (ex.: alguém te mencionou num ticket) |
+| **Atividades** | Histórico de tudo que aconteceu — auditoria |
+| **Modelos** | Templates reutilizáveis (relatórios, documentos) |
+
+### Um exemplo concreto — gerar clientes pelas redes sociais
+
+Isso conecta direto com o objetivo de negócio de atrair clientes, seguidores, receita e autoridade pelo conteúdo:
+
+1. Você cria a Meta "5.000 seguidores no Instagram até setembro" dentro de um Projeto de marketing.
+2. A IA quebra em Tickets: calendário de conteúdo, 10 posts, 3 reels, 1 sequência de e-mail de nutrição.
+3. O agente **Pixel** (social media) pega os tickets de conteúdo e produz os posts.
+4. Antes de qualquer coisa ir ao ar, cai uma aprovação no seu Telegram com o texto e a mídia exatos — você aprova, rejeita ou pede ajuste.
+5. Aprovado, a publicação sai de verdade nas redes (via integração com o Postiz) — sem fabricar sucesso: o sistema só marca como publicado depois de confirmar de fato na plataforma.
+6. Seguidores/leads que isso gera alimentam de volta a Meta e, no fim da cadeia, a Missão de faturamento.
+
+**O ganho pra sua rotina:** você troca "lembrar de postar, escrever o texto, editar a imagem, publicar, acompanhar" por "aprovar um Telegram por dia". O sistema é a memória e a mão de obra; você é a decisão.
 
 ---
 
@@ -226,7 +288,7 @@ docker service update --force --image SEU_USUARIO/evo-nexus-runtime:latest  evon
 
 ## O que vem do upstream (e continua aqui)
 
-Tudo do EvoNexus original está preservado: os 38 agentes, as 190+ skills, rotinas/scheduler, heartbeats (protocolo de 9 passos), goals (cascata Mission → Project → Goal → Task), tickets com checkout atômico, memória persistente em duas camadas, knowledge base semântica, dashboard completo com auditoria e gestão de usuários, e as 19+ integrações (Google, Linear, GitHub, Discord, Stripe, Omie, Bling, Asaas, Fathom, Todoist…).
+Tudo do EvoNexus original está preservado: os 38 agentes, as 190+ skills, rotinas/scheduler, heartbeats (protocolo de 9 passos), goals (cascata Mission → Project → Goal → Ticket, com sugestão automática por IA em cada degrau, aprovada pelo humano), tickets com checkout atômico, memória persistente em duas camadas, knowledge base semântica, dashboard completo com auditoria e gestão de usuários, e as 19+ integrações (Google, Linear, GitHub, Discord, Stripe, Omie, Bling, Asaas, Fathom, Todoist…).
 
 Documentação da plataforma: [README original](https://github.com/evolution-foundation/evo-nexus#readme) · [docs.evolutionfoundation.com.br](https://docs.evolutionfoundation.com.br) · [docs/getting-started.md](docs/getting-started.md) · [docs/architecture.md](docs/architecture.md) · [ROUTINES.md](ROUTINES.md) · [CHANGELOG.md](CHANGELOG.md)
 
