@@ -15,6 +15,10 @@ import {
   BarChart3,
   GitBranch,
   Settings,
+  AlertTriangle,
+  HeartCrack,
+  Lock,
+  CheckCircle2,
   type LucideIcon,
 } from 'lucide-react'
 import { api } from '../lib/api'
@@ -40,6 +44,12 @@ interface OverviewData {
     status: 'healthy' | 'warning' | 'critical'
     runs: number
   }[]
+  needs_attention?: {
+    heartbeat_failures: { heartbeat_id: string; error: string; started_at: string }[]
+    stale_locked_tickets: { id: string; title: string; locked_by: string; locked_at: string }[]
+    aged_approvals: { id: number; gate_type: string; created_at: string }[]
+    total: number
+  }
 }
 
 interface ActiveAgent {
@@ -287,6 +297,62 @@ export default function Overview() {
           ))
         )}
       </div>
+
+      {/* Precisa de atenção — health agregado (panorama 2026-07-17, item 19) */}
+      {!loading && data?.needs_attention && data.needs_attention.total > 0 && (
+        <div className="bg-red-500/[0.04] border border-red-500/20 rounded-2xl p-5 mb-6">
+          <h2 className="text-base font-semibold text-[#e6edf3] flex items-center gap-2.5 mb-4">
+            <div className="flex items-center justify-center w-7 h-7 rounded-lg bg-red-500/10 border border-red-500/20">
+              <AlertTriangle size={14} className="text-red-400" />
+            </div>
+            Precisa de atenção ({data.needs_attention.total})
+          </h2>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
+            <div>
+              <div className="flex items-center gap-2 text-[#8b949e] mb-2">
+                <HeartCrack size={13} /> Heartbeats com falha ({data.needs_attention.heartbeat_failures.length})
+              </div>
+              {data.needs_attention.heartbeat_failures.length === 0 ? (
+                <div className="text-[#667085] text-xs">Nenhum</div>
+              ) : (
+                data.needs_attention.heartbeat_failures.slice(0, 4).map((h) => (
+                  <Link key={h.heartbeat_id} to="/heartbeats" className="block text-xs text-[#e6edf3] hover:text-red-300 truncate mb-1">
+                    {h.heartbeat_id} — {h.error}
+                  </Link>
+                ))
+              )}
+            </div>
+            <div>
+              <div className="flex items-center gap-2 text-[#8b949e] mb-2">
+                <Lock size={13} /> Tickets travados ({data.needs_attention.stale_locked_tickets.length})
+              </div>
+              {data.needs_attention.stale_locked_tickets.length === 0 ? (
+                <div className="text-[#667085] text-xs">Nenhum</div>
+              ) : (
+                data.needs_attention.stale_locked_tickets.slice(0, 4).map((t) => (
+                  <Link key={t.id} to={`/tickets/${t.id}`} className="block text-xs text-[#e6edf3] hover:text-red-300 truncate mb-1">
+                    {t.title} — {t.locked_by}
+                  </Link>
+                ))
+              )}
+            </div>
+            <div>
+              <div className="flex items-center gap-2 text-[#8b949e] mb-2">
+                <CheckCircle2 size={13} /> Aprovações pendentes há +24h ({data.needs_attention.aged_approvals.length})
+              </div>
+              {data.needs_attention.aged_approvals.length === 0 ? (
+                <div className="text-[#667085] text-xs">Nenhuma</div>
+              ) : (
+                data.needs_attention.aged_approvals.slice(0, 4).map((a) => (
+                  <Link key={a.id} to="/approvals" className="block text-xs text-[#e6edf3] hover:text-red-300 truncate mb-1">
+                    #{a.id} — {a.gate_type}
+                  </Link>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Active Agents Bar */}
       <ActiveAgentsBar agents={activeAgents} loading={agentsLoading} />
