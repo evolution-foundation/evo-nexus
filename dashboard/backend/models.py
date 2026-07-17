@@ -629,6 +629,7 @@ class Mission(db.Model):
     current_value = db.Column(db.Float, nullable=False, default=0)
     due_date = db.Column(db.String(20))
     status = db.Column(db.String(20), nullable=False, default="active")
+    completed_at = db.Column(db.String(30), nullable=True)
     created_at = db.Column(db.String(30), nullable=False)
     updated_at = db.Column(db.String(30), nullable=False)
 
@@ -645,6 +646,7 @@ class Mission(db.Model):
             "current_value": self.current_value,
             "due_date": self.due_date,
             "status": self.status,
+            "completed_at": self.completed_at,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
@@ -663,6 +665,7 @@ class GoalProject(db.Model):
     description = db.Column(db.Text)
     workspace_folder_path = db.Column(db.String(500))
     status = db.Column(db.String(20), nullable=False, default="active")
+    completed_at = db.Column(db.String(30), nullable=True)
     created_at = db.Column(db.String(30), nullable=False)
     updated_at = db.Column(db.String(30), nullable=False)
 
@@ -677,6 +680,7 @@ class GoalProject(db.Model):
             "description": self.description,
             "workspace_folder_path": self.workspace_folder_path,
             "status": self.status,
+            "completed_at": self.completed_at,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
@@ -699,6 +703,7 @@ class Goal(db.Model):
     current_value = db.Column(db.Float, nullable=False, default=0.0)
     due_date = db.Column(db.String(20))
     status = db.Column(db.String(20), nullable=False, default="active")
+    completed_at = db.Column(db.String(30), nullable=True)
     # Self-FK for agent-authored sub-goals (goal-ticket-unification). NULL =
     # top-level, human-created goal; set = sub-goal proposed by goal-planner.
     parent_goal_id = db.Column(db.Integer, db.ForeignKey("goals.id", ondelete="SET NULL"), nullable=True)
@@ -723,6 +728,7 @@ class Goal(db.Model):
             "current_value": self.current_value,
             "due_date": self.due_date,
             "status": self.status,
+            "completed_at": self.completed_at,
             "parent_goal_id": self.parent_goal_id,
             "decomposition_state": self.decomposition_state,
             "created_at": self.created_at,
@@ -746,6 +752,8 @@ class GoalTask(db.Model):
     locked_at = db.Column(db.String(30))
     locked_by = db.Column(db.String(100))
     due_date = db.Column(db.String(20))
+    started_at = db.Column(db.String(30), nullable=True)
+    completed_at = db.Column(db.String(30), nullable=True)
     created_at = db.Column(db.String(30), nullable=False)
     updated_at = db.Column(db.String(30), nullable=False)
 
@@ -761,6 +769,8 @@ class GoalTask(db.Model):
             "locked_at": self.locked_at,
             "locked_by": self.locked_by,
             "due_date": self.due_date,
+            "started_at": self.started_at,
+            "completed_at": self.completed_at,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }

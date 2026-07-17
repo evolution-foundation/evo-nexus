@@ -49,6 +49,7 @@ def conn(tmp_path):
             slug TEXT UNIQUE NOT NULL,
             title TEXT NOT NULL,
             status TEXT NOT NULL DEFAULT 'active',
+            completed_at TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
@@ -61,6 +62,7 @@ def conn(tmp_path):
             target_value REAL NOT NULL DEFAULT 1.0,
             current_value REAL NOT NULL DEFAULT 0.0,
             status TEXT NOT NULL DEFAULT 'active',
+            completed_at TEXT,
             parent_goal_id INTEGER REFERENCES goals(id) ON DELETE SET NULL,
             decomposition_state TEXT,
             created_at TEXT NOT NULL,

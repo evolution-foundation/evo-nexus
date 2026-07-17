@@ -198,6 +198,7 @@ with app.app_context():
                 current_value REAL NOT NULL DEFAULT 0,
                 due_date TEXT,
                 status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','achieved','on-hold','cancelled')),
+                completed_at TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
@@ -208,7 +209,8 @@ with app.app_context():
                 title TEXT NOT NULL,
                 description TEXT,
                 workspace_folder_path TEXT,
-                status TEXT NOT NULL DEFAULT 'active',
+                status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','completed','on-hold','cancelled')),
+                completed_at TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
@@ -224,6 +226,7 @@ with app.app_context():
                 current_value REAL NOT NULL DEFAULT 0.0,
                 due_date TEXT,
                 status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','achieved','on-hold','cancelled')),
+                completed_at TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
@@ -238,6 +241,8 @@ with app.app_context():
                 locked_at TEXT,
                 locked_by TEXT,
                 due_date TEXT,
+                started_at TEXT,
+                completed_at TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
@@ -501,6 +506,68 @@ with app.app_context():
         """)
         _conn.commit()
     # --- End pending_approvals CHECK-constraint upgrade ---
+
+    # --- completed_at/started_at + projects.status CHECK constraint ---
+    # missions/goals/goal_tasks: plain additive ALTER (no CHECK involved).
+    _cur.execute("PRAGMA table_info(missions)")
+    if "completed_at" not in {row[1] for row in _cur.fetchall()}:
+        _cur.execute("ALTER TABLE missions ADD COLUMN completed_at TEXT")
+        _conn.commit()
+
+    _cur.execute("PRAGMA table_info(goals)")
+    if "completed_at" not in {row[1] for row in _cur.fetchall()}:
+        _cur.execute("ALTER TABLE goals ADD COLUMN completed_at TEXT")
+        _conn.commit()
+
+    _cur.execute("PRAGMA table_info(goal_tasks)")
+    _gt_cols = {row[1] for row in _cur.fetchall()}
+    if "started_at" not in _gt_cols:
+        _cur.execute("ALTER TABLE goal_tasks ADD COLUMN started_at TEXT")
+        _conn.commit()
+    if "completed_at" not in _gt_cols:
+        _cur.execute("ALTER TABLE goal_tasks ADD COLUMN completed_at TEXT")
+        _conn.commit()
+
+    # projects.status has no CHECK constraint today (unlike missions/goals) —
+    # SQLite can't ALTER one in, so this rebuilds the table (rename + create +
+    # copy + drop) the same way the pending_approvals upgrade above does.
+    # Sniffed via the missing completed_at column rather than a version flag,
+    # so this stays idempotent and safe to run on every boot.
+    _cur.execute("PRAGMA table_info(projects)")
+    if "completed_at" not in {row[1] for row in _cur.fetchall()}:
+        _cur.executescript("""
+            ALTER TABLE projects RENAME TO projects_old;
+            CREATE TABLE projects (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                slug TEXT UNIQUE NOT NULL,
+                mission_id INTEGER REFERENCES missions(id) ON DELETE CASCADE,
+                title TEXT NOT NULL,
+                description TEXT,
+                workspace_folder_path TEXT,
+                status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','completed','on-hold','cancelled')),
+                completed_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            INSERT INTO projects (
+                id, slug, mission_id, title, description, workspace_folder_path,
+                status, created_at, updated_at
+            )
+            SELECT
+                id, slug, mission_id, title, description, workspace_folder_path,
+                CASE
+                    WHEN status IN ('active','completed','on-hold','cancelled') THEN status
+                    WHEN status = 'achieved' THEN 'completed'
+                    ELSE 'active'
+                END,
+                created_at, updated_at
+            FROM projects_old;
+            DROP TABLE projects_old;
+            CREATE INDEX IF NOT EXISTS idx_projects_mission ON projects(mission_id);
+            CREATE INDEX IF NOT EXISTS idx_projects_status ON projects(status);
+        """)
+        _conn.commit()
+    # --- End completed_at/started_at + projects.status CHECK constraint ---
 
     # --- goal-ticket-unification: drop legacy goal_tasks-driven rollup trigger ---
     # current_value now has a single source of truth (tickets — see

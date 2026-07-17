@@ -534,13 +534,52 @@ def _recompute_goal_from_tickets(goal_id, conn) -> None:
         (float(done), _now_iso(), goal_id),
     )
     conn.execute(
-        "UPDATE goals SET status = 'achieved' WHERE id = ? AND current_value >= target_value AND status = 'active'",
-        (goal_id,),
+        "UPDATE goals SET status = 'achieved', completed_at = ? "
+        "WHERE id = ? AND current_value >= target_value AND status = 'active'",
+        (_now_iso(), goal_id),
     )
     conn.execute(
-        "UPDATE goals SET status = 'active' WHERE id = ? AND current_value < target_value AND status = 'achieved'",
+        "UPDATE goals SET status = 'active', completed_at = NULL "
+        "WHERE id = ? AND current_value < target_value AND status = 'achieved'",
         (goal_id,),
     )
+
+    # Project rollup (ai-hierarchy-suggestions quick-spec): this is the
+    # common real-world path a Goal reaches 'achieved' (ticket resolution),
+    # so this is where the Mission->Project->Goal chain's terminal state
+    # needs to bubble up, not just the ORM-side routes/goals.py::patch_goal.
+    row = conn.execute("SELECT project_id, status FROM goals WHERE id = ?", (goal_id,)).fetchone()
+    if row:
+        project_id = row["project_id"] if hasattr(row, "keys") else row[0]
+        goal_status = row["status"] if hasattr(row, "keys") else row[1]
+        if goal_status == "achieved" and project_id:
+            _maybe_complete_project_raw(project_id, conn)
+
+
+def _maybe_complete_project_raw(project_id, conn) -> None:
+    """Raw-SQL twin of routes/goals.py::_maybe_complete_project.
+
+    This module only ever has a raw sqlite3 connection (no Flask app/request
+    context to reach the ORM from), so the rollup check is duplicated here
+    rather than shared — same reasoning _recompute_goal_from_tickets itself
+    already follows for this whole module.
+    """
+    proj = conn.execute("SELECT status FROM projects WHERE id = ?", (project_id,)).fetchone()
+    if not proj:
+        return
+    proj_status = proj["status"] if hasattr(proj, "keys") else proj[0]
+    if proj_status == "completed":
+        return
+    rows = conn.execute("SELECT status FROM goals WHERE project_id = ?", (project_id,)).fetchall()
+    if not rows:
+        return
+    statuses = [r["status"] if hasattr(r, "keys") else r[0] for r in rows]
+    if all(s in ("achieved", "cancelled") for s in statuses):
+        now = _now_iso()
+        conn.execute(
+            "UPDATE projects SET status = 'completed', completed_at = ?, updated_at = ? WHERE id = ?",
+            (now, now, project_id),
+        )
 
 
 def _move_ticket(ticket_id: str, new_status: str, agent: str, comment: str, conn) -> None:
