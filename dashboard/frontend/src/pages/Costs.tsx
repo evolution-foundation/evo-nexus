@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { DollarSign, Zap, Activity, Calculator, Image, type LucideIcon } from 'lucide-react'
+import { DollarSign, Zap, Activity, Calculator, Image, Target, type LucideIcon } from 'lucide-react'
 import { api } from '../lib/api'
 import { useTranslation } from 'react-i18next'
 import {
@@ -33,6 +33,10 @@ interface CostData {
     total_cost: number
     avg_cost: number
   }[]
+  by_mission: { mission_id: number; title: string; estimated_cost: number; ticket_count: number }[]
+  by_project: { project_id: number; title: string; estimated_cost: number; ticket_count: number }[]
+  unallocated_cost: number
+  methodology: string
 }
 
 function normalizeCostData(raw: any): CostData {
@@ -67,6 +71,10 @@ function normalizeCostData(raw: any): CostData {
     by_agent: byAgent,
     by_routine: normalizedByRoutine,
     by_heartbeat: normalizedByHeartbeat,
+    by_mission: Array.isArray(raw?.by_mission) ? raw.by_mission : [],
+    by_project: Array.isArray(raw?.by_project) ? raw.by_project : [],
+    unallocated_cost: Number(raw?.unallocated_cost || 0),
+    methodology: raw?.methodology || '',
   }
 }
 
@@ -413,6 +421,70 @@ export default function Costs() {
           </div>
         )}
       </div>
+
+      {/* Gasto por Missão/Projeto — estimativa (panorama 2026-07-17, item 2) */}
+      {(data.by_mission.length > 0 || data.by_project.length > 0 || data.unallocated_cost > 0) && (
+        <div className="bg-[#161b22] border border-[#21262d] rounded-2xl overflow-hidden mt-6 transition-all duration-300 hover:shadow-[0_0_32px_rgba(0,255,167,0.04)]">
+          <div className="p-5 border-b border-[#21262d]">
+            <h2 className="text-base font-semibold text-[#e6edf3] flex items-center gap-2.5">
+              <div className="flex items-center justify-center w-7 h-7 rounded-lg bg-[#00FFA7]/8 border border-[#00FFA7]/15">
+                <Target size={14} className="text-[#00FFA7]" />
+              </div>
+              Gasto por Missão / Projeto (estimado)
+            </h2>
+            {data.methodology && (
+              <p className="text-xs text-[#667085] mt-2">{data.methodology}</p>
+            )}
+          </div>
+          <div className="grid md:grid-cols-2 divide-y md:divide-y-0 md:divide-x divide-[#21262d]/60">
+            <div>
+              <div className="px-4 py-2 text-[11px] uppercase tracking-wider text-[#667085] font-medium">Por Missão</div>
+              {data.by_mission.length === 0 ? (
+                <div className="px-4 pb-4 text-sm text-[#667085]">Sem dados suficientes ainda.</div>
+              ) : (
+                <table className="w-full text-sm">
+                  <tbody>
+                    {data.by_mission.map((m) => (
+                      <tr key={m.mission_id} className="border-t border-[#21262d]/60">
+                        <td className="p-3 text-[#e6edf3] text-[13px]">{m.title}</td>
+                        <td className="p-3 text-right text-[#8b949e] tabular-nums text-[13px]">{m.ticket_count} ticket(s)</td>
+                        <td className="p-3 text-right text-[#e6edf3] tabular-nums text-[13px] font-medium">
+                          ~${m.estimated_cost.toFixed(4)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+            <div>
+              <div className="px-4 py-2 text-[11px] uppercase tracking-wider text-[#667085] font-medium">Por Projeto</div>
+              {data.by_project.length === 0 ? (
+                <div className="px-4 pb-4 text-sm text-[#667085]">Sem dados suficientes ainda.</div>
+              ) : (
+                <table className="w-full text-sm">
+                  <tbody>
+                    {data.by_project.map((p) => (
+                      <tr key={p.project_id} className="border-t border-[#21262d]/60">
+                        <td className="p-3 text-[#e6edf3] text-[13px]">{p.title}</td>
+                        <td className="p-3 text-right text-[#8b949e] tabular-nums text-[13px]">{p.ticket_count} ticket(s)</td>
+                        <td className="p-3 text-right text-[#e6edf3] tabular-nums text-[13px] font-medium">
+                          ~${p.estimated_cost.toFixed(4)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          </div>
+          {data.unallocated_cost > 0 && (
+            <div className="px-4 py-3 border-t border-[#21262d]/60 text-xs text-[#667085]">
+              ${data.unallocated_cost.toFixed(4)} não alocados (custo de agente sem ticket correspondente vinculado a uma Missão/Projeto).
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Image Generation Costs */}
       {imageCosts && imageCosts.entries.length > 0 && (

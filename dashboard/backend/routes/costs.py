@@ -13,16 +13,119 @@ METRICS_PATH = WORKSPACE / "ADWs" / "logs" / "metrics.json"
 LOGS_DIR = WORKSPACE / "ADWs" / "logs"
 
 
+def _resolve_agent_slug(short_or_full: str, known_assignee_slugs: set[str]) -> str | None:
+    """Routine/heartbeat cost records use two different agent-name shapes:
+    heartbeats.agent already carries the full slug ("pixel-social-media"),
+    but routine cost records (ADWs metrics.json) carry the SHORT docstring
+    alias ("pixel" — see _helpers.py::_AGENT_ALIASES), which never appears
+    on a Ticket.assignee_agent. Resolve by prefix match against slugs that
+    actually show up on tickets, rather than hardcoding a name map that
+    would silently drift if an agent's .md file gets renamed.
+    Returns None on no match or on an ambiguous (2+) match — better to drop
+    that agent's cost into "unallocated" than guess wrong.
+    """
+    if short_or_full in known_assignee_slugs:
+        return short_or_full
+    matches = [s for s in known_assignee_slugs if s.startswith(f"{short_or_full}-")]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _estimated_cost_by_mission_and_project(by_agent: list[dict]) -> dict:
+    """Proportional-allocation ESTIMATE of spend per Mission/Project.
+
+    There is no direct link from a cost record (routine run, heartbeat run)
+    to the specific Goal/Ticket it was working on — costs are per-agent
+    totals, not per-task. This allocates each agent's total cost across the
+    Missions/Projects that agent's tickets belong to, weighted by ticket
+    count, since ticket count is the only per-agent-per-mission signal that
+    actually exists in the schema today. Explicitly labeled "estimated" in
+    the response — never presented as an exact ledger.
+    """
+    ticket_rows = db.session.execute(db.text(
+        "SELECT t.assignee_agent AS agent, "
+        "       COALESCE(t.project_id, g.project_id) AS project_id, "
+        "       p.title AS project_title, p.mission_id AS mission_id, m.title AS mission_title "
+        "FROM tickets t "
+        "LEFT JOIN goals g ON g.id = t.goal_id "
+        "LEFT JOIN projects p ON p.id = COALESCE(t.project_id, g.project_id) "
+        "LEFT JOIN missions m ON m.id = p.mission_id "
+        "WHERE t.assignee_agent IS NOT NULL"
+    )).fetchall()
+
+    known_slugs = {r.agent for r in ticket_rows}
+
+    # agent -> total ticket count (denominator for proportional allocation)
+    agent_ticket_totals: dict[str, int] = {}
+    # agent -> [(mission_id, mission_title, project_id, project_title, count)]
+    agent_breakdown: dict[str, list] = {}
+    for r in ticket_rows:
+        agent_ticket_totals[r.agent] = agent_ticket_totals.get(r.agent, 0) + 1
+        agent_breakdown.setdefault(r.agent, []).append(r)
+
+    mission_totals: dict[int, dict] = {}
+    project_totals: dict[int, dict] = {}
+    unallocated = 0.0
+
+    for entry in by_agent:
+        agent_cost = float(entry.get("cost") or 0)
+        if agent_cost <= 0:
+            continue
+        resolved = _resolve_agent_slug(entry["agent"], known_slugs)
+        total_tickets = agent_ticket_totals.get(resolved or "", 0)
+        if not resolved or total_tickets == 0:
+            unallocated += agent_cost
+            continue
+
+        for r in agent_breakdown[resolved]:
+            share = agent_cost / total_tickets
+            if r.mission_id:
+                bucket = mission_totals.setdefault(
+                    r.mission_id, {"mission_id": r.mission_id, "title": r.mission_title, "estimated_cost": 0.0, "ticket_count": 0}
+                )
+                bucket["estimated_cost"] += share
+                bucket["ticket_count"] += 1
+            if r.project_id:
+                bucket = project_totals.setdefault(
+                    r.project_id, {"project_id": r.project_id, "title": r.project_title, "estimated_cost": 0.0, "ticket_count": 0}
+                )
+                bucket["estimated_cost"] += share
+                bucket["ticket_count"] += 1
+            if not r.mission_id and not r.project_id:
+                unallocated += share
+
+    by_mission = sorted(
+        [{**v, "estimated_cost": round(v["estimated_cost"], 4)} for v in mission_totals.values()],
+        key=lambda x: x["estimated_cost"], reverse=True,
+    )
+    by_project = sorted(
+        [{**v, "estimated_cost": round(v["estimated_cost"], 4)} for v in project_totals.values()],
+        key=lambda x: x["estimated_cost"], reverse=True,
+    )
+    return {
+        "by_mission": by_mission,
+        "by_project": by_project,
+        "unallocated_cost": round(unallocated, 4),
+        "methodology": "estimativa por alocação proporcional (custo do agente / tickets do agente) — "
+                        "não é um ledger exato, pois custos são registrados por agente/rotina, não por ticket",
+    }
+
+
+_EMPTY_COSTS_RESPONSE = {
+    "total_cost": 0, "by_routine": [], "by_agent": [], "today": 0, "week": 0, "month_estimate": 0,
+    "by_mission": [], "by_project": [], "unallocated_cost": 0, "methodology": "",
+}
+
+
 @bp.route("/api/costs")
 def costs_summary():
     content = safe_read(METRICS_PATH)
     if not content:
-        return jsonify({"total_cost": 0, "by_routine": [], "by_agent": [], "today": 0, "week": 0, "month_estimate": 0})
+        return jsonify(_EMPTY_COSTS_RESPONSE)
 
     try:
         data = json.loads(content)
     except json.JSONDecodeError:
-        return jsonify({"total_cost": 0, "by_routine": [], "by_agent": [], "today": 0, "week": 0, "month_estimate": 0})
+        return jsonify(_EMPTY_COSTS_RESPONSE)
 
     total = 0.0
     by_routine = []
@@ -82,6 +185,15 @@ def costs_summary():
             "total_cost": round(hb_cost, 5),
             "avg_cost": round(hb_avg, 5),
         })
+        hb_agent_name = hb_agents.get(row.heartbeat_id)
+        if hb_agent_name:
+            agent_costs[hb_agent_name] = agent_costs.get(hb_agent_name, 0.0) + hb_cost
+
+    # Combined per-agent totals (routines + heartbeats) feed the Mission/
+    # Project estimate below — kept separate from `by_agent` above (routines
+    # only) so that response shape stays backward compatible.
+    combined_by_agent = [{"agent": a, "cost": round(c, 4)} for a, c in agent_costs.items()]
+    mission_project_estimate = _estimated_cost_by_mission_and_project(combined_by_agent)
 
     # Calculate today and week from JSONL logs (routines)
     today_cost = 0.0
@@ -147,6 +259,10 @@ def costs_summary():
         "by_routine": by_routine,
         "by_heartbeat": by_heartbeat,
         "by_agent": by_agent,
+        "by_mission": mission_project_estimate["by_mission"],
+        "by_project": mission_project_estimate["by_project"],
+        "unallocated_cost": mission_project_estimate["unallocated_cost"],
+        "methodology": mission_project_estimate["methodology"],
     })
 
 
