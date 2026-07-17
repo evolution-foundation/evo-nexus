@@ -211,6 +211,26 @@ heartbeats:
       {"action": "work"|"skip", "reason": "<1 sentence>",
       "goals_topped_up": [<list of goal ids you created tickets for, if any>]}.
 
+  # deadline-check — panorama 2026-07-17 item 4: checks for overdue Goals and
+  # Tickets and alerts via Telegram. Zero Claude CLI invocations (in-process
+  # Python handler, same shape as integrations-health). Closes the gap
+  # between Weekly Review runs (scheduler.py, Fridays) — nothing else
+  # proactively surfaces a vencido Goal/Ticket before then.
+  - id: deadline-check
+    agent: system
+    interval_seconds: 14400  # 4 hours
+    max_turns: 0
+    timeout_seconds: 60
+    lock_timeout_seconds: 1800
+    wake_triggers:
+      - interval
+      - manual
+    enabled: false
+    goal_id: null
+    required_secrets: []
+    handler: deadline_check.tick
+    decision_prompt: ""
+
   # integrations-health — Wave 2.2r in-process HTTP health check for plugin integrations
   # Runs every 15 minutes; zero Claude CLI invocations (in-process Python handler).
   # Enable via UI toggle after reviewing plugin integrations in /integrations.

@@ -175,11 +175,16 @@ def send_approval_request(approval_id: int, title: str, body: str) -> int | None
     return int(message_id) if message_id is not None else None
 
 
-def send_whatsapp(text: str, phone: str) -> bool:
+def send_whatsapp(text: str, phone: str, instance: str | None = None) -> bool:
     """Send a WhatsApp message via Evolution Go API.
 
     Reads EVOLUTION_GO_URL and EVOLUTION_GO_KEY from environment (.env).
-    Returns True if sent, False on any failure.
+    `instance` is the Evolution Go WhatsApp instance to send FROM — defaults
+    to EVOLUTION_GO_INSTANCE if set, else "sistema-britto" (Sistema Britto's
+    own connected number, already registered in EvoCRM/evolution_go). This
+    used to be hardcoded to "nature" — a different instance entirely — so
+    every message silently went out from the wrong number. Returns True if
+    sent, False on any failure.
     """
     import json
     import urllib.request
@@ -189,10 +194,11 @@ def send_whatsapp(text: str, phone: str) -> bool:
     key = os.environ.get("EVOLUTION_GO_KEY", "")
     if not url or not key:
         return False
+    instance = instance or os.environ.get("EVOLUTION_GO_INSTANCE") or "sistema-britto"
     try:
         payload = json.dumps({"number": phone, "text": text}).encode("utf-8")
         req = urllib.request.Request(
-            f"{url}/message/sendText/nature",
+            f"{url}/message/sendText/{instance}",
             data=payload,
             method="POST",
             headers={"apikey": key, "Content-Type": "application/json"},

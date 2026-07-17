@@ -407,6 +407,7 @@ def run_skill(
     timeout: int = 600,
     agent: str = None,
     notify_telegram: bool | str = False,
+    notify_whatsapp: bool | str = False,
 ) -> dict:
     """Execute a skill via CLI, optionally with an agent.
 
@@ -416,10 +417,17 @@ def run_skill(
             True            — Python sends ONE Telegram after the skill; reads
                               chat_id from TELEGRAM_CHAT_ID env var.
             "<chat_id>"     — same as True but overrides the chat_id.
+        notify_whatsapp: Controls post-skill WhatsApp notification (via the
+            Evolution Go "sistema-britto" instance — see
+            dashboard/backend/notifications.py::send_whatsapp).
+            False (default) — no notification.
+            True            — Python sends ONE WhatsApp after the skill; reads
+                              the destination phone from WHATSAPP_PHONE env var.
+            "<phone>"       — same as True but overrides the phone number.
 
-    The agent is asked to output a line "TELEGRAM_MSG: <text>" in its stdout.
-    Python reads that line and calls send_telegram() exactly once.
-    The agent NEVER calls the Telegram MCP tool directly.
+    The agent is asked to output a line "TELEGRAM_MSG: <text>" / "WHATSAPP_MSG:
+    <text>" in its stdout. Python reads that line and sends exactly once per
+    channel. The agent NEVER calls the Telegram/WhatsApp tools directly.
     """
     chat_id = None
     if notify_telegram:
@@ -427,6 +435,14 @@ def run_skill(
             notify_telegram
             if isinstance(notify_telegram, str)
             else os.environ.get("TELEGRAM_CHAT_ID", "")
+        ) or None
+
+    whatsapp_phone = None
+    if notify_whatsapp:
+        whatsapp_phone = (
+            notify_whatsapp
+            if isinstance(notify_whatsapp, str)
+            else os.environ.get("WHATSAPP_PHONE", "")
         ) or None
 
     prompt = f"Execute the skill /{skill_name} {args}".strip()
@@ -439,20 +455,61 @@ def run_skill(
             f"o sistema Python lê essa linha e envia a notificação automaticamente.\n"
             f"---"
         )
+    if whatsapp_phone:
+        prompt += (
+            f"\n\n---\n"
+            f"Ao finalizar, escreva na última linha do output:\n"
+            f"WHATSAPP_MSG: [emoji] [nome da rotina] [data] | [resultado 1] | [resultado 2]\n"
+            f"Apenas UMA linha WHATSAPP_MSG:. NÃO use nenhuma ferramenta de WhatsApp — "
+            f"o sistema Python lê essa linha e envia a notificação automaticamente.\n"
+            f"---"
+        )
 
     result = run_claude(prompt, log_name or skill_name, timeout, agent=agent)
 
-    if chat_id and result.get("returncode", -1) == 0:
+    if result.get("returncode", -1) == 0:
         stdout = result.get("stdout", "")
-        for line in reversed(stdout.splitlines()):
-            line = line.strip()
-            if line.startswith("TELEGRAM_MSG:"):
-                msg = line[len("TELEGRAM_MSG:"):].strip()
-                if msg:
-                    send_telegram(msg, chat_id=chat_id)
-                break  # only ever send one message
+        if chat_id:
+            for line in reversed(stdout.splitlines()):
+                line = line.strip()
+                if line.startswith("TELEGRAM_MSG:"):
+                    msg = line[len("TELEGRAM_MSG:"):].strip()
+                    if msg:
+                        send_telegram(msg, chat_id=chat_id)
+                    break  # only ever send one message
+        if whatsapp_phone:
+            for line in reversed(stdout.splitlines()):
+                line = line.strip()
+                if line.startswith("WHATSAPP_MSG:"):
+                    msg = line[len("WHATSAPP_MSG:"):].strip()
+                    if msg:
+                        send_whatsapp(msg, whatsapp_phone)
+                    break  # only ever send one message
 
     return result
+
+
+def send_whatsapp(text: str, phone: str) -> bool:
+    """Send a WhatsApp message via the dashboard backend's Evolution Go
+    integration (Sistema Britto's own "sistema-britto" instance).
+
+    Delegates to dashboard/backend/notifications.py::send_whatsapp instead of
+    duplicating the Evolution Go HTTP call — that module already owns
+    EVOLUTION_GO_URL/KEY/INSTANCE resolution, and ADWs/routines/daily_status_report.py
+    already imports it the same way.
+    """
+    sys.path.insert(0, str(WORKSPACE / "dashboard" / "backend"))
+    try:
+        from notifications import send_whatsapp as _send_whatsapp
+    except ImportError:
+        console.print("  [warning]⚠ WhatsApp not available (notifications module import failed)[/warning]")
+        return False
+    ok = _send_whatsapp(text, phone)
+    if ok:
+        console.print("  [success]✓[/success] WhatsApp enviado")
+    else:
+        console.print("  [warning]⚠ WhatsApp not configured or send failed[/warning]")
+    return ok
 
 
 def run_script(func, log_name: str = "unnamed", timeout: int = 120) -> dict:

@@ -72,10 +72,24 @@ def release_lock():
 
 
 def run_adw(name: str, script: str, args: str = ""):
-    """Execute a routine as subprocess."""
+    """Execute a routine as subprocess.
+
+    YAML-configured routines are always requested with a "custom/" prefix
+    (see _load_routines_from_yaml) even when the real script lives elsewhere
+    — e.g. daily_status_report.py sits directly in ADWs/routines/ (not
+    custom/), and publish_scheduled.py sits at the repo's top-level scripts/.
+    Moving either would break their own ROOT-relative path resolution
+    (calendar/ledger/DB paths computed from Path(__file__).parent chains), so
+    this tries a few candidate locations instead of relocating them:
+    1. exactly what the caller asked for (custom/<script>)
+    2. ADWs/routines/<basename>, ignoring any custom/ prefix
+    3. top-level scripts/<basename>
+    """
     now = datetime.now().strftime("%H:%M")
-    script_path = ROUTINES_DIR / script
-    if not script_path.exists():
+    basename = Path(script).name
+    candidates = [ROUTINES_DIR / script, ROUTINES_DIR / basename, WORKSPACE / "scripts" / basename]
+    script_path = next((p for p in candidates if p.exists()), None)
+    if script_path is None:
         print(f"  {now} ✗ {name} — script not found: {script}")
         return
 
@@ -115,8 +129,11 @@ def setup_schedule():
     schedule.every().day.at("07:00").do(run_adw, "Good Morning", "good_morning.py")
     schedule.every().day.at("21:00").do(run_adw, "End of Day", "end_of_day.py")
     schedule.every().day.at("21:15").do(run_adw, "Memory Sync", "memory_sync.py")
-    # Disabled — replaced by Weekly Review (Team) in routines.yaml
-    # schedule.every().friday.at("08:00").do(run_adw, "Weekly Review", "weekly_review.py")
+    # Reativado (panorama 2026-07-17, item 4) — o comentário anterior dizia
+    # "replaced by Weekly Review (Team) in routines.yaml", mas essa entrada
+    # nunca existiu em config/routines.yaml; nada mais checa Goal/Ticket
+    # vencido sem isto.
+    schedule.every().friday.at("08:00").do(run_adw, "Weekly Review", "weekly_review.py")
     schedule.every().sunday.at("09:00").do(run_adw, "Memory Lint", "memory_lint.py")
     schedule.every().day.at("21:00").do(run_adw, "Daily Backup", "backup.py")
     # Exercise every NVIDIA model so the active chain has fresh live traffic
