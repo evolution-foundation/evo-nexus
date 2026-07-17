@@ -20,7 +20,7 @@ from pathlib import Path
 from flask import Blueprint, jsonify, request
 from flask_login import current_user
 
-from models import db, has_permission, Ticket, TICKET_PRIORITIES, PRIORITY_RANK
+from models import db, has_permission, Ticket, TICKET_PRIORITIES, PRIORITY_RANK, GoalProject, Goal
 from routes._helpers import valid_approval_bridge_token
 
 bp = Blueprint("approvals", __name__)
@@ -99,7 +99,10 @@ def decide_approval(approval_id: int):
     db.session.commit()
 
     row = db.session.execute(
-        db.text("SELECT gate_type, ticket_id, goal_id, agent, payload FROM pending_approvals WHERE id=:id"),
+        db.text(
+            "SELECT gate_type, ticket_id, goal_id, mission_id, project_id, agent, payload "
+            "FROM pending_approvals WHERE id=:id"
+        ),
         {"id": approval_id},
     ).fetchone()
 
@@ -136,7 +139,7 @@ def decide_approval(approval_id: int):
             conn.commit()
         finally:
             conn.close()
-    else:  # decomposition
+    elif row.gate_type == "decomposition":
         db.session.execute(
             db.text("UPDATE goals SET decomposition_state=:s, updated_at=:t WHERE id=:id"),
             {"s": new_status, "t": now, "id": row.goal_id},
@@ -213,6 +216,143 @@ def decide_approval(approval_id: int):
         # directly above, straight from the payload the human already saw
         # and approved — no heartbeat is woken to re-decompose anything.
 
+    elif row.gate_type == "project_suggestion":
+        # ai-hierarchy-suggestions (quick-spec): Mission -> Project rung.
+        # Unlike decomposition, there's no parent-side "state" column to
+        # flip (Mission has no decomposition_state) — pending_approvals.status
+        # (already CAS'd to approved/rejected above) is the sole durable
+        # record of this decision.
+        if new_status == "approved":
+            try:
+                payload = json.loads(row.payload or "{}")
+            except (ValueError, TypeError):
+                payload = {}
+
+            created_project_ids: list[int] = []
+            try:
+                for item in payload.get("projects") or []:
+                    if not isinstance(item, dict):
+                        continue
+                    p_title = (item.get("title") or "").strip()
+                    p_slug = (item.get("slug") or "").strip()
+                    if not p_title or not p_slug:
+                        continue
+                    if GoalProject.query.filter_by(slug=p_slug).first():
+                        continue  # duplicate slug — skip, don't crash the batch
+                    project = GoalProject(
+                        slug=p_slug, title=p_title, description=item.get("description"),
+                        mission_id=row.mission_id, status="active",
+                        created_at=now, updated_at=now,
+                    )
+                    db.session.add(project)
+                    db.session.flush()  # need project.id before the cascade dispatch below
+                    created_project_ids.append(project.id)
+                db.session.commit()
+            except Exception as exc:
+                db.session.rollback()
+                from notifications import send_telegram_alert
+                send_telegram_alert(
+                    f"⚠️ Aprovação de sugestão de Projects #{approval_id} (Mission #{row.mission_id}) "
+                    f"foi registrada como aprovada, mas a criação falhou: {exc}. Nenhum Project foi "
+                    f"criado e a aprovação já foi consumida — intervenção manual necessária."
+                )
+                raise
+
+            if not created_project_ids and (payload.get("projects") or []):
+                from notifications import send_telegram_alert
+                send_telegram_alert(
+                    f"⚠️ Aprovação de sugestão de Projects #{approval_id} (Mission #{row.mission_id}) "
+                    f"foi aprovada, mas nenhum Project válido foi encontrado no payload — confira "
+                    f"manualmente."
+                )
+
+            # Cascade by design (quick-spec ai-hierarchy-suggestions): each
+            # created Project wakes goal-suggester for itself. Still gated by
+            # its own human approval before any Goal exists — never runs
+            # away unsupervised, same reasoning as create_project's own
+            # unconditional project_created dispatch.
+            from heartbeat_dispatcher import dispatch
+            for pid in created_project_ids:
+                try:
+                    dispatch("goal-suggester", "project_created", {"project_id": pid})
+                except Exception:  # noqa: BLE001 — best-effort, never fail the decision response
+                    pass
+        # reject: zero projects created — nothing else to do.
+
+    elif row.gate_type == "goal_suggestion":
+        # ai-hierarchy-suggestions: Project -> Goal rung. Goals created here
+        # have no parent_goal_id (their parent is a Project, not a Goal), so
+        # they're indistinguishable from a human-created top-level goal —
+        # correctly falling under create_goal's own `parent_goal_id IS NULL`
+        # rule if ever created via that route. Here we create them directly
+        # (same reasoning as the decomposition/project_suggestion branches)
+        # and dispatch goal_created ourselves per created goal.
+        if new_status == "approved":
+            try:
+                payload = json.loads(row.payload or "{}")
+            except (ValueError, TypeError):
+                payload = {}
+
+            created_goal_ids: list[int] = []
+            try:
+                for item in payload.get("goals") or []:
+                    if not isinstance(item, dict):
+                        continue
+                    g_title = (item.get("title") or "").strip()
+                    g_slug = (item.get("slug") or "").strip()
+                    if not g_title or not g_slug:
+                        continue
+                    if Goal.query.filter_by(slug=g_slug).first():
+                        continue  # duplicate slug — skip, don't crash the batch
+
+                    metric_type = item.get("metric_type") or "count"
+                    if metric_type not in ("count", "currency", "percentage", "boolean"):
+                        metric_type = "count"
+                    target_value = item.get("target_value")
+                    if metric_type == "boolean":
+                        target_value = 1.0 if target_value is None else target_value
+                    elif target_value is None:
+                        continue  # no target and not boolean — not a measurable goal, skip
+
+                    goal = Goal(
+                        slug=g_slug, project_id=row.project_id, title=g_title,
+                        description=item.get("description"), target_metric=item.get("target_metric"),
+                        metric_type=metric_type, target_value=target_value, current_value=0,
+                        due_date=item.get("due_date"), status="active",
+                        created_at=now, updated_at=now,
+                    )
+                    db.session.add(goal)
+                    db.session.flush()
+                    created_goal_ids.append(goal.id)
+                db.session.commit()
+            except Exception as exc:
+                db.session.rollback()
+                from notifications import send_telegram_alert
+                send_telegram_alert(
+                    f"⚠️ Aprovação de sugestão de Goals #{approval_id} (Project #{row.project_id}) "
+                    f"foi registrada como aprovada, mas a criação falhou: {exc}. Nenhuma Goal foi "
+                    f"criada e a aprovação já foi consumida — intervenção manual necessária."
+                )
+                raise
+
+            if not created_goal_ids and (payload.get("goals") or []):
+                from notifications import send_telegram_alert
+                send_telegram_alert(
+                    f"⚠️ Aprovação de sugestão de Goals #{approval_id} (Project #{row.project_id}) "
+                    f"foi aprovada, mas nenhuma Goal válida foi encontrada no payload — confira "
+                    f"manualmente."
+                )
+
+            # Cascade by design: each created Goal wakes the existing
+            # goal-planner heartbeat, same as a human-created top-level goal.
+            from heartbeat_dispatcher import dispatch
+            for gid in created_goal_ids:
+                try:
+                    dispatch("goal-planner", "goal_created", {"goal_id": gid})
+                except Exception:  # noqa: BLE001
+                    pass
+        # reject: zero goals created — nothing else to do.
+
     return jsonify({"status": "ok", "approval_id": approval_id, "decision": new_status}), 200
 
 
@@ -230,11 +370,14 @@ def create_approval():
 
     data = request.get_json(silent=True) or {}
     gate_type = data.get("gate_type")
-    if gate_type not in ("publish", "decomposition"):
-        return jsonify({"error": "gate_type must be 'publish' or 'decomposition'"}), 400
+    valid_gate_types = ("publish", "decomposition", "project_suggestion", "goal_suggestion")
+    if gate_type not in valid_gate_types:
+        return jsonify({"error": f"gate_type must be one of {valid_gate_types}"}), 400
 
     goal_id = data.get("goal_id")
     ticket_id = data.get("ticket_id")
+    mission_id = data.get("mission_id")
+    project_id = data.get("project_id")
     agent = data.get("agent")
     payload = data.get("payload") or {}
 
@@ -246,7 +389,7 @@ def create_approval():
             {"g": goal_id},
         ).scalar() or 0
         idempotency_key = f"decomp:{goal_id}:{attempt}"
-    else:
+    elif gate_type == "publish":
         if not ticket_id:
             return jsonify({"error": "ticket_id is required for gate_type=publish"}), 400
         attempt = db.session.execute(
@@ -254,6 +397,26 @@ def create_approval():
             {"t": ticket_id},
         ).scalar() or 0
         idempotency_key = f"publish:{ticket_id}:{attempt}"
+    elif gate_type == "project_suggestion":
+        if not mission_id:
+            return jsonify({"error": "mission_id is required for gate_type=project_suggestion"}), 400
+        attempt = db.session.execute(
+            db.text(
+                "SELECT COUNT(*) FROM pending_approvals WHERE mission_id=:m AND gate_type='project_suggestion'"
+            ),
+            {"m": mission_id},
+        ).scalar() or 0
+        idempotency_key = f"projsug:{mission_id}:{attempt}"
+    else:  # goal_suggestion
+        if not project_id:
+            return jsonify({"error": "project_id is required for gate_type=goal_suggestion"}), 400
+        attempt = db.session.execute(
+            db.text(
+                "SELECT COUNT(*) FROM pending_approvals WHERE project_id=:p AND gate_type='goal_suggestion'"
+            ),
+            {"p": project_id},
+        ).scalar() or 0
+        idempotency_key = f"goalsug:{project_id}:{attempt}"
 
     now = _now()
     expires_at = (datetime.now(timezone.utc) + timedelta(hours=8)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
@@ -261,12 +424,14 @@ def create_approval():
     db.session.execute(
         db.text(
             "INSERT OR IGNORE INTO pending_approvals "
-            "(gate_type, ticket_id, goal_id, agent, attempt, idempotency_key, status, payload, created_at, expires_at) "
-            "VALUES (:gt, :tid, :gid, :a, :att, :k, 'pending', :p, :c, :e)"
+            "(gate_type, ticket_id, goal_id, mission_id, project_id, agent, attempt, idempotency_key, "
+            "status, payload, created_at, expires_at) "
+            "VALUES (:gt, :tid, :gid, :mid, :pid, :a, :att, :k, 'pending', :p, :c, :e)"
         ),
         {
-            "gt": gate_type, "tid": ticket_id, "gid": goal_id, "a": agent, "att": attempt,
-            "k": idempotency_key, "p": json.dumps(payload, ensure_ascii=False), "c": now, "e": expires_at,
+            "gt": gate_type, "tid": ticket_id, "gid": goal_id, "mid": mission_id, "pid": project_id,
+            "a": agent, "att": attempt, "k": idempotency_key,
+            "p": json.dumps(payload, ensure_ascii=False), "c": now, "e": expires_at,
         },
     )
     db.session.commit()

@@ -95,6 +95,16 @@ def create_mission():
     db.session.add(m)
     db.session.commit()
     audit(current_user, "create", "goals", f"Created mission #{m.id}: {m.title}")
+
+    # ai-hierarchy-suggestions: wake project-planner to propose Projects for
+    # this Mission (parked behind a Telegram approval, never created
+    # directly — see routes/approvals.py's project_suggestion branch).
+    try:
+        from heartbeat_dispatcher import dispatch
+        dispatch("project-planner", "mission_created", {"mission_id": m.id})
+    except Exception as exc:  # noqa: BLE001 — best-effort, never block mission creation
+        print(f"[goals] WARNING: could not dispatch mission_created for mission #{m.id}: {exc}", flush=True)
+
     return jsonify(m.to_dict()), 201
 
 
@@ -176,6 +186,17 @@ def create_project():
     db.session.commit()
     audit(current_user, "create", "goals", f"Created project #{p.id}: {p.title}")
     _sync_mempalace_for_project(p)
+
+    # ai-hierarchy-suggestions: wake goal-suggester to propose Goals for this
+    # Project — fires unconditionally, including for Projects created from an
+    # approved project_suggestion (intentional cascade: each rung still needs
+    # its own human approval, so this never runs away unsupervised).
+    try:
+        from heartbeat_dispatcher import dispatch
+        dispatch("goal-suggester", "project_created", {"project_id": p.id})
+    except Exception as exc:  # noqa: BLE001 — best-effort, never block project creation
+        print(f"[goals] WARNING: could not dispatch project_created for project #{p.id}: {exc}", flush=True)
+
     return jsonify(p.to_dict()), 201
 
 

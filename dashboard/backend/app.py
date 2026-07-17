@@ -415,12 +415,19 @@ with app.app_context():
     # --- End goal_relations migration ---
 
     # --- goal-ticket-unification: pending_approvals table (shared publish + decomposition gate) ---
+    # gate_type/mission_id/project_id cover ai-hierarchy-suggestions too
+    # (project_suggestion, goal_suggestion) — a fresh install gets the final
+    # shape directly; the rebuild block right below upgrades a DB that already
+    # has this table from before those two gate_types existed (SQLite can't
+    # ALTER a CHECK constraint in place).
     _cur.executescript("""
         CREATE TABLE IF NOT EXISTS pending_approvals (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            gate_type TEXT NOT NULL CHECK(gate_type IN ('publish','decomposition')),
+            gate_type TEXT NOT NULL CHECK(gate_type IN ('publish','decomposition','project_suggestion','goal_suggestion')),
             ticket_id TEXT REFERENCES tickets(id) ON DELETE CASCADE,
             goal_id INTEGER REFERENCES goals(id) ON DELETE CASCADE,
+            mission_id INTEGER REFERENCES missions(id) ON DELETE CASCADE,
+            project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
             agent TEXT,
             attempt INTEGER NOT NULL DEFAULT 0,
             idempotency_key TEXT NOT NULL UNIQUE,
@@ -441,6 +448,59 @@ with app.app_context():
     """)
     _conn.commit()
     # --- End pending_approvals migration ---
+
+    # --- ai-hierarchy-suggestions: upgrade a pre-existing pending_approvals
+    # (created before project_suggestion/goal_suggestion existed) in place.
+    # SQLite has no ALTER-a-CHECK-constraint — rebuild the table, copy rows,
+    # swap. Detected by sniffing the live CHECK text rather than a version
+    # flag, so this is safe to run unconditionally on every boot.
+    _cur.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='pending_approvals'"
+    )
+    _pa_row = _cur.fetchone()
+    if _pa_row and "project_suggestion" not in (_pa_row[0] or ""):
+        _cur.executescript("""
+            ALTER TABLE pending_approvals RENAME TO pending_approvals_old;
+            CREATE TABLE pending_approvals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                gate_type TEXT NOT NULL CHECK(gate_type IN ('publish','decomposition','project_suggestion','goal_suggestion')),
+                ticket_id TEXT REFERENCES tickets(id) ON DELETE CASCADE,
+                goal_id INTEGER REFERENCES goals(id) ON DELETE CASCADE,
+                mission_id INTEGER REFERENCES missions(id) ON DELETE CASCADE,
+                project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+                agent TEXT,
+                attempt INTEGER NOT NULL DEFAULT 0,
+                idempotency_key TEXT NOT NULL UNIQUE,
+                status TEXT NOT NULL DEFAULT 'pending'
+                    CHECK(status IN ('pending','approved','rejected','expired','published')),
+                payload TEXT,
+                telegram_chat_id TEXT,
+                telegram_message_id INTEGER,
+                approver_from_id TEXT,
+                reject_reason TEXT,
+                decided_by TEXT,
+                created_at TEXT NOT NULL,
+                nudged_at TEXT,
+                decided_at TEXT,
+                expires_at TEXT NOT NULL
+            );
+            INSERT INTO pending_approvals (
+                id, gate_type, ticket_id, goal_id, agent, attempt, idempotency_key,
+                status, payload, telegram_chat_id, telegram_message_id,
+                approver_from_id, reject_reason, decided_by, created_at, nudged_at,
+                decided_at, expires_at
+            )
+            SELECT
+                id, gate_type, ticket_id, goal_id, agent, attempt, idempotency_key,
+                status, payload, telegram_chat_id, telegram_message_id,
+                approver_from_id, reject_reason, decided_by, created_at, nudged_at,
+                decided_at, expires_at
+            FROM pending_approvals_old;
+            DROP TABLE pending_approvals_old;
+            CREATE INDEX IF NOT EXISTS idx_pending_approvals_status ON pending_approvals(status, expires_at);
+        """)
+        _conn.commit()
+    # --- End pending_approvals CHECK-constraint upgrade ---
 
     # --- goal-ticket-unification: drop legacy goal_tasks-driven rollup trigger ---
     # current_value now has a single source of truth (tickets — see

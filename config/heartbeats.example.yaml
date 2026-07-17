@@ -129,6 +129,51 @@ heartbeats:
       already has tickets (idempotency) or there is no goal_id in the trigger
       payload.
 
+  # project-planner — proposes Projects for a human-authored Mission.
+  # Event-driven only: wakes on mission_created. See .claude/agents/project-planner.md.
+  - id: project-planner
+    agent: project-planner
+    interval_seconds: 86400  # unused placeholder — no "interval" wake trigger
+    max_turns: 15
+    timeout_seconds: 300
+    lock_timeout_seconds: 1800
+    wake_triggers:
+      - mission_created
+      - manual
+    enabled: false
+    goal_id: null
+    required_secrets: []
+    decision_prompt: >
+      You are project-planner. A Mission was just created — its id is in the
+      Trigger payload above. Propose 1-4 Projects per your agent instructions
+      (.claude/agents/project-planner.md) via POST /api/approvals
+      (gate_type=project_suggestion) — never create a Project directly. Skip
+      if it already has Projects (idempotency) or there is no mission_id in
+      the trigger payload.
+
+  # goal-suggester — proposes Goals for a Project (human-created, or itself
+  # created from an approved project-planner proposal — intentional cascade).
+  # Event-driven only: wakes on project_created. See .claude/agents/goal-suggester.md.
+  - id: goal-suggester
+    agent: goal-suggester
+    interval_seconds: 86400  # unused placeholder — no "interval" wake trigger
+    max_turns: 15
+    timeout_seconds: 300
+    lock_timeout_seconds: 1800
+    wake_triggers:
+      - project_created
+      - manual
+    enabled: false
+    goal_id: null
+    required_secrets: []
+    decision_prompt: >
+      You are goal-suggester. A Project was just created — its id is in the
+      Trigger payload above. Propose 2-6 measurable Goals per your agent
+      instructions (.claude/agents/goal-suggester.md) via POST /api/approvals
+      (gate_type=goal_suggestion) — never create a Goal directly. Skip if it
+      already has Goals (idempotency) or there is no project_id in the
+      trigger payload.
+
   # integrations-health — Wave 2.2r in-process HTTP health check for plugin integrations
   # Runs every 15 minutes; zero Claude CLI invocations (in-process Python handler).
   # Enable via UI toggle after reviewing plugin integrations in /integrations.

@@ -10,11 +10,17 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 WORKSPACE = Path(__file__).resolve().parent.parent.parent
 
 VALID_WAKE_TRIGGERS = frozenset(
-    {"interval", "new_task", "mention", "manual", "approval_decision", "goal_created"}
+    {
+        "interval", "new_task", "mention", "manual", "approval_decision", "goal_created",
+        # ai-hierarchy-suggestions: same event-driven shape as goal_created,
+        # one rung up the Mission -> Project -> Goal -> Ticket hierarchy.
+        "mission_created", "project_created",
+    }
 )
 
 WakeTrigger = Literal[
-    "interval", "new_task", "mention", "manual", "approval_decision", "goal_created"
+    "interval", "new_task", "mention", "manual", "approval_decision", "goal_created",
+    "mission_created", "project_created",
 ]
 
 

@@ -870,7 +870,10 @@ class PendingApproval(db.Model):
 
     __tablename__ = "pending_approvals"
     __table_args__ = (
-        db.CheckConstraint("gate_type IN ('publish','decomposition')", name="ck_approval_gate_type"),
+        db.CheckConstraint(
+            "gate_type IN ('publish','decomposition','project_suggestion','goal_suggestion')",
+            name="ck_approval_gate_type",
+        ),
         db.CheckConstraint(
             "status IN ('pending','approved','rejected','expired','published')",
             name="ck_approval_status",
@@ -881,6 +884,13 @@ class PendingApproval(db.Model):
     gate_type = db.Column(db.String(20), nullable=False)
     ticket_id = db.Column(db.String(36), db.ForeignKey("tickets.id", ondelete="CASCADE"), nullable=True)
     goal_id = db.Column(db.Integer, db.ForeignKey("goals.id", ondelete="CASCADE"), nullable=True)
+    # ai-hierarchy-suggestions (Mission -> Wing... no, Mission -> Project
+    # suggestion, Project -> Goal suggestion): the "parent" for those two
+    # gate_types isn't a goal, so they get their own FK columns rather than
+    # overloading goal_id (an unrelated mission/project id could numerically
+    # collide with a real goal id and trigger the wrong ON DELETE CASCADE).
+    mission_id = db.Column(db.Integer, db.ForeignKey("missions.id", ondelete="CASCADE"), nullable=True)
+    project_id = db.Column(db.Integer, db.ForeignKey("projects.id", ondelete="CASCADE"), nullable=True)
     agent = db.Column(db.String(100), nullable=True)
     attempt = db.Column(db.Integer, nullable=False, default=0)
     idempotency_key = db.Column(db.String(200), unique=True, nullable=False)
@@ -902,6 +912,8 @@ class PendingApproval(db.Model):
             "gate_type": self.gate_type,
             "ticket_id": self.ticket_id,
             "goal_id": self.goal_id,
+            "mission_id": self.mission_id,
+            "project_id": self.project_id,
             "agent": self.agent,
             "attempt": self.attempt,
             "idempotency_key": self.idempotency_key,
