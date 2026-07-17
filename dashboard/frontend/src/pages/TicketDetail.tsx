@@ -132,6 +132,32 @@ export default function TicketDetail() {
   )
   // Mobile drawer state
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false)
+  // Parent chain (Mission > Project > Goal) — lazy-loaded when the ticket
+  // has a goal_id, since that field was never surfaced anywhere before.
+  const [parentChain, setParentChain] = useState<{
+    goal: { id: number; title: string } | null
+    project: { id: number; title: string } | null
+    mission: { id: number; title: string } | null
+  } | null>(null)
+
+  useEffect(() => {
+    if (!ticket?.goal_id) {
+      setParentChain(null)
+      return
+    }
+    let cancelled = false
+    ;(async () => {
+      try {
+        const goal = await api.get(`/goals/${ticket.goal_id}`)
+        const project = goal.project_id ? await api.get(`/projects/${goal.project_id}`) : null
+        const mission = project?.mission_id ? await api.get(`/missions/${project.mission_id}`) : null
+        if (!cancelled) setParentChain({ goal, project, mission })
+      } catch {
+        if (!cancelled) setParentChain(null)
+      }
+    })()
+    return () => { cancelled = true }
+  }, [ticket?.goal_id])
 
   const handleToggleSidebar = useCallback(() => {
     setSidebarCollapsed(prev => {
@@ -660,6 +686,20 @@ export default function TicketDetail() {
               </span>
             )}
           </div>
+
+          {parentChain?.goal && (
+            <div className="col-span-2 sm:col-span-4">
+              <p className="text-[#667085] mb-1.5">Goal chain</p>
+              <button
+                onClick={() => navigate(`/goals?project=${parentChain.project?.id ?? ''}`)}
+                className="text-[#e6edf3] hover:text-[#00FFA7] transition-colors text-xs text-left"
+              >
+                {parentChain.mission ? `${parentChain.mission.title} › ` : ''}
+                {parentChain.project ? `${parentChain.project.title} › ` : ''}
+                {parentChain.goal.title}
+              </button>
+            </div>
+          )}
 
           {(ticket.source_agent || ticket.source_session_id) && (
             <div>
