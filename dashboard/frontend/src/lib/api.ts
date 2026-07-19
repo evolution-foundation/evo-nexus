@@ -15,7 +15,20 @@ async function buildError(res: Response): Promise<Error> {
   let detail = ''
   try {
     const data = await res.clone().json()
-    detail = data?.error || data?.description || data?.message || ''
+    // Try common error shapes first, then plugin-preview-shaped responses
+    // (`{conflicts: [...], manifest, ...}`). Without this, plugin install
+    // 409s surfaced as "409 CONFLICT" with no hint at the actual reason
+    // (e.g. version mismatch).
+    detail =
+      data?.error ||
+      data?.description ||
+      data?.message ||
+      (Array.isArray(data?.conflicts) && data.conflicts.length > 0
+        ? data.conflicts.join(' • ')
+        : '') ||
+      (Array.isArray(data?.details) && data.details.length > 0
+        ? data.details.join(' • ')
+        : '')
   } catch {
     try {
       const text = await res.text()
@@ -73,11 +86,12 @@ export const api = {
     if (!res.ok) throw await buildError(res);
     return res.json();
   },
-  delete: async (path: string) => {
+  delete: async (path: string, body?: unknown) => {
     const res = await fetch(`${API}/api${path}`, {
       method: 'DELETE',
-      headers: { ...XHR_HEADER },
+      headers: { 'Content-Type': 'application/json', ...XHR_HEADER },
       credentials: 'include',
+      body: body ? JSON.stringify(body) : undefined,
     });
     if (!res.ok) throw await buildError(res);
     return res.json();

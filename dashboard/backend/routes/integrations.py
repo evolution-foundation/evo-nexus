@@ -23,7 +23,7 @@ bp = Blueprint("integrations", __name__)
 WORKSPACE = Path(__file__).resolve().parent.parent.parent.parent
 SKILLS_DIR = WORKSPACE / ".claude" / "skills"
 PLUGINS_DIR = WORKSPACE / "plugins"
-DB_PATH = WORKSPACE / "dashboard" / "data" / "dashboard.db"
+DB_PATH = WORKSPACE / "dashboard" / "data" / "evonexus.db"
 
 #
 # Each entry declares the env vars that must all be set for the integration to
@@ -51,6 +51,25 @@ INTEGRATIONS = [
     {"name": "Evolution Go", "keys": ["EVOLUTION_GO_KEY", "EVOLUTION_GO_URL"], "category": "messaging"},
     {"name": "Evo CRM", "keys": ["EVO_CRM_TOKEN", "EVO_CRM_URL"], "category": "crm"},
     {"name": "AI Image Creator", "keys": ["AI_IMG_CREATOR_"], "category": "creative", "prefix": True},
+    # Postiz — social publishing bridge. Called server-side by the dashboard
+    # after a human approves a publish gate, or by the MediaJob pipeline
+    # (social-media-production) after a MediaJob is approved. POSTIZ_API_KEY
+    # is denylisted from agent subprocess env (goal-ticket-unification).
+    # POSTIZ_INTEGRATION_*_ID pin a specific connected account when a
+    # platform has more than one. This entry is read-only status (configured
+    # bool) — use PUT /api/integrations/core/postiz for masked admin config.
+    {"name": "Postiz", "keys": [
+        "POSTIZ_URL", "POSTIZ_API_KEY",
+        "POSTIZ_INTEGRATION_INSTAGRAM_ID", "POSTIZ_INTEGRATION_YOUTUBE_ID",
+        "POSTIZ_INTEGRATION_LINKEDIN_ID", "POSTIZ_INTEGRATION_TIKTOK_ID",
+        "POSTIZ_ALLOWED_MEDIA_HOSTS",
+    ], "category": "social"},
+    # MinIO / S3 — media host for the publish flow (int-minio skill). Agents
+    # upload generated images here and pass the public URL to Postiz.
+    {"name": "MinIO / S3 Media", "keys": [
+        "MINIO_ENDPOINT", "MINIO_ACCESS_KEY", "MINIO_SECRET_KEY",
+        "MINIO_BUCKET", "MINIO_PUBLIC_BASE",
+    ], "category": "storage"},
     # Note: LLM providers (OpenAI, Anthropic, Gemini) are NOT listed here.
     # Agents/classifiers use Claude Code as the runner (subprocess); Knowledge
     # embedder accepts OpenAI as an opt-in via Knowledge Settings.

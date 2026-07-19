@@ -1,14 +1,15 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
-import { useToast } from './Toast'
 import Markdown from './Markdown'
 import { AgentAvatar } from './AgentAvatar'
+import TerminalHudPanel from './TerminalHudPanel'
+import CreateTicketModal, { type CreatedTicket } from './CreateTicketModal'
 import { useNotifications } from '../context/NotificationContext'
 import {
   Send, Square, ChevronDown, ChevronRight,
   FileCode, Terminal as TermIcon, CheckCircle2,
   Paperclip, X, File as FileIcon, ImageIcon, Upload,
   Ticket as TicketIcon, Plus, ShieldAlert, Check, Ban,
-  Pencil, Copy, FileText, Edit2,
+  Pencil, Copy, FileText, Edit2, Mic, Loader2,
 } from 'lucide-react'
 
 interface SkillItem {
@@ -24,6 +25,21 @@ interface SlashPopup {
   items: SkillItem[]
   selectedIndex: number
   anchorStart: number
+}
+
+// Same shape as AgentTerminal's HudState — kept as a separate local type
+// (not a shared import) since these two components don't otherwise share
+// types and a one-off duplication is simpler than introducing a shared
+// types module for a single interface.
+interface HudState {
+  busy: boolean
+  heavy: boolean
+  providerId: string
+  providerModel: string
+  tokensPerSec: number
+  totalTokens: number | null
+  bestTokensPerSec: number
+  shift: boolean
 }
 
 interface PermissionRequest {
@@ -80,7 +96,6 @@ type Status = 'idle' | 'connecting' | 'running' | 'error'
 
 export default function AgentChat({ agent, sessionId, accentColor = '#00FFA7', externalLoading = false, externalError = null, onPendingCountChange, onNeedsAttention, workingDir: _workingDir, threadTicketId: _threadTicketId, onTurnCompleted }: AgentChatProps) {
   const { dismissBySession } = useNotifications()
-  const toast = useToast()
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [input, setInput] = useState('')
   const [status, setStatus] = useState<Status>('idle')
@@ -91,6 +106,7 @@ export default function AgentChat({ agent, sessionId, accentColor = '#00FFA7', e
   const [ticketId, setTicketId] = useState<string | null>(null)
   const [tickets, setTickets] = useState<{ id: string; title: string; status: string }[]>([])
   const [showTicketPicker, setShowTicketPicker] = useState(false)
+  const [showCreateTicketModal, setShowCreateTicketModal] = useState(false)
   const [allSkills, setAllSkills] = useState<SkillItem[]>([])
   const [slashPopup, setSlashPopup] = useState<SlashPopup>({
     open: false, query: '', items: [], selectedIndex: 0, anchorStart: -1,
@@ -99,6 +115,7 @@ export default function AgentChat({ agent, sessionId, accentColor = '#00FFA7', e
   const [editingUuid, setEditingUuid] = useState<string | null>(null)
   const [editingText, setEditingText] = useState('')
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null)
+  const [hud, setHud] = useState<HudState | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
@@ -106,6 +123,74 @@ export default function AgentChat({ agent, sessionId, accentColor = '#00FFA7', e
   const pingRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const dragCounterRef = useRef(0)
   const subagentToolRef = useRef<{ toolName: string; toolUseId: string; input: string; parentToolUseId: string } | null>(null)
+
+  // Mic (terminal-ux-upgrade Sprint 6, moved here from the raw Terminal —
+  // this chat UI already has a working input row + attach button, so the
+  // mic reuses the same POST /api/transcribe proxy (Sprint 5) and drops the
+  // transcribed text into the same `input` state as typing would.
+  type MicState = 'idle' | 'recording' | 'transcribing'
+  const [micState, setMicState] = useState<MicState>('idle')
+  const [micError, setMicError] = useState<string | null>(null)
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
+  const audioChunksRef = useRef<Blob[]>([])
+
+  useEffect(() => {
+    return () => {
+      try {
+        mediaRecorderRef.current?.stream.getTracks().forEach((t) => t.stop())
+      } catch {
+        // stream may already be stopped/released — nothing to clean up
+      }
+    }
+  }, [])
+
+  async function toggleRecording() {
+    if (micState === 'recording') {
+      mediaRecorderRef.current?.stop()
+      return
+    }
+    if (micState === 'transcribing') return
+    setMicError(null)
+    let stream: MediaStream
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+    } catch (e) {
+      const name = e instanceof DOMException ? e.name : ''
+      setMicError(name === 'NotAllowedError' ? 'Permissão de microfone negada' : 'Não foi possível acessar o microfone')
+      return
+    }
+    const mr = new MediaRecorder(stream)
+    audioChunksRef.current = []
+    mr.ondataavailable = (e) => {
+      if (e.data.size > 0) audioChunksRef.current.push(e.data)
+    }
+    mr.onstop = async () => {
+      stream.getTracks().forEach((t) => t.stop())
+      setMicState('transcribing')
+      const blob = new Blob(audioChunksRef.current, { type: mr.mimeType || 'audio/webm' })
+      try {
+        const res = await fetch(`${TS_HTTP}/api/transcribe`, {
+          method: 'POST',
+          headers: { 'Content-Type': blob.type || 'audio/webm' },
+          body: blob,
+        })
+        const data = await res.json().catch(() => null)
+        if (!res.ok) throw new Error((data && data.error) || `HTTP ${res.status}`)
+        const text = ((data && data.text) || '').trim()
+        if (text) {
+          setInput((prev) => (prev ? `${prev} ${text}` : text))
+          inputRef.current?.focus()
+        }
+      } catch (e) {
+        setMicError(e instanceof Error ? e.message : 'Falha ao transcrever áudio')
+      } finally {
+        setMicState('idle')
+      }
+    }
+    mediaRecorderRef.current = mr
+    mr.start()
+    setMicState('recording')
+  }
 
   // Auto-dismiss global notifications when the user opens this session
   useEffect(() => {
@@ -136,29 +221,36 @@ export default function AgentChat({ agent, sessionId, accentColor = '#00FFA7', e
 
     setStatus('connecting')
     setErrorMsg(null)
+    setHud(null)
     let cancelled = false
-    let ws: WebSocket | null = null
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+    let reconnectAttempts = 0
 
-    ;(async () => {
-      // 1) HTTP preflight — fails fast on ECONNREFUSED so we can show a real error
-      //    instead of hanging in 'connecting' forever (same pattern as AgentTerminal).
-      try {
-        const res = await fetch(`${TS_HTTP}/api/health`)
-        if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      } catch {
-        if (cancelled) return
-        setStatus('error')
-        setErrorMsg(`Could not reach terminal-server at ${TS_HTTP}. Is it running?`)
-        return
-      }
+    // The server keeps the session alive when the socket drops — rejoining
+    // restores chat history, so a dead WS only needs a reconnect with
+    // capped exponential backoff instead of staying dead until remount.
+    function scheduleReconnect() {
+      if (cancelled || reconnectTimer) return
+      const delay = Math.min(1000 * 2 ** reconnectAttempts, 15000)
+      reconnectAttempts++
+      setStatus('connecting')
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null
+        connect()
+      }, delay)
+    }
+
+    function connect() {
       if (cancelled) return
 
-      // 2) Open WS
-      ws = new WebSocket(`${TS_WS}/ws`)
+      // Open WS
+      const ws = new WebSocket(`${TS_WS}/ws`)
       wsRef.current = ws
 
       ws.onopen = () => {
-        ws!.send(JSON.stringify({ type: 'join_session', sessionId }))
+        reconnectAttempts = 0
+        setErrorMsg(null)
+        ws.send(JSON.stringify({ type: 'join_session', sessionId }))
         setStatus('idle')
       }
 
@@ -273,26 +365,60 @@ export default function AgentChat({ agent, sessionId, accentColor = '#00FFA7', e
       }
 
       ws.onerror = () => {
-        if (cancelled) return
-        setStatus('error')
-        setErrorMsg('WebSocket error')
+        // onclose always follows onerror — reconnect is handled there.
       }
 
       ws.onclose = () => {
         if (pingRef.current) { clearInterval(pingRef.current); pingRef.current = null }
+        if (cancelled) return
+        scheduleReconnect()
       }
 
       pingRef.current = setInterval(() => {
-        if (ws!.readyState === WebSocket.OPEN) {
-          ws!.send(JSON.stringify({ type: 'ping' }))
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'ping' }))
         }
       }, 25000)
+    }
+
+    ;(async () => {
+      // HTTP preflight — fails fast on ECONNREFUSED so we can show a real error
+      // instead of hanging in 'connecting' forever (same pattern as AgentTerminal).
+      try {
+        const res = await fetch(`${TS_HTTP}/api/health`)
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      } catch {
+        if (cancelled) return
+        setStatus('error')
+        setErrorMsg(`Could not reach terminal-server at ${TS_HTTP}. Is it running?`)
+        return
+      }
+      if (cancelled) return
+      connect()
     })()
+
+    // Returning to the tab reconnects immediately instead of waiting out
+    // the backoff (browsers also throttle timers in hidden tabs, so the
+    // pending reconnect may not have fired while the tab was away).
+    const onVisible = () => {
+      if (document.hidden || cancelled) return
+      const ws = wsRef.current
+      if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer)
+        reconnectTimer = null
+      }
+      reconnectAttempts = 0
+      connect()
+    }
+    document.addEventListener('visibilitychange', onVisible)
 
     return () => {
       cancelled = true
+      document.removeEventListener('visibilitychange', onVisible)
+      if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null }
       if (pingRef.current) { clearInterval(pingRef.current); pingRef.current = null }
-      try { ws?.close() } catch {}
+      try { wsRef.current?.close() } catch {}
       wsRef.current = null
     }
   }, [sessionId])
@@ -346,28 +472,9 @@ export default function AgentChat({ agent, sessionId, accentColor = '#00FFA7', e
     }
   }, [sessionId])
 
-  const createAndBindTicket = useCallback(async () => {
-    const title = prompt('New ticket title:')
-    if (!title?.trim()) return
-    try {
-      const res = await fetch('/api/tickets', {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          title: title.trim(),
-          assignee_agent: agent,
-          priority: 'medium',
-          status: 'open',
-        }),
-      })
-      if (!res.ok) throw new Error('Failed to create')
-      const ticket = await res.json()
-      await bindTicket(ticket.id)
-    } catch (err: any) {
-      toast.error('Falha ao criar ticket', err?.message)
-    }
-  }, [agent, bindTicket])
+  const handleTicketCreated = useCallback(async (ticket: CreatedTicket) => {
+    await bindTicket(ticket.id)
+  }, [bindTicket])
 
   const respondToApproval = useCallback((requestId: string, approved: boolean) => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return
@@ -382,6 +489,22 @@ export default function AgentChat({ agent, sessionId, accentColor = '#00FFA7', e
     }
     if (msg.type === 'text_start' || msg.type === 'text_delta') {
       setIsThinking(false)
+    }
+
+    // HUD updates aren't chat messages — handled here (before the messages
+    // reducer below) instead of adding a case to that switch.
+    if (msg.type === 'hud_update') {
+      setHud({
+        busy: !!msg.busy,
+        heavy: !!msg.heavy,
+        providerId: msg.providerId || '',
+        providerModel: msg.providerModel || '',
+        tokensPerSec: typeof msg.tokensPerSec === 'number' ? msg.tokensPerSec : 0,
+        totalTokens: typeof msg.totalTokens === 'number' ? msg.totalTokens : null,
+        bestTokensPerSec: typeof msg.bestTokensPerSec === 'number' ? msg.bestTokensPerSec : 0,
+        shift: !!msg.shift,
+      })
+      return
     }
 
     setMessages(prev => {
@@ -902,6 +1025,120 @@ export default function AgentChat({ agent, sessionId, accentColor = '#00FFA7', e
   const inputDisabled = isConnecting || !!effectiveError
   const canSend = (input.trim().length > 0 || attachedFiles.length > 0) && !inputDisabled && status !== 'running'
 
+  // Top-row badges (connection status, ticket pill, pending-approval) used to
+  // be `absolute top-3 ...` overlays fixed to the container's top edge — that
+  // worked when the HUD dashboard row didn't exist yet, but the HUD row is
+  // itself normal-flow content starting at that same top edge, so once `hud`
+  // arrives the badges render on top of the LCD readout (reported live
+  // 2026-07-15: "No ticket" pill overlapping the tok/s panel). Fix: render
+  // these as normal flex children INSIDE the HUD row (flex-wrap, so mobile
+  // reflows instead of clipping) whenever hud exists; keep the original
+  // absolute-overlay behavior only for the pre-HUD state, where there's no
+  // HUD row underneath to collide with.
+  const cornerStatusBadge = (isConnecting || effectiveError) ? (
+    <div
+      className={hud
+        ? 'relative flex flex-shrink-0 items-center gap-1.5 px-2 py-1 rounded-full border text-[10px] max-w-[220px] sm:max-w-[280px]'
+        : 'absolute top-3 right-3 z-40 flex items-center gap-1.5 px-2 py-1 rounded-full border text-[10px] max-w-[280px]'}
+      style={{
+        background: effectiveError ? '#ef444415' : '#F59E0B15',
+        borderColor: effectiveError ? '#ef444440' : '#F59E0B40',
+        color: effectiveError ? '#ef4444' : '#F59E0B',
+      }}
+      title={effectiveError || 'Connecting...'}
+    >
+      <span
+        className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${effectiveError ? '' : 'animate-pulse'}`}
+        style={{ background: effectiveError ? '#ef4444' : '#F59E0B' }}
+      />
+      <span className="truncate">{effectiveError || 'Connecting...'}</span>
+    </div>
+  ) : null
+
+  const ticketPillBlock = sessionId ? (
+    <div className={hud ? 'relative flex-shrink-0' : 'absolute top-3 left-3 z-40'}>
+      <button
+        onClick={() => setShowTicketPicker(v => !v)}
+        className="flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-[10px] transition-colors"
+        style={{
+          background: ticketId ? `${accentColor}10` : '#161b22',
+          borderColor: ticketId ? `${accentColor}30` : '#21262d',
+          color: ticketId ? accentColor : '#667085',
+        }}
+        title={ticketId ? `Ticket #${ticketId.slice(0, 8)} attached` : 'Attach to a ticket'}
+      >
+        <TicketIcon size={11} />
+        <span className="font-mono">
+          {ticketId ? `#${ticketId.slice(0, 8)}` : 'No ticket'}
+        </span>
+      </button>
+      {showTicketPicker && (
+        <div
+          className="absolute mt-1.5 left-0 w-72 rounded-lg border bg-[#161b22] shadow-xl z-50 max-h-80 overflow-y-auto"
+          style={{ borderColor: '#21262d' }}
+        >
+          <div className="px-3 py-2 border-b border-[#21262d] text-[10px] text-[#667085] uppercase tracking-wider">
+            Attach to ticket
+          </div>
+          {ticketId && (
+            <button
+              onClick={() => bindTicket(null)}
+              className="w-full text-left px-3 py-2 text-xs text-red-400 hover:bg-white/5 border-b border-[#21262d] flex items-center gap-2"
+            >
+              <X size={12} /> Detach current ticket
+            </button>
+          )}
+          <button
+            onClick={() => { setShowTicketPicker(false); setShowCreateTicketModal(true) }}
+            className="w-full text-left px-3 py-2 text-xs text-[#e6edf3] hover:bg-white/5 border-b border-[#21262d] flex items-center gap-2"
+            style={{ color: accentColor }}
+          >
+            <Plus size={12} /> Create new ticket
+          </button>
+          {tickets.length === 0 ? (
+            <div className="px-3 py-3 text-[11px] text-[#667085] italic">
+              No open tickets for @{agent}
+            </div>
+          ) : (
+            tickets.map(t => (
+              <button
+                key={t.id}
+                onClick={() => bindTicket(t.id)}
+                className="w-full text-left px-3 py-2 text-xs hover:bg-white/5 transition-colors flex items-start gap-2"
+              >
+                <span
+                  className="font-mono text-[10px] mt-0.5 shrink-0"
+                  style={{ color: t.id === ticketId ? accentColor : '#667085' }}
+                >
+                  #{t.id.slice(0, 6)}
+                </span>
+                <span className="text-[#e6edf3] truncate flex-1">{t.title}</span>
+                {t.id === ticketId && <CheckCircle2 size={11} style={{ color: accentColor }} />}
+              </button>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  ) : null
+
+  const pendingApprovalBadge = pendingApprovals.length > 0 ? (
+    <div
+      className={hud
+        ? 'relative flex flex-shrink-0 items-center gap-1.5 px-2.5 py-1 rounded-full border text-[10px] animate-pulse'
+        : 'absolute top-3 z-40 flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-[10px] animate-pulse'}
+      style={{
+        ...(hud ? {} : { right: '12px' }),
+        background: '#F59E0B15',
+        borderColor: '#F59E0B40',
+        color: '#F59E0B',
+      }}
+    >
+      <ShieldAlert size={11} />
+      <span>{pendingApprovals.length === 1 ? 'Awaiting your approval' : `${pendingApprovals.length} awaiting approval`}</span>
+    </div>
+  ) : null
+
   return (
     <div
       className="flex flex-col h-full bg-[#0C111D] relative"
@@ -910,108 +1147,12 @@ export default function AgentChat({ agent, sessionId, accentColor = '#00FFA7', e
       onDragOver={handleDragOver}
       onDrop={handleDrop}
     >
-      {/* Corner status indicator */}
-      {(isConnecting || effectiveError) && (
-        <div
-          className="absolute top-3 right-3 z-40 flex items-center gap-1.5 px-2 py-1 rounded-full border text-[10px] max-w-[280px]"
-          style={{
-            background: effectiveError ? '#ef444415' : '#F59E0B15',
-            borderColor: effectiveError ? '#ef444440' : '#F59E0B40',
-            color: effectiveError ? '#ef4444' : '#F59E0B',
-          }}
-          title={effectiveError || 'Connecting...'}
-        >
-          <span
-            className={`w-1.5 h-1.5 rounded-full ${effectiveError ? '' : 'animate-pulse'}`}
-            style={{ background: effectiveError ? '#ef4444' : '#F59E0B' }}
-          />
-          <span className="truncate">{effectiveError || 'Connecting...'}</span>
-        </div>
-      )}
-
-      {/* Ticket binding pill (Feature 1.3) */}
-      {sessionId && (
-        <div className="absolute top-3 left-3 z-40">
-          <button
-            onClick={() => setShowTicketPicker(v => !v)}
-            className="flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-[10px] transition-colors"
-            style={{
-              background: ticketId ? `${accentColor}10` : '#161b22',
-              borderColor: ticketId ? `${accentColor}30` : '#21262d',
-              color: ticketId ? accentColor : '#667085',
-            }}
-            title={ticketId ? `Ticket #${ticketId.slice(0, 8)} attached` : 'Attach to a ticket'}
-          >
-            <TicketIcon size={11} />
-            <span className="font-mono">
-              {ticketId ? `#${ticketId.slice(0, 8)}` : 'No ticket'}
-            </span>
-          </button>
-          {showTicketPicker && (
-            <div
-              className="absolute mt-1.5 left-0 w-72 rounded-lg border bg-[#161b22] shadow-xl z-50 max-h-80 overflow-y-auto"
-              style={{ borderColor: '#21262d' }}
-            >
-              <div className="px-3 py-2 border-b border-[#21262d] text-[10px] text-[#667085] uppercase tracking-wider">
-                Attach to ticket
-              </div>
-              {ticketId && (
-                <button
-                  onClick={() => bindTicket(null)}
-                  className="w-full text-left px-3 py-2 text-xs text-red-400 hover:bg-white/5 border-b border-[#21262d] flex items-center gap-2"
-                >
-                  <X size={12} /> Detach current ticket
-                </button>
-              )}
-              <button
-                onClick={createAndBindTicket}
-                className="w-full text-left px-3 py-2 text-xs text-[#e6edf3] hover:bg-white/5 border-b border-[#21262d] flex items-center gap-2"
-                style={{ color: accentColor }}
-              >
-                <Plus size={12} /> Create new ticket
-              </button>
-              {tickets.length === 0 ? (
-                <div className="px-3 py-3 text-[11px] text-[#667085] italic">
-                  No open tickets for @{agent}
-                </div>
-              ) : (
-                tickets.map(t => (
-                  <button
-                    key={t.id}
-                    onClick={() => bindTicket(t.id)}
-                    className="w-full text-left px-3 py-2 text-xs hover:bg-white/5 transition-colors flex items-start gap-2"
-                  >
-                    <span
-                      className="font-mono text-[10px] mt-0.5 shrink-0"
-                      style={{ color: t.id === ticketId ? accentColor : '#667085' }}
-                    >
-                      #{t.id.slice(0, 6)}
-                    </span>
-                    <span className="text-[#e6edf3] truncate flex-1">{t.title}</span>
-                    {t.id === ticketId && <CheckCircle2 size={11} style={{ color: accentColor }} />}
-                  </button>
-                ))
-              )}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Pending approval badge */}
-      {pendingApprovals.length > 0 && (
-        <div
-          className="absolute top-3 z-40 flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-[10px] animate-pulse"
-          style={{
-            right: sessionId ? '12px' : '12px',
-            background: '#F59E0B15',
-            borderColor: '#F59E0B40',
-            color: '#F59E0B',
-          }}
-        >
-          <ShieldAlert size={11} />
-          <span>{pendingApprovals.length === 1 ? 'Awaiting your approval' : `${pendingApprovals.length} awaiting approval`}</span>
-        </div>
-      )}
+      {/* Top badges — absolute-overlay only until the HUD row exists (see
+          cornerStatusBadge/ticketPillBlock/pendingApprovalBadge above);
+          once hud arrives they move inline into the HUD row below instead. */}
+      {!hud && cornerStatusBadge}
+      {!hud && ticketPillBlock}
+      {!hud && pendingApprovalBadge}
 
       {/* Drag-drop overlay */}
       {isDragging && (
@@ -1031,6 +1172,20 @@ export default function AgentChat({ agent, sessionId, accentColor = '#00FFA7', e
           <p className="text-sm font-medium" style={{ color: accentColor }}>
             Solte os arquivos aqui
           </p>
+        </div>
+      )}
+
+      {/* Dashboard row (car-panel HUD, same component/shape as the Terminal
+          — see TerminalHudPanel.tsx) — only appears once the backend has
+          sent at least one hud_update, same as the Terminal. */}
+      {hud && (
+        <div className="flex-shrink-0 flex flex-wrap items-center gap-2 px-4 py-1.5 border-b border-[#21262d] bg-[#0d1117]">
+          <TerminalHudPanel hud={hud} accentColor={accentColor} />
+          {ticketPillBlock}
+          <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
+            {cornerStatusBadge}
+            {pendingApprovalBadge}
+          </div>
         </div>
       )}
 
@@ -1334,6 +1489,28 @@ export default function AgentChat({ agent, sessionId, accentColor = '#00FFA7', e
               }}
             />
 
+            {/* Mic button (Sprint 6) */}
+            <button
+              type="button"
+              onClick={toggleRecording}
+              disabled={micState === 'transcribing'}
+              title={
+                micState === 'recording' ? 'Parar gravação' :
+                micState === 'transcribing' ? 'Transcrevendo…' : 'Gravar áudio'
+              }
+              className={`flex-shrink-0 flex items-center justify-center w-7 h-7 rounded-lg transition-colors mb-0.5 ${
+                micState === 'recording'
+                  ? 'text-[#ef4444] bg-[#ef4444]/15'
+                  : micState === 'transcribing'
+                  ? 'cursor-wait text-[#4b5563]'
+                  : 'text-[#667085] hover:text-[#e6edf3] hover:bg-[#21262d]'
+              }`}
+            >
+              {micState === 'transcribing'
+                ? <Loader2 size={14} className="animate-spin" />
+                : <Mic size={14} />}
+            </button>
+
             {/* Textarea */}
             <textarea
               ref={inputRef}
@@ -1376,6 +1553,9 @@ export default function AgentChat({ agent, sessionId, accentColor = '#00FFA7', e
               </button>
             )}
           </div>
+          {micError && (
+            <div className="mt-1 text-[10px] text-[#ef4444]">{micError}</div>
+          )}
           </div>{/* end input row wrapper (relative) */}
         </div>
 
@@ -1392,6 +1572,14 @@ export default function AgentChat({ agent, sessionId, accentColor = '#00FFA7', e
           50% { opacity: 1; }
         }
       `}</style>
+
+      {showCreateTicketModal && (
+        <CreateTicketModal
+          onClose={() => setShowCreateTicketModal(false)}
+          onCreated={handleTicketCreated}
+          defaultAssigneeAgent={agent}
+        />
+      )}
     </div>
   )
 }

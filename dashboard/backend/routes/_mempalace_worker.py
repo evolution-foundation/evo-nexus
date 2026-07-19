@@ -5,7 +5,7 @@ Reads a JSON payload from stdin with:
     {
         "palace_path": "...",
         "status_file": "...",
-        "targets": [{"path": "...", "wing": "..."}]
+        "targets": [{"path": "...", "wing": "...", "room": "..."}]
     }
 
 Writes progress to the status file after every processed file so the
@@ -38,16 +38,23 @@ from mempalace.miner import (  # noqa: E402
 )
 
 
-def ensure_mempalace_yaml(source_path: str, wing_override: str | None) -> None:
+def ensure_mempalace_yaml(
+    source_path: str, wing_override: str | None, room_override: str | None = None
+) -> None:
     """Auto-create a minimal mempalace.yaml in the source dir if missing.
 
     mempalace.miner.load_config() calls sys.exit(1) when it can't find the
     config, which would abort the whole mining run. To let the dashboard
     index any folder the user adds without asking them to hand-write a yaml,
     we drop a sensible default in place on first run: one wing named after
-    the folder (or the label the user gave), and a single "general" room.
-    Users can still edit the file by hand later if they want to categorize
-    their content into multiple rooms.
+    the folder (or the label the user gave), and one room.
+
+    room_override lets the dashboard's hierarchy sync (Mission -> Wing,
+    Project -> Room) name that single room after the owning Project instead
+    of the generic "general" — every file under a Project's
+    workspace_folder_path then routes to a room named after that Project
+    (miner.detect_room's Priority 1 matches the folder path against the
+    room name). Users can still hand-edit the file later to add more rooms.
     """
     src = Path(source_path).expanduser().resolve()
     yaml_path = src / "mempalace.yaml"
@@ -56,10 +63,11 @@ def ensure_mempalace_yaml(source_path: str, wing_override: str | None) -> None:
         return
 
     wing = wing_override or src.name or "default"
+    room = room_override or "general"
     content = (
         f"wing: {wing}\n"
         "rooms:\n"
-        "  - name: general\n"
+        f"  - name: {room}\n"
         "    description: All project files\n"
     )
     try:
@@ -154,7 +162,7 @@ def main() -> None:
         # Drop a default mempalace.yaml in the source dir if it doesn't
         # have one yet. This lets the dashboard index any folder on first
         # run instead of failing silently with 100% skipped.
-        ensure_mempalace_yaml(source_path, t.get("wing"))
+        ensure_mempalace_yaml(source_path, t.get("wing"), t.get("room"))
 
         try:
             config = load_config(source_path)

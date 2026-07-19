@@ -3,6 +3,7 @@ import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import '@xterm/xterm/css/xterm.css'
+import TerminalHudPanel from './TerminalHudPanel'
 
 interface AgentTerminalProps {
   agent: string
@@ -73,6 +74,25 @@ const CC_WEB_WS = override
 
 type Status = 'connecting' | 'ready' | 'starting' | 'running' | 'error' | 'exited'
 
+// Terminal HUD (see workspace/development/features/terminal-hud) — only
+// populated for opencode REPL sessions; claude/openclaude (pty-interactive)
+// sessions never send 'hud_update', so this stays null for them and the
+// semaphore/gear panel just doesn't render.
+interface HudState {
+  busy: boolean
+  heavy: boolean
+  providerId: string
+  providerModel: string
+  tokensPerSec: number
+  totalTokens: number | null
+  bestTokensPerSec: number
+  shift: boolean
+}
+
+function isEioMessage(message: unknown) {
+  return /\bEIO\b|read EIO|write EIO/i.test(String(message || ''))
+}
+
 export default function AgentTerminal({ agent, sessionId: externalSessionId, workingDir, accentColor = '#00FFA7' }: AgentTerminalProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
@@ -82,6 +102,23 @@ export default function AgentTerminal({ agent, sessionId: externalSessionId, wor
   const pingRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const [status, setStatus] = useState<Status>('connecting')
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
+  const [hud, setHud] = useState<HudState | null>(null)
+  // opencode REPL sessions get a dedicated input bar below (see render) —
+  // xterm becomes output-only for them so typed keys never reach the
+  // onData forwarder below and the two input paths can't double-process a
+  // keystroke (that's what broke typing the first time this was tried).
+  // Ref because onData is registered once at mount and would otherwise
+  // only ever see the null `hud` from that first render (stale closure).
+  const isOpencodeRef = useRef(false)
+  const [inputValue, setInputValue] = useState('')
+  // Mirrors `status` for the onData closure below, which is registered once
+  // on mount and would otherwise only ever see the 'connecting' status from
+  // that first render (React state, not a ref, doesn't update in a stale
+  // closure).
+  const statusRef = useRef<Status>('connecting')
+  useEffect(() => {
+    statusRef.current = status
+  }, [status])
 
   // Mount xterm once
   useEffect(() => {
@@ -159,15 +196,35 @@ export default function AgentTerminal({ agent, sessionId: externalSessionId, wor
     // alternative.
     const AUTO_REPLY_RE = /^\x1b\[(\?|>)[0-9;]*[a-zA-Z]$|^\x1b\[[0-9;]*[nRct]$/
     term.onData((data) => {
-      // TEMP DEBUG: log every onData payload so we can see what's being
-      // sent to the pty on startup
-      const hex = Array.from(data).map((c) => (c as unknown as string).charCodeAt(0).toString(16).padStart(2, '0')).join('')
-      // eslint-disable-next-line no-console
-      console.log('[xterm onData]', data.length, 'B  hex:', hex, '  match:', AUTO_REPLY_RE.test(data))
+      // opencode sessions type into the dedicated input bar instead (see
+      // render) — xterm here is output-only for them.
+      if (isOpencodeRef.current) return
       if (AUTO_REPLY_RE.test(data)) return
-      if (wsRef.current?.readyState === WebSocket.OPEN) {
-        wsRef.current.send(JSON.stringify({ type: 'input', data }))
+      const ws = wsRef.current
+      if (!ws || ws.readyState !== WebSocket.OPEN) return
+
+      // The CLI process can die mid-session (provider crash, exit 1, etc.)
+      // without the user noticing beyond the small status badge. Forwarding
+      // raw keystrokes to a dead PTY used to just vanish — the server has
+      // nothing to write them to. Treat "user typed something" as an
+      // implicit restart request instead of a dead end.
+      if (statusRef.current === 'exited' || statusRef.current === 'error') {
+        statusRef.current = 'starting'
+        setStatus('starting')
+        term!.write('\r\n\x1b[33m[Restarting agent]\x1b[0m\r\n')
+        ws.send(JSON.stringify({
+          type: 'start_claude',
+          options: {
+            dangerouslySkipPermissions: true,
+            agent,
+            cols: term!.cols,
+            rows: term!.rows,
+          },
+        }))
+        return
       }
+
+      ws.send(JSON.stringify({ type: 'input', data }))
     })
 
     return () => {
@@ -184,14 +241,33 @@ export default function AgentTerminal({ agent, sessionId: externalSessionId, wor
     const term = termRef.current
     if (!term) return
 
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+    let reconnectAttempts = 0
+    let alreadyActive = false
+
+    // The server keeps the pty alive when the socket drops, so a dead WS
+    // only needs a rejoin — reconnect with capped exponential backoff
+    // instead of leaving the terminal dead until the component remounts.
+    function scheduleReconnect(sessionId: string) {
+      if (cancelled || reconnectTimer) return
+      const delay = Math.min(1000 * 2 ** reconnectAttempts, 15000)
+      reconnectAttempts++
+      setStatus('connecting')
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null
+        connect(sessionId, true)
+      }, delay)
+    }
+
     async function run() {
       setStatus('connecting')
       setErrorMsg(null)
+      isOpencodeRef.current = false
+      setHud(null)
       term!.clear()
 
       // 1) Use provided sessionId or find-or-create for this agent
       let sessionId: string
-      let alreadyActive = false
       try {
         if (externalSessionId) {
           // Use the specific session provided by the parent (multi-tab mode)
@@ -223,11 +299,35 @@ export default function AgentTerminal({ agent, sessionId: externalSessionId, wor
       if (cancelled) return
       sessionIdRef.current = sessionId
 
+      connect(sessionId, false)
+    }
+
+    function connect(sessionId: string, isReconnect: boolean) {
+      if (cancelled) return
+
       // 2) Open WS
       const ws = new WebSocket(`${CC_WEB_WS}/ws`)
       wsRef.current = ws
 
+      const startClaude = () => {
+        setStatus('starting')
+        const fit = fitRef.current
+        if (fit) {
+          try { fit.fit() } catch {}
+        }
+        ws.send(JSON.stringify({
+          type: 'start_claude',
+          options: {
+            dangerouslySkipPermissions: true,
+            agent,
+            cols: term!.cols,
+            rows: term!.rows,
+          },
+        }))
+      }
+
       ws.onopen = () => {
+        setErrorMsg(null)
         ws.send(JSON.stringify({ type: 'join_session', sessionId }))
       }
 
@@ -238,12 +338,18 @@ export default function AgentTerminal({ agent, sessionId: externalSessionId, wor
 
         switch (msg.type) {
           case 'session_joined': {
+            reconnectAttempts = 0
+            // On reconnect the server replays the whole buffer — clear
+            // first so it doesn't duplicate what's already on screen.
+            if (isReconnect) term!.clear()
             // Replay any buffered output
             if (Array.isArray(msg.outputBuffer)) {
               msg.outputBuffer.forEach((chunk: string) => term!.write(chunk))
             }
-            // If an agent is already running in this session, just attach
-            if (msg.active || alreadyActive) {
+            // If an agent is already running in this session, just attach.
+            // alreadyActive is only trustworthy on the first join — after a
+            // reconnect the process may have died while we were away.
+            if (msg.active || (!isReconnect && alreadyActive)) {
               setStatus('running')
               // Nudge a resize so the pty matches the current terminal size
               const fit = fitRef.current
@@ -251,6 +357,12 @@ export default function AgentTerminal({ agent, sessionId: externalSessionId, wor
                 try { fit.fit() } catch {}
                 ws.send(JSON.stringify({ type: 'resize', cols: term!.cols, rows: term!.rows }))
               }
+            } else if (isReconnect) {
+              // Process ended while we were disconnected. Restart it in-place
+              // so a transient proxy/browser socket drop doesn't force a full
+              // page refresh to get the agent moving again.
+              term!.write('\r\n\x1b[33m[Reconnected - restarting agent]\x1b[0m\r\n')
+              startClaude()
             } else {
               // Start Claude with --agent <agent>
               // Pass cols/rows up-front so the pty is born at the right
@@ -258,20 +370,7 @@ export default function AgentTerminal({ agent, sessionId: externalSessionId, wor
               // queries during startup can echo back into the prompt as
               // literal text ("0?1;2c0?1;2c") before the first resize
               // message arrives.
-              setStatus('starting')
-              const fit = fitRef.current
-              if (fit) {
-                try { fit.fit() } catch {}
-              }
-              ws.send(JSON.stringify({
-                type: 'start_claude',
-                options: {
-                  dangerouslySkipPermissions: true,
-                  agent,
-                  cols: term!.cols,
-                  rows: term!.rows,
-                },
-              }))
+              startClaude()
             }
             break
           }
@@ -290,23 +389,51 @@ export default function AgentTerminal({ agent, sessionId: externalSessionId, wor
             }
             break
           case 'exit':
-            setStatus('exited')
-            term!.write(`\r\n\x1b[33m[Process exited${msg.code != null ? ` with code ${msg.code}` : ''}]\x1b[0m\r\n`)
+            // EIO is no longer sent as a signal from the server — the
+            // server now forwards signal: null for PTY EIO events. But
+            // keep backward-compat: if an old server still sends 'EIO',
+            // treat it as a normal exit (not an error that restarts).
+            if (msg.signal === 'EIO') {
+              setStatus('exited')
+              term!.write(`\r\n\x1b[33m[Process exited${msg.code != null ? ` with code ${msg.code}` : ''}]\x1b[0m\r\n`)
+            } else {
+              setStatus('exited')
+              term!.write(`\r\n\x1b[33m[Process exited${msg.code != null ? ` with code ${msg.code}` : ''}]\x1b[0m\r\n`)
+            }
             break
           case 'error':
-            setStatus('error')
-            setErrorMsg(msg.message || 'Unknown error')
-            term!.write(`\r\n\x1b[31m[Error] ${msg.message || ''}\x1b[0m\r\n`)
+            // EIO no longer reaches here — the server converts it to a
+            // normal 'exit' event. If it somehow still arrives, treat it
+            // as an exit, not a retryable error.
+            if (isEioMessage(msg.message)) {
+              setStatus('exited')
+              term!.write('\r\n\x1b[33m[Process exited]\x1b[0m\r\n')
+            } else {
+              setStatus('error')
+              setErrorMsg(msg.message || 'Unknown error')
+              term!.write(`\r\n\x1b[31m[Error] ${msg.message || ''}\x1b[0m\r\n`)
+            }
             break
           case 'pong':
+            break
+          case 'hud_update':
+            isOpencodeRef.current = true
+            setHud({
+              busy: !!msg.busy,
+              heavy: !!msg.heavy,
+              providerId: msg.providerId || '',
+              providerModel: msg.providerModel || '',
+              tokensPerSec: typeof msg.tokensPerSec === 'number' ? msg.tokensPerSec : 0,
+              totalTokens: typeof msg.totalTokens === 'number' ? msg.totalTokens : null,
+              bestTokensPerSec: typeof msg.bestTokensPerSec === 'number' ? msg.bestTokensPerSec : 0,
+              shift: !!msg.shift,
+            })
             break
         }
       }
 
       ws.onerror = () => {
-        if (cancelled) return
-        setStatus('error')
-        setErrorMsg('WebSocket error')
+        // onclose always follows onerror — reconnect is handled there.
       }
 
       ws.onclose = () => {
@@ -314,6 +441,8 @@ export default function AgentTerminal({ agent, sessionId: externalSessionId, wor
           clearInterval(pingRef.current)
           pingRef.current = null
         }
+        if (cancelled) return
+        scheduleReconnect(sessionId)
       }
 
       // Keepalive
@@ -324,10 +453,33 @@ export default function AgentTerminal({ agent, sessionId: externalSessionId, wor
       }, 25000)
     }
 
+    // Returning to the tab reconnects immediately instead of waiting out
+    // the backoff (browsers also throttle timers in hidden tabs, so the
+    // pending reconnect may not have fired while the tab was away).
+    const onVisible = () => {
+      if (document.hidden || cancelled) return
+      const sessionId = sessionIdRef.current
+      if (!sessionId) return
+      const ws = wsRef.current
+      if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer)
+        reconnectTimer = null
+      }
+      reconnectAttempts = 0
+      connect(sessionId, true)
+    }
+    document.addEventListener('visibilitychange', onVisible)
+
     run()
 
     return () => {
       cancelled = true
+      document.removeEventListener('visibilitychange', onVisible)
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer)
+        reconnectTimer = null
+      }
       if (pingRef.current) {
         clearInterval(pingRef.current)
         pingRef.current = null
@@ -383,8 +535,91 @@ export default function AgentTerminal({ agent, sessionId: externalSessionId, wor
         )}
       </div>
 
+      {/* Dashboard row (car-panel HUD, Sprint 3) — own row instead of
+          crammed into the 32px status bar above, so the LCD readout has
+          real width to work with instead of truncating provider/model. */}
+      {hud && (
+        <div className="flex-shrink-0 flex items-center gap-2 px-4 py-1.5 border-b border-[#21262d] bg-[#0d1117]">
+          <TerminalHudPanel hud={hud} accentColor={accentColor} />
+
+          {/* Semaphore (Sprint 2): 3 fixed lights, only the active one
+              lit — green=waiting for a prompt, yellow=working,
+              red=last completed turn was heavy (>20k tokens). Priority
+              red > yellow > green when both could apply (a heavy turn
+              just finished right as a new one starts). Always visible,
+              including on mobile. */}
+          <div className="ml-auto flex items-center gap-1" title={
+            hud.heavy ? 'contexto/tokens grande no último turno'
+              : hud.busy ? 'trabalhando…'
+              : 'esperando prompt'
+          }>
+            {(['#22c55e', '#eab308', '#ef4444'] as const).map((color, i) => {
+              const activeIdx = hud.heavy ? 2 : hud.busy ? 1 : 0
+              const isActive = i === activeIdx
+              return (
+                <span
+                  key={color}
+                  className="inline-block h-1.5 w-1.5 rounded-full transition-opacity duration-200"
+                  style={{
+                    backgroundColor: color,
+                    opacity: isActive ? 1 : 0.18,
+                    boxShadow: isActive ? `0 0 5px ${color}aa` : 'none',
+                  }}
+                />
+              )
+            })}
+          </div>
+        </div>
+      )}
+
       {/* xterm */}
       <div ref={containerRef} className="flex-1 min-h-0 px-4 py-3 bg-[#0C111D]" />
+
+      {/* Dedicated input bar (opencode sessions only, i.e. hud !== null) —
+          keeps what you type visually separate from the AI's streamed
+          response instead of both sharing the same scrollback, which read
+          as confusing (couldn't tell where your line ended and the reply
+          began). xterm above is output-only for these sessions — see the
+          isOpencodeRef guard in the onData handler. */}
+      {hud && (
+        <form
+          onSubmit={(e) => {
+            e.preventDefault()
+            const text = inputValue.trim()
+            if (!text) return
+            const ws = wsRef.current
+            if (!ws || ws.readyState !== WebSocket.OPEN) return
+            // One WS message with the whole line + newline — the server's
+            // opencode keystroke handler iterates char-by-char and submits
+            // on \n either way, so this is equivalent to typing it out.
+            ws.send(JSON.stringify({ type: 'input', data: text + '\n' }))
+            setInputValue('')
+          }}
+          className="flex-shrink-0 flex items-end gap-2 border-t border-[#21262d] bg-[#0d1117] px-3 py-2"
+        >
+          <textarea
+            value={inputValue}
+            onChange={(e) => setInputValue(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault()
+                e.currentTarget.form?.requestSubmit()
+              }
+            }}
+            placeholder="Digite sua mensagem… (Shift+Enter para nova linha)"
+            rows={1}
+            className="flex-1 resize-none rounded-md border border-[#21262d] bg-[#0a0e14] px-3 py-1.5 text-[13px] leading-normal text-[#e6edf3] placeholder:text-[#4b5563] outline-none focus:border-[#3a4256]"
+          />
+          <button
+            type="submit"
+            disabled={!inputValue.trim() || hud.busy}
+            className="flex-shrink-0 rounded-md px-3 py-1.5 text-[12px] font-medium transition-opacity disabled:opacity-40"
+            style={{ background: accentColor, color: '#04120a' }}
+          >
+            Enviar
+          </button>
+        </form>
+      )}
     </div>
   )
 }

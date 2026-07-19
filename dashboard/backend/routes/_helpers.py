@@ -1,12 +1,36 @@
 """Shared helpers for route modules."""
 
 import logging
+import os
 import re
+import secrets
 from pathlib import Path
 
 log = logging.getLogger(__name__)
 
 WORKSPACE = Path(__file__).resolve().parent.parent.parent.parent
+
+
+def valid_approval_bridge_token(auth_header: str | None) -> bool:
+    """Constant-time check against APPROVAL_BRIDGE_TOKEN (goal-ticket-unification).
+
+    Dedicated credential for the shared Telegram approval-decision endpoint —
+    deliberately NOT DASHBOARD_API_TOKEN, so an agent that inherits the admin
+    token cannot approve its own publish/decomposition gate (Vault V1). Used
+    both by app.py's before_request (to let the bot's bridge-token request
+    reach the route at all, V11) and by routes/approvals.py's own handler (to
+    reject a valid admin token that got the request past before_request via
+    the normal login flow, V1). Shared here instead of duplicated so both
+    call sites can't drift.
+    """
+    expected = os.environ.get("APPROVAL_BRIDGE_TOKEN", "").strip()
+    if not expected:
+        return False
+    header = auth_header or ""
+    if not header.startswith("Bearer "):
+        return False
+    provided = header[len("Bearer "):].strip()
+    return bool(provided) and secrets.compare_digest(provided, expected)
 
 
 def parse_frontmatter(text: str) -> dict:

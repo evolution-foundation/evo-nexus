@@ -62,6 +62,13 @@ dashboard/frontend/node_modules/
 dashboard/terminal-server/node_modules/
 dashboard/frontend/dist/
 
+# social-media-production: media-worker's pinned HyperFrames install +
+# downloaded chrome-headless-shell binary — package.json/package-lock.json
+# ARE tracked (deterministic install source of truth), the resolved
+# node_modules/browser download are not.
+media_worker/node_modules/
+media_worker/chrome-headless-shell/
+
 # ── Evo Method (separate project) ────────
 _evo/
 _evo-output/
@@ -134,3 +141,29 @@ plugins/*/
 
 # ── Brain Repo raw transcripts (not backed up to brain repo) ──
 memory/raw-transcripts/
+
+# ── Private root-level workspace data (business content, runtime) ──
+# These top-level folders hold the user's private operational output and must
+# never be committed (especially not in a public PR). Mirrors workspace/** rule.
+/community/
+/courses/
+/daily-logs/
+/finance/
+/logs/
+/meetings/
+/projects/
+/social/
+/strategy/
+
+# ── Local backups & reload triggers ──
+*.bak.telegram
+.env.bak*
+config/.reload
+config/social.env
+
+# ── One-off integration test scaffolding (may contain hardcoded creds) ──
+scripts/ghost_integration_test.py
+.git-rewrite
+
+# Local Portainer import with Postiz secrets
+/postiz-vps.env

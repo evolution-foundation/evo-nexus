@@ -11,6 +11,7 @@ import argparse
 import json
 import os
 import platform
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -224,7 +225,59 @@ def collect_files() -> list[str]:
         if full_path.is_file():
             files.add(line)
 
+    # Explicit env candidates — in Swarm the persistent env lives at
+    # config/.env (with /workspace/.env symlinked to it), so both paths
+    # must land in the backup regardless of what git ls-files reports.
+    for candidate in (".env", "config/.env"):
+        p = WORKSPACE / candidate
+        if p.is_file():
+            files.add(candidate)
+
     return sorted(files)
+
+
+SQLITE_MAGIC = b"SQLite format 3\x00"
+
+
+def _is_sqlite_file(path: Path) -> bool:
+    """Detect a SQLite database by its 16-byte header magic."""
+    try:
+        with open(path, "rb") as f:
+            return f.read(16) == SQLITE_MAGIC
+    except OSError:
+        return False
+
+
+def _snapshot_sqlite(src: Path, tmpdir: Path, index: int) -> Path | None:
+    """Create a consistent point-in-time copy of a (possibly live) SQLite DB.
+
+    Uses the SQLite Online Backup API, which folds pending WAL frames into
+    the copy — copying the bare .db file of a WAL-mode database that is
+    being written to can produce a malformed or stale backup.
+
+    Returns the snapshot path, or None if the backup API failed (caller
+    falls back to a raw copy with a warning).
+    """
+    dst = tmpdir / f"{index:04d}-{src.name}"
+    src_conn = None
+    dst_conn = None
+    try:
+        src_conn = sqlite3.connect(f"file:{src}?mode=ro", uri=True)
+        dst_conn = sqlite3.connect(dst)
+        src_conn.backup(dst_conn)
+        check = dst_conn.execute("PRAGMA quick_check").fetchone()
+        if not check or check[0] != "ok":
+            dst.unlink(missing_ok=True)
+            return None
+        return dst
+    except sqlite3.Error:
+        dst.unlink(missing_ok=True)
+        return None
+    finally:
+        if dst_conn is not None:
+            dst_conn.close()
+        if src_conn is not None:
+            src_conn.close()
 
 
 def _format_size(size_bytes: int) -> str:
@@ -253,46 +306,72 @@ def backup_local(s3_upload: bool = False, s3_bucket: str = None) -> Path:
     zip_name = f"evonexus-backup-{timestamp}.zip"
     zip_path = BACKUPS_DIR / zip_name
 
-    # Build manifest
-    file_entries = []
-    total_size = 0
-    for rel in files:
-        full = WORKSPACE / rel
-        size = full.stat().st_size
-        total_size += size
-        file_entries.append({"path": rel, "size": size})
+    with tempfile.TemporaryDirectory(prefix="evonexus-backup-") as tmp:
+        tmpdir = Path(tmp)
 
-    manifest = {
-        "version": _get_version(),
-        "workspace_name": _get_workspace_name(),
-        "created_at": datetime.now().isoformat(),
-        "hostname": platform.node(),
-        "file_count": len(files),
-        "total_size": total_size,
-        "files": file_entries,
-    }
+        # Resolve the actual source for each file. Live SQLite databases get
+        # a consistent snapshot (WAL folded in); everything else is zipped
+        # straight from the workspace.
+        sources: dict[str, Path] = {}
+        snapshot_failures: list[str] = []
+        for i, rel in enumerate(files):
+            full = WORKSPACE / rel
+            if _is_sqlite_file(full):
+                snap = _snapshot_sqlite(full, tmpdir, i)
+                if snap is None:
+                    snapshot_failures.append(rel)
+                    sources[rel] = full
+                else:
+                    sources[rel] = snap
+            else:
+                sources[rel] = full
 
-    # Create ZIP
-    if HAS_RICH:
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
-            TextColumn("{task.completed}/{task.total}"),
-            console=console,
-        ) as progress:
-            task = progress.add_task("Compressing...", total=len(files))
+        for rel in snapshot_failures:
+            msg = f"SQLite snapshot failed for {rel} — raw copy included (may be inconsistent)"
+            if HAS_RICH:
+                console.print(f"  [yellow]⚠ {msg}[/]")
+            else:
+                print(f"  {YELLOW}⚠ {msg}{RESET}")
+
+        # Build manifest (sizes reflect what actually goes into the ZIP)
+        file_entries = []
+        total_size = 0
+        for rel in files:
+            size = sources[rel].stat().st_size
+            total_size += size
+            file_entries.append({"path": rel, "size": size})
+
+        manifest = {
+            "version": _get_version(),
+            "workspace_name": _get_workspace_name(),
+            "created_at": datetime.now().isoformat(),
+            "hostname": platform.node(),
+            "file_count": len(files),
+            "total_size": total_size,
+            "files": file_entries,
+        }
+
+        # Create ZIP
+        if HAS_RICH:
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(),
+                TextColumn("{task.completed}/{task.total}"),
+                console=console,
+            ) as progress:
+                task = progress.add_task("Compressing...", total=len(files))
+                with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                    zf.writestr("manifest.json", json.dumps(manifest, indent=2))
+                    for rel in files:
+                        zf.write(sources[rel], rel)
+                        progress.advance(task)
+        else:
+            print(f"  Compressing {len(files)} files...")
             with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
                 zf.writestr("manifest.json", json.dumps(manifest, indent=2))
                 for rel in files:
-                    zf.write(WORKSPACE / rel, rel)
-                    progress.advance(task)
-    else:
-        print(f"  Compressing {len(files)} files...")
-        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr("manifest.json", json.dumps(manifest, indent=2))
-            for rel in files:
-                zf.write(WORKSPACE / rel, rel)
+                    zf.write(sources[rel], rel)
 
     zip_size = zip_path.stat().st_size
 
@@ -375,6 +454,20 @@ def cleanup_old_backups(s3_bucket: str = None):
 # ── Restore ──────────────────────────────────────
 
 
+def _remove_stale_wal(dest: Path, data: bytes) -> None:
+    """After replacing a SQLite DB, drop leftover -wal/-shm from the old DB.
+
+    Backups store WAL-folded snapshots (no -wal/-shm in the ZIP). If the
+    destination had a live WAL-mode database, its journal files survive the
+    overwrite and SQLite then reports 'database disk image is malformed'
+    when pairing them with the freshly restored file.
+    """
+    if data[:16] != SQLITE_MAGIC:
+        return
+    for suffix in ("-wal", "-shm"):
+        Path(str(dest) + suffix).unlink(missing_ok=True)
+
+
 def restore_local(zip_path: Path, mode: str = "merge"):
     """Restore workspace from a ZIP backup."""
     banner("Backup — Restore")
@@ -417,6 +510,7 @@ def restore_local(zip_path: Path, mode: str = "merge"):
                         dest.parent.mkdir(parents=True, exist_ok=True)
                         data = zf.read(rel)
                         dest.write_bytes(data)
+                        _remove_stale_wal(dest, data)
                         restored += 1
                     progress.advance(task)
         else:
@@ -434,6 +528,7 @@ def restore_local(zip_path: Path, mode: str = "merge"):
                     dest.parent.mkdir(parents=True, exist_ok=True)
                     data = zf.read(rel)
                     dest.write_bytes(data)
+                    _remove_stale_wal(dest, data)
                     restored += 1
 
     if HAS_RICH:

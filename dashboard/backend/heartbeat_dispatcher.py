@@ -26,6 +26,12 @@ WORKSPACE = Path(__file__).resolve().parent.parent.parent
 _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="hb-worker")
 _schedule_lock = threading.Lock()
 
+# Execution lock — prevents same heartbeat_id from running concurrently.
+# Slot is reserved in dispatch() (main thread) before _executor.submit(),
+# released in _run()'s finally block (worker thread).
+_running: set[str] = set()
+_running_lock = threading.Lock()
+
 # Debounce window (seconds)
 DEBOUNCE_SECONDS = 30
 
@@ -130,6 +136,15 @@ def dispatch(heartbeat_id: str, trigger_type: str, payload: dict | None = None) 
     # Generate run_id
     run_id = str(uuid.uuid4())
 
+    # Reserve execution slot — atomic check+add under lock.
+    # Done in main thread (not in _run) to avoid TOCTOU race between workers.
+    with _running_lock:
+        if heartbeat_id in _running:
+            _record_trigger(heartbeat_id, trigger_type, payload, coalesced_into=None)
+            print(f"[dispatcher] {heartbeat_id} already running, coalesced run_id={run_id}", flush=True)
+            return False, None
+        _running.add(heartbeat_id)
+
     def _run():
         from heartbeat_runner import run_heartbeat
         try:
@@ -142,6 +157,9 @@ def dispatch(heartbeat_id: str, trigger_type: str, payload: dict | None = None) 
             )
         except Exception as exc:
             print(f"[dispatcher] ERROR running {heartbeat_id} run_id={run_id}: {exc}", flush=True)
+        finally:
+            with _running_lock:
+                _running.discard(heartbeat_id)
 
     print(f"[dispatcher] dispatching {heartbeat_id} trigger_type={trigger_type} run_id={run_id}", flush=True)
     _executor.submit(_run)
@@ -189,15 +207,15 @@ def _sync_heartbeats_to_db():
                     """INSERT INTO heartbeats
                        (id, agent, interval_seconds, max_turns, timeout_seconds,
                         lock_timeout_seconds, wake_triggers, enabled, goal_id,
-                        required_secrets, decision_prompt, source_plugin,
+                        required_secrets, decision_prompt, handler, source_plugin,
                         created_at, updated_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         hb.id, hb.agent, hb.interval_seconds, hb.max_turns,
                         hb.timeout_seconds, hb.lock_timeout_seconds,
                         json.dumps(hb.wake_triggers), int(hb.enabled), hb.goal_id,
                         json.dumps(hb.required_secrets), hb.decision_prompt,
-                        hb.source_plugin,
+                        hb.handler, hb.source_plugin,
                         now, now,
                     ),
                 )
@@ -207,14 +225,14 @@ def _sync_heartbeats_to_db():
                     """UPDATE heartbeats SET
                        agent=?, interval_seconds=?, max_turns=?, timeout_seconds=?,
                        lock_timeout_seconds=?, wake_triggers=?, goal_id=?,
-                       required_secrets=?, decision_prompt=?, source_plugin=?,
+                       required_secrets=?, decision_prompt=?, handler=?, source_plugin=?,
                        updated_at=?
                        WHERE id=?""",
                     (
                         hb.agent, hb.interval_seconds, hb.max_turns, hb.timeout_seconds,
                         hb.lock_timeout_seconds, json.dumps(hb.wake_triggers), hb.goal_id,
                         json.dumps(hb.required_secrets), hb.decision_prompt,
-                        hb.source_plugin, now,
+                        hb.handler, hb.source_plugin, now,
                         hb.id,
                     ),
                 )
@@ -224,8 +242,47 @@ def _sync_heartbeats_to_db():
         conn.close()
 
 
+def _seconds_since_last_run(heartbeat_id: str) -> float | None:
+    """Seconds since this heartbeat's most recent run started, or None if it
+    has never run. Used by register_interval_jobs to catch up on heartbeats
+    that are overdue relative to their OWN history — see that function's
+    docstring for why this matters.
+    """
+    conn = _get_db()
+    try:
+        row = conn.execute(
+            "SELECT started_at FROM heartbeat_runs WHERE heartbeat_id = ? "
+            "ORDER BY started_at DESC LIMIT 1",
+            (heartbeat_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    if not row or not row["started_at"]:
+        return None
+    try:
+        last = datetime.strptime(row["started_at"], "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+    return (datetime.now(timezone.utc) - last).total_seconds()
+
+
 def register_interval_jobs():
-    """Register schedule jobs for all heartbeats with 'interval' wake trigger."""
+    """Register schedule jobs for all heartbeats with 'interval' wake trigger.
+
+    `schedule.every(N).do(job)` always counts the first firing from THIS
+    call, not from any persisted history — so a heartbeat that's mid-
+    interval when the process restarts (a redeploy, a crash, `reload_config`
+    after a plugin install) has its countdown reset to the full N, and
+    starts looking "overdue" relative to its configured cadence even though
+    nothing is actually broken. Confirmed live 2026-07-14: several redeploys
+    in a short window left atlas-4h/zara-2h/flux-6h looking hours behind
+    schedule purely because of restart timing, not a stuck dispatcher.
+    Fires an immediate catch-up dispatch for anything already overdue by its
+    own last-run history before/alongside registering the periodic job, so
+    a redeploy costs at most one wasted-looking cycle, never a multi-hour
+    stall. dispatch()'s existing 30s debounce makes this safe to call
+    repeatedly (e.g. on every plugin-triggered reload_config).
+    """
     _sync_heartbeats_to_db()
     heartbeats = _load_enabled_heartbeats()
 
@@ -244,6 +301,15 @@ def register_interval_jobs():
 
         interval_secs = hb["interval_seconds"]
         hb_id = hb["id"]
+
+        # Catch-up: if this heartbeat is already overdue by its own history
+        # (last real run further back than its interval), fire it now
+        # instead of waiting a full fresh interval from this process start.
+        elapsed = _seconds_since_last_run(hb_id)
+        if elapsed is not None and elapsed >= interval_secs:
+            print(f"[dispatcher] {hb_id} overdue ({elapsed:.0f}s since last run, "
+                  f"interval {interval_secs}s) — catch-up dispatch", flush=True)
+            dispatch(hb_id, "interval")
 
         # Use schedule library (same as scheduler.py)
         # Tag the job so we can cancel it if needed
@@ -276,6 +342,7 @@ def register_interval_jobs():
             registered += 1
 
     print(f"[dispatcher] {registered} interval jobs registered", flush=True)
+    return registered
 
 
 def start_dispatcher_thread():

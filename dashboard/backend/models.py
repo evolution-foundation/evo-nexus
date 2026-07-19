@@ -116,6 +116,7 @@ ALL_RESOURCES = {
     "heartbeats": ["view", "execute", "manage"],
     "goals": ["view", "execute", "manage"],
     "tickets": ["view", "execute", "manage"],
+    "media_jobs": ["view", "execute", "manage"],
 }
 
 # Agent layer mapping (file-stem names)
@@ -194,6 +195,7 @@ BUILTIN_ROLES = {
             "knowledge": ["view", "manage"],
             "heartbeats": ["view", "execute"],
             "tickets": ["view", "execute"],
+            "media_jobs": ["view", "execute"],
         },
     },
     "viewer": {
@@ -219,6 +221,7 @@ BUILTIN_ROLES = {
             "knowledge": ["view"],
             "heartbeats": ["view"],
             "tickets": ["view"],
+            "media_jobs": ["view"],
         },
     },
 }
@@ -498,6 +501,7 @@ class Heartbeat(db.Model):
     goal_id = db.Column(db.String(100), nullable=True)  # FK stub for Feature 1.2
     required_secrets = db.Column(db.Text, nullable=True, default="[]")  # JSON array
     decision_prompt = db.Column(db.Text, nullable=False)
+    handler = db.Column(db.Text, nullable=True)  # Python handler path (e.g., "plugin_integration_health.tick")
     source_plugin = db.Column(db.Text, nullable=True)  # Wave 1.1: plugin slug if contributed by a plugin
     created_at = db.Column(db.String(30), default=lambda: datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"))
     updated_at = db.Column(db.String(30), default=lambda: datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"), onupdate=lambda: datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"))
@@ -628,6 +632,7 @@ class Mission(db.Model):
     current_value = db.Column(db.Float, nullable=False, default=0)
     due_date = db.Column(db.String(20))
     status = db.Column(db.String(20), nullable=False, default="active")
+    completed_at = db.Column(db.String(30), nullable=True)
     created_at = db.Column(db.String(30), nullable=False)
     updated_at = db.Column(db.String(30), nullable=False)
 
@@ -644,6 +649,7 @@ class Mission(db.Model):
             "current_value": self.current_value,
             "due_date": self.due_date,
             "status": self.status,
+            "completed_at": self.completed_at,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
@@ -662,6 +668,7 @@ class GoalProject(db.Model):
     description = db.Column(db.Text)
     workspace_folder_path = db.Column(db.String(500))
     status = db.Column(db.String(20), nullable=False, default="active")
+    completed_at = db.Column(db.String(30), nullable=True)
     created_at = db.Column(db.String(30), nullable=False)
     updated_at = db.Column(db.String(30), nullable=False)
 
@@ -676,6 +683,7 @@ class GoalProject(db.Model):
             "description": self.description,
             "workspace_folder_path": self.workspace_folder_path,
             "status": self.status,
+            "completed_at": self.completed_at,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
@@ -698,6 +706,13 @@ class Goal(db.Model):
     current_value = db.Column(db.Float, nullable=False, default=0.0)
     due_date = db.Column(db.String(20))
     status = db.Column(db.String(20), nullable=False, default="active")
+    completed_at = db.Column(db.String(30), nullable=True)
+    # Self-FK for agent-authored sub-goals (goal-ticket-unification). NULL =
+    # top-level, human-created goal; set = sub-goal proposed by goal-planner.
+    parent_goal_id = db.Column(db.Integer, db.ForeignKey("goals.id", ondelete="SET NULL"), nullable=True)
+    # NULL for top-level goals; 'proposed'|'approved'|'rejected' for sub-goals
+    # awaiting/past the decomposition-gate Telegram approval.
+    decomposition_state = db.Column(db.String(20), nullable=True)
     created_at = db.Column(db.String(30), nullable=False)
     updated_at = db.Column(db.String(30), nullable=False)
 
@@ -716,6 +731,9 @@ class Goal(db.Model):
             "current_value": self.current_value,
             "due_date": self.due_date,
             "status": self.status,
+            "completed_at": self.completed_at,
+            "parent_goal_id": self.parent_goal_id,
+            "decomposition_state": self.decomposition_state,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
@@ -737,6 +755,8 @@ class GoalTask(db.Model):
     locked_at = db.Column(db.String(30))
     locked_by = db.Column(db.String(100))
     due_date = db.Column(db.String(20))
+    started_at = db.Column(db.String(30), nullable=True)
+    completed_at = db.Column(db.String(30), nullable=True)
     created_at = db.Column(db.String(30), nullable=False)
     updated_at = db.Column(db.String(30), nullable=False)
 
@@ -752,6 +772,8 @@ class GoalTask(db.Model):
             "locked_at": self.locked_at,
             "locked_by": self.locked_by,
             "due_date": self.due_date,
+            "started_at": self.started_at,
+            "completed_at": self.completed_at,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
@@ -792,6 +814,16 @@ class Ticket(db.Model):
     priority_rank = db.Column(db.Integer, nullable=False, default=2)  # derived
     project_id = db.Column(db.Integer, db.ForeignKey("projects.id", ondelete="SET NULL"), nullable=True)
     goal_id = db.Column(db.Integer, db.ForeignKey("goals.id", ondelete="SET NULL"), nullable=True)
+    # Legacy FK to the goal_task this ticket used to mirror. goal_tasks is now
+    # frozen (goal-ticket-unification): current_value is computed solely from
+    # tickets.goal_id (see heartbeat_outcome._recompute_goal_from_tickets),
+    # so task_id is read-only historical linkage, not a rollup input.
+    task_id = db.Column(db.Integer, db.ForeignKey("goal_tasks.id", ondelete="SET NULL"), nullable=True)
+    due_date = db.Column(db.String(20), nullable=True)
+    requires_human_approval = db.Column(db.Integer, nullable=False, default=0)
+    # App-level enum (no CHECK constraint): 'pending_human_approval' |
+    # 'agent_blocked' | 'review_exhausted'. See .claude/rules/tickets.md.
+    blocked_reason = db.Column(db.String(30), nullable=True)
     assignee_agent = db.Column(db.String(100), nullable=True)
     locked_at = db.Column(db.String(30), nullable=True)
     locked_by = db.Column(db.String(100), nullable=True)
@@ -822,6 +854,10 @@ class Ticket(db.Model):
             "priority_rank": self.priority_rank,
             "project_id": self.project_id,
             "goal_id": self.goal_id,
+            "task_id": self.task_id,
+            "due_date": self.due_date,
+            "requires_human_approval": self.requires_human_approval,
+            "blocked_reason": self.blocked_reason,
             "assignee_agent": self.assignee_agent,
             "locked_at": self.locked_at,
             "locked_by": self.locked_by,
@@ -839,6 +875,201 @@ class Ticket(db.Model):
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "resolved_at": self.resolved_at,
+        }
+
+
+class PendingApproval(db.Model):
+    """Shared publish + decomposition Telegram approval gate (goal-ticket-unification)."""
+
+    __tablename__ = "pending_approvals"
+    __table_args__ = (
+        db.CheckConstraint(
+            "gate_type IN ('publish','decomposition','project_suggestion','goal_suggestion')",
+            name="ck_approval_gate_type",
+        ),
+        db.CheckConstraint(
+            "status IN ('pending','approved','rejected','expired','published')",
+            name="ck_approval_status",
+        ),
+    )
+
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    gate_type = db.Column(db.String(20), nullable=False)
+    ticket_id = db.Column(db.String(36), db.ForeignKey("tickets.id", ondelete="CASCADE"), nullable=True)
+    goal_id = db.Column(db.Integer, db.ForeignKey("goals.id", ondelete="CASCADE"), nullable=True)
+    # ai-hierarchy-suggestions (Mission -> Wing... no, Mission -> Project
+    # suggestion, Project -> Goal suggestion): the "parent" for those two
+    # gate_types isn't a goal, so they get their own FK columns rather than
+    # overloading goal_id (an unrelated mission/project id could numerically
+    # collide with a real goal id and trigger the wrong ON DELETE CASCADE).
+    mission_id = db.Column(db.Integer, db.ForeignKey("missions.id", ondelete="CASCADE"), nullable=True)
+    project_id = db.Column(db.Integer, db.ForeignKey("projects.id", ondelete="CASCADE"), nullable=True)
+    agent = db.Column(db.String(100), nullable=True)
+    attempt = db.Column(db.Integer, nullable=False, default=0)
+    idempotency_key = db.Column(db.String(200), unique=True, nullable=False)
+    status = db.Column(db.String(20), nullable=False, default="pending")
+    payload = db.Column(db.Text, nullable=True)
+    telegram_chat_id = db.Column(db.String(50), nullable=True)
+    telegram_message_id = db.Column(db.Integer, nullable=True)
+    approver_from_id = db.Column(db.String(50), nullable=True)
+    reject_reason = db.Column(db.Text, nullable=True)
+    decided_by = db.Column(db.String(100), nullable=True)
+    created_at = db.Column(db.String(30), nullable=False)
+    nudged_at = db.Column(db.String(30), nullable=True)
+    decided_at = db.Column(db.String(30), nullable=True)
+    expires_at = db.Column(db.String(30), nullable=False)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "gate_type": self.gate_type,
+            "ticket_id": self.ticket_id,
+            "goal_id": self.goal_id,
+            "mission_id": self.mission_id,
+            "project_id": self.project_id,
+            "agent": self.agent,
+            "attempt": self.attempt,
+            "idempotency_key": self.idempotency_key,
+            "status": self.status,
+            "payload": self.payload,
+            "telegram_chat_id": self.telegram_chat_id,
+            "telegram_message_id": self.telegram_message_id,
+            "approver_from_id": self.approver_from_id,
+            "reject_reason": self.reject_reason,
+            "decided_by": self.decided_by,
+            "created_at": self.created_at,
+            "nudged_at": self.nudged_at,
+            "decided_at": self.decided_at,
+            "expires_at": self.expires_at,
+        }
+
+
+# --------------- MediaJob model (social-media-production) ---------------
+
+MEDIA_JOB_PLATFORMS = ("instagram", "youtube", "linkedin", "tiktok")
+MEDIA_JOB_PUBLICATION_MODES = ("draft", "schedule")
+
+
+class MediaJob(db.Model):
+    """A social-media video production job: brief -> HyperFrames render ->
+    ffprobe validation -> human review -> Postiz upload -> draft/schedule.
+
+    Status is never written directly by route code — every transition must
+    go through media_state_machine.assert_transition() first (see that
+    module for the full matrix and the reasoning behind each edge).
+    """
+
+    __tablename__ = "media_jobs"
+    __table_args__ = (
+        db.CheckConstraint(
+            "platform IN ('instagram','youtube','linkedin','tiktok')",
+            name="ck_media_job_platform",
+        ),
+        db.CheckConstraint(
+            "publication_mode IN ('draft','schedule')",
+            name="ck_media_job_publication_mode",
+        ),
+        db.CheckConstraint(
+            "(locked_at IS NULL AND locked_by IS NULL) OR (locked_at IS NOT NULL AND locked_by IS NOT NULL)",
+            name="ck_media_job_lock_consistency",
+        ),
+    )
+
+    id = db.Column(db.String(36), primary_key=True)  # uuid4
+    project_id = db.Column(db.Integer, db.ForeignKey("projects.id", ondelete="SET NULL"), nullable=True)
+    campaign_id = db.Column(db.String(200), nullable=True)
+    goal_id = db.Column(db.Integer, db.ForeignKey("goals.id", ondelete="SET NULL"), nullable=True)
+    task_id = db.Column(db.Integer, db.ForeignKey("goal_tasks.id", ondelete="SET NULL"), nullable=True)
+    created_by = db.Column(db.String(100), nullable=False, default="system")
+    title = db.Column(db.String(500), nullable=False)
+    brief = db.Column(db.Text, nullable=True)
+    platform = db.Column(db.String(20), nullable=False)
+    postiz_integration_id = db.Column(db.String(100), nullable=True)
+    format = db.Column(db.String(20), nullable=False, default="vertical")
+    width = db.Column(db.Integer, nullable=False)
+    height = db.Column(db.Integer, nullable=False)
+    fps = db.Column(db.Integer, nullable=False, default=30)
+    duration_seconds = db.Column(db.Float, nullable=False)
+    language = db.Column(db.String(10), nullable=False, default="pt-BR")
+    caption = db.Column(db.Text, nullable=True)
+    platform_settings = db.Column(db.Text, nullable=True)  # JSON string
+    publication_mode = db.Column(db.String(10), nullable=False, default="draft")
+    scheduled_at = db.Column(db.String(30), nullable=True)       # user-facing, MEDIA_TIMEZONE
+    scheduled_at_utc = db.Column(db.String(30), nullable=True)   # normalized ISO-8601 UTC
+    timezone = db.Column(db.String(50), nullable=False, default="America/Bahia")
+    status = db.Column(db.String(20), nullable=False, default="queued")
+    workspace_path = db.Column(db.Text, nullable=True)
+    render_path = db.Column(db.Text, nullable=True)
+    render_sha256 = db.Column(db.String(64), nullable=True)
+    render_size_bytes = db.Column(db.Integer, nullable=True)
+    render_duration_seconds = db.Column(db.Float, nullable=True)
+    render_width = db.Column(db.Integer, nullable=True)
+    render_height = db.Column(db.Integer, nullable=True)
+    render_fps = db.Column(db.Integer, nullable=True)
+    render_has_audio = db.Column(db.Integer, nullable=True)  # 0/1, SQLite has no bool
+    postiz_media_id = db.Column(db.String(100), nullable=True)
+    postiz_media_path = db.Column(db.Text, nullable=True)
+    postiz_media_name = db.Column(db.String(300), nullable=True)
+    postiz_post_id = db.Column(db.String(100), nullable=True)
+    attempt_count = db.Column(db.Integer, nullable=False, default=0)
+    last_error = db.Column(db.Text, nullable=True)
+    reject_reason = db.Column(db.Text, nullable=True)
+    locked_at = db.Column(db.String(30), nullable=True)
+    locked_by = db.Column(db.String(100), nullable=True)
+    lock_timeout_seconds = db.Column(db.Integer, nullable=True)
+    created_at = db.Column(db.String(30), nullable=False)
+    updated_at = db.Column(db.String(30), nullable=False)
+    approved_at = db.Column(db.String(30), nullable=True)
+    published_at = db.Column(db.String(30), nullable=True)
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "project_id": self.project_id,
+            "campaign_id": self.campaign_id,
+            "goal_id": self.goal_id,
+            "task_id": self.task_id,
+            "created_by": self.created_by,
+            "title": self.title,
+            "brief": self.brief,
+            "platform": self.platform,
+            "postiz_integration_id": self.postiz_integration_id,
+            "format": self.format,
+            "width": self.width,
+            "height": self.height,
+            "fps": self.fps,
+            "duration_seconds": self.duration_seconds,
+            "language": self.language,
+            "caption": self.caption,
+            "platform_settings": json.loads(self.platform_settings) if self.platform_settings else {},
+            "publication_mode": self.publication_mode,
+            "scheduled_at": self.scheduled_at,
+            "scheduled_at_utc": self.scheduled_at_utc,
+            "timezone": self.timezone,
+            "status": self.status,
+            "workspace_path": self.workspace_path,
+            "render_path": self.render_path,
+            "render_sha256": self.render_sha256,
+            "render_size_bytes": self.render_size_bytes,
+            "render_duration_seconds": self.render_duration_seconds,
+            "render_width": self.render_width,
+            "render_height": self.render_height,
+            "render_fps": self.render_fps,
+            "render_has_audio": bool(self.render_has_audio) if self.render_has_audio is not None else None,
+            "postiz_media_id": self.postiz_media_id,
+            "postiz_media_path": self.postiz_media_path,
+            "postiz_media_name": self.postiz_media_name,
+            "postiz_post_id": self.postiz_post_id,
+            "attempt_count": self.attempt_count,
+            "last_error": self.last_error,
+            "reject_reason": self.reject_reason,
+            "locked_at": self.locked_at,
+            "locked_by": self.locked_by,
+            "lock_timeout_seconds": self.lock_timeout_seconds,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+            "approved_at": self.approved_at,
+            "published_at": self.published_at,
         }
 
 
@@ -1221,4 +1452,42 @@ class PluginAuditLog(db.Model):
             "actor_username": self.actor_username,
             "detail": json.loads(self.detail_json or "{}"),
             "created_at": self.created_at.strftime("%Y-%m-%dT%H:%M:%S.%fZ") if self.created_at else None,
+        }
+
+
+class SocialPost(db.Model):
+    """Queue of social media posts waiting to be published.
+
+    Status flow: pending → publishing → published | failed | cancelled
+    """
+
+    __tablename__ = "social_posts"
+
+    id = db.Column(db.Integer, primary_key=True)
+    platform = db.Column(db.String(20), nullable=False, default="twitter")  # twitter, linkedin, etc.
+    account_index = db.Column(db.Integer, nullable=False, default=1)  # SOCIAL_TWITTER_<N>
+    text = db.Column(db.Text, nullable=False)
+    media_path = db.Column(db.String(500), nullable=True)  # local file path for attached image
+    status = db.Column(db.String(20), nullable=False, default="pending")
+    scheduled_at = db.Column(db.DateTime, nullable=True)  # NULL = publish immediately
+    published_at = db.Column(db.DateTime, nullable=True)
+    error = db.Column(db.Text, nullable=True)
+    external_id = db.Column(db.String(100), nullable=True)  # tweet id, etc.
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+    retry_count = db.Column(db.Integer, nullable=False, default=0)
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "platform": self.platform,
+            "account_index": self.account_index,
+            "text": self.text,
+            "media_path": self.media_path,
+            "status": self.status,
+            "scheduled_at": self.scheduled_at.strftime("%Y-%m-%dT%H:%M:%S.%fZ") if self.scheduled_at else None,
+            "published_at": self.published_at.strftime("%Y-%m-%dT%H:%M:%S.%fZ") if self.published_at else None,
+            "error": self.error,
+            "external_id": self.external_id,
+            "created_at": self.created_at.strftime("%Y-%m-%dT%H:%M:%S.%fZ") if self.created_at else None,
+            "retry_count": self.retry_count,
         }

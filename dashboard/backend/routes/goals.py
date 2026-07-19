@@ -26,6 +26,25 @@ def _now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
+def _sync_mempalace_for_project(p: GoalProject) -> None:
+    """Best-effort MemPalace source sync (Mission -> Wing, Project -> Room).
+
+    Never raises — a MemPalace hiccup must not fail a project create/update.
+    """
+    if not p.workspace_folder_path:
+        return
+    try:
+        from routes.mempalace import sync_project_source
+        mission_title = p.mission.title if p.mission_id and p.mission else None
+        sync_project_source(
+            workspace_folder_path=p.workspace_folder_path,
+            mission_title=mission_title,
+            project_slug=p.slug,
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _db_path() -> str:
     return str(WORKSPACE / "dashboard" / "data" / "evonexus.db")
 
@@ -76,6 +95,16 @@ def create_mission():
     db.session.add(m)
     db.session.commit()
     audit(current_user, "create", "goals", f"Created mission #{m.id}: {m.title}")
+
+    # ai-hierarchy-suggestions: wake project-planner to propose Projects for
+    # this Mission (parked behind a Telegram approval, never created
+    # directly — see routes/approvals.py's project_suggestion branch).
+    try:
+        from heartbeat_dispatcher import dispatch
+        dispatch("project-planner", "mission_created", {"mission_id": m.id})
+    except Exception as exc:  # noqa: BLE001 — best-effort, never block mission creation
+        print(f"[goals] WARNING: could not dispatch mission_created for mission #{m.id}: {exc}", flush=True)
+
     return jsonify(m.to_dict()), 201
 
 
@@ -156,6 +185,18 @@ def create_project():
     db.session.add(p)
     db.session.commit()
     audit(current_user, "create", "goals", f"Created project #{p.id}: {p.title}")
+    _sync_mempalace_for_project(p)
+
+    # ai-hierarchy-suggestions: wake goal-suggester to propose Goals for this
+    # Project — fires unconditionally, including for Projects created from an
+    # approved project_suggestion (intentional cascade: each rung still needs
+    # its own human approval, so this never runs away unsupervised).
+    try:
+        from heartbeat_dispatcher import dispatch
+        dispatch("goal-suggester", "project_created", {"project_id": p.id})
+    except Exception as exc:  # noqa: BLE001 — best-effort, never block project creation
+        print(f"[goals] WARNING: could not dispatch project_created for project #{p.id}: {exc}", flush=True)
+
     return jsonify(p.to_dict()), 201
 
 
@@ -166,12 +207,23 @@ def patch_project(project_id: int):
         return denied
     p = GoalProject.query.get_or_404(project_id)
     data = request.get_json() or {}
+    old_status = p.status
     for field in ("title", "description", "mission_id", "workspace_folder_path", "status"):
         if field in data:
             setattr(p, field, data[field])
     p.updated_at = _now()
+
+    # completed_at tracks the terminal transition specifically, not just any
+    # edit (unlike updated_at, which changes on every PATCH). Cleared if the
+    # project is reopened from 'completed' back to something else.
+    if p.status == "completed" and old_status != "completed":
+        p.completed_at = _now()
+    elif p.status != "completed" and old_status == "completed":
+        p.completed_at = None
+
     db.session.commit()
     audit(current_user, "update", "goals", f"Updated project #{p.id}: {p.title}")
+    _sync_mempalace_for_project(p)
     return jsonify(p.to_dict())
 
 
@@ -197,10 +249,13 @@ def list_goals():
     project_id = request.args.get("project_id", type=int)
     status_filter = request.args.get("status")
     due_filter = request.args.get("due_date")
+    parent_goal_id = request.args.get("parent_goal_id", type=int)
 
     q = Goal.query
     if project_id:
         q = q.filter_by(project_id=project_id)
+    if parent_goal_id:
+        q = q.filter_by(parent_goal_id=parent_goal_id)
     if status_filter:
         q = q.filter_by(status=status_filter)
 
@@ -239,6 +294,11 @@ def create_goal():
         return jsonify({"error": "slug, title, and project_id are required"}), 400
     if Goal.query.filter_by(slug=data["slug"]).first():
         return jsonify({"error": f"Goal slug '{data['slug']}' already exists"}), 409
+    # Sub-goal (agent-authored, has a parent) must always carry a due_date —
+    # ADR SPEC 5a. Without this, an agent-proposed decomposition tree has no
+    # deadline to bound it.
+    if data.get("parent_goal_id") and not data.get("due_date"):
+        return jsonify({"error": "sub-goal requires due_date"}), 400
     now = _now()
     g = Goal(
         slug=data["slug"],
@@ -251,12 +311,25 @@ def create_goal():
         current_value=data.get("current_value", 0.0),
         due_date=data.get("due_date"),
         status=data.get("status", "active"),
+        parent_goal_id=data.get("parent_goal_id"),
+        decomposition_state=data.get("decomposition_state"),
         created_at=now,
         updated_at=now,
     )
     db.session.add(g)
     db.session.commit()
     audit(current_user, "create", "goals", f"Created goal #{g.id}: {g.title}")
+
+    # goal-planner emitter (ADR SPEC 5b): only human-authored TOP-LEVEL goals
+    # fire goal_created — sub-goals (parent_goal_id set) never re-trigger the
+    # planner on creation, or decomposition would recurse infinitely.
+    if g.parent_goal_id is None:
+        try:
+            from heartbeat_dispatcher import dispatch
+            dispatch("goal-planner", "goal_created", {"goal_id": g.id})
+        except Exception as exc:  # noqa: BLE001 — best-effort, never block goal creation
+            print(f"[goals] WARNING: could not dispatch goal_created for goal #{g.id}: {exc}", flush=True)
+
     return jsonify(g.to_dict()), 201
 
 
@@ -267,14 +340,60 @@ def patch_goal(goal_id: int):
         return denied
     g = Goal.query.get_or_404(goal_id)
     data = request.get_json() or {}
+    old_status = g.status
+    # current_value is intentionally not accepted here — it has a single
+    # source of truth (COUNT of resolved/closed tickets, see
+    # heartbeat_outcome._recompute_goal_from_tickets). Manual drift
+    # correction goes through POST /api/goals/{id}/recalculate instead.
     for field in ("title", "description", "target_metric", "metric_type", "target_value",
-                  "current_value", "due_date", "status", "project_id"):
+                  "due_date", "status", "project_id"):
         if field in data:
             setattr(g, field, data[field])
     g.updated_at = _now()
+
+    _TERMINAL_GOAL_STATUSES = ("achieved", "cancelled")
+    if g.status in _TERMINAL_GOAL_STATUSES and old_status not in _TERMINAL_GOAL_STATUSES:
+        g.completed_at = _now()
+    elif g.status not in _TERMINAL_GOAL_STATUSES and old_status in _TERMINAL_GOAL_STATUSES:
+        g.completed_at = None
+
     db.session.commit()
     audit(current_user, "update", "goals", f"Updated goal #{g.id}: {g.title}")
+
+    if g.status in _TERMINAL_GOAL_STATUSES and old_status not in _TERMINAL_GOAL_STATUSES:
+        _maybe_complete_project(g.project_id)
+
     return jsonify(g.to_dict())
+
+
+def _maybe_complete_project(project_id: int) -> None:
+    """Project rollup: if every Goal under this Project is now in a terminal
+    state (achieved/cancelled), mark the Project 'completed' automatically.
+
+    Called whenever a Goal transitions INTO a terminal status — from
+    patch_goal (manual) and from heartbeat_outcome._recompute_goal_from_tickets
+    (the ticket-resolution path, the common case post goal-ticket-unification).
+    Best-effort: a project with zero Goals is never auto-completed (nothing
+    to roll up from), and any failure here must never break the Goal update
+    that triggered it.
+    """
+    try:
+        project = GoalProject.query.get(project_id)
+        if not project or project.status == "completed":
+            return
+        goals = Goal.query.filter_by(project_id=project_id).all()
+        if not goals:
+            return
+        if all(g.status in ("achieved", "cancelled") for g in goals):
+            project.status = "completed"
+            project.completed_at = _now()
+            project.updated_at = _now()
+            db.session.commit()
+            audit(current_user, "update", "goals",
+                  f"Auto-completed project #{project.id}: all {len(goals)} goal(s) terminal")
+    except Exception as exc:  # noqa: BLE001 — never break the Goal update that triggered this
+        db.session.rollback()
+        print(f"[goals] WARNING: project rollup failed for project #{project_id}: {exc}", flush=True)
 
 
 @bp.route("/api/goals/<int:goal_id>", methods=["DELETE"])
@@ -291,24 +410,24 @@ def delete_goal(goal_id: int):
 
 @bp.route("/api/goals/<int:goal_id>/recalculate", methods=["POST"])
 def recalculate_goal(goal_id: int):
-    """Drift correction: recompute current_value from goal_progress_v."""
+    """Drift correction: recompute current_value from the single source of
+    truth (tickets), not the legacy goal_progress_v (goal_tasks) view — see
+    heartbeat_outcome._recompute_goal_from_tickets."""
     denied = _require("execute")
     if denied:
         return denied
-    g = Goal.query.get_or_404(goal_id)
+    Goal.query.get_or_404(goal_id)
 
+    from heartbeat_outcome import _recompute_goal_from_tickets
     conn = sqlite3.connect(_db_path())
-    row = conn.execute(
-        "SELECT done_tasks, pct_complete FROM goal_progress_v WHERE goal_id = ?", (goal_id,)
-    ).fetchone()
-    conn.close()
+    try:
+        _recompute_goal_from_tickets(goal_id, conn)
+        conn.commit()
+    finally:
+        conn.close()
 
-    if row:
-        g.current_value = float(row[0])
-        if g.current_value >= g.target_value and g.status == "active":
-            g.status = "achieved"
-    g.updated_at = _now()
-    db.session.commit()
+    db.session.expire_all()
+    g = Goal.query.get_or_404(goal_id)
     audit(current_user, "recalculate", "goals", f"Recalculated goal #{goal_id}")
     return jsonify(g.to_dict())
 
@@ -383,7 +502,21 @@ def patch_goal_task(task_id: int):
                   "goal_id", "due_date", "locked_at", "locked_by"):
         if field in data:
             setattr(t, field, data[field])
-    t.updated_at = _now()
+
+    now = _now()
+    t.updated_at = now
+
+    # started_at marks the FIRST time this task left 'open' — never
+    # overwritten on later status churn (e.g. done -> open -> done again).
+    if old_status == "open" and t.status != "open" and not t.started_at:
+        t.started_at = now
+    # completed_at tracks the terminal transition specifically, cleared if
+    # the task is reopened from 'done'.
+    if t.status == "done" and old_status != "done":
+        t.completed_at = now
+    elif t.status != "done" and old_status == "done":
+        t.completed_at = None
+
     db.session.commit()
 
     # If status changed to done and there's a goal, trigger recalc via the view
@@ -407,23 +540,17 @@ def delete_goal_task(task_id: int):
 
 
 def _recalculate_goal_value(goal_id: int):
-    """Internal helper: sync goal.current_value with done tasks count."""
+    """Internal helper: sync goal.current_value via the single source of
+    truth (tickets) — see heartbeat_outcome._recompute_goal_from_tickets.
+    goal_progress_v (goal_tasks) is frozen legacy post goal-ticket-unification."""
+    from heartbeat_outcome import _recompute_goal_from_tickets
     conn = sqlite3.connect(_db_path())
-    row = conn.execute(
-        "SELECT done_tasks FROM goal_progress_v WHERE goal_id = ?", (goal_id,)
-    ).fetchone()
-    conn.close()
-
-    if row is None:
-        return
-    g = Goal.query.get(goal_id)
-    if g is None:
-        return
-    g.current_value = float(row[0])
-    if g.current_value >= g.target_value and g.status == "active":
-        g.status = "achieved"
-    g.updated_at = _now()
-    db.session.commit()
+    try:
+        _recompute_goal_from_tickets(goal_id, conn)
+        conn.commit()
+    finally:
+        conn.close()
+    db.session.expire_all()
 
 
 # --------------- Link routine to goal ---------------

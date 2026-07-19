@@ -119,7 +119,7 @@ Skills that orchestrate the engineering agents.
 ### Tier 3 — Meta / utilities (5)
 
 - `dev-cancel` — clean stop of any active eng workflow
-- `dev-remember` — quick context persistence (lighter than mempalace)
+- `dev-remember` — quick context persistence (lighter than mempalace). See [MemPalace Guide](mempalace-guide.md) for the full memory reference.
 - `dev-ask` — single-shot query to a specific model (Claude/Codex/Gemini)
 - `dev-learner` — extract reusable skills from conversation patterns
 - `dev-skillify` — convert current conversation into a new skill

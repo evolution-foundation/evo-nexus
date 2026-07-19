@@ -68,7 +68,7 @@ def _post(url: str, token: str, payload: dict) -> tuple[int, dict | None]:
 
 
 def detect_brain_repos(token: str) -> list[dict]:
-    """Find repos owned by the authenticated user that carry a ``.evo-brain`` marker.
+    """Find private repos owned by the authenticated user that can be Brain Repo candidates.
 
     Previous implementation used ``/search/code?q=filename:.evo-brain`` which had
     two bugs in practice: GitHub's code index doesn't reliably include dotfiles,
@@ -80,7 +80,11 @@ def detect_brain_repos(token: str) -> list[dict]:
     per private repo (cheap at ≤100 repos), but the result reflects the
     current state of the remote, not the indexer.
 
-    Returns list of {name, full_name, html_url, private, description}.
+    Empty/existing repos are valid candidates because the connect pipeline can
+    initialize the ``.evo-brain`` marker after cloning. Each item includes
+    ``has_evo_brain`` so the UI can distinguish initialized repos later.
+
+    Returns list of {name, full_name, html_url, private, description, has_evo_brain}.
     """
     repos = list_user_repos(token)
     results = []
@@ -91,8 +95,12 @@ def detect_brain_repos(token: str) -> list[dict]:
         owner, name = full_name.split("/", 1)
         contents_url = f"{_API_BASE}/repos/{owner}/{name}/contents/.evo-brain"
         status, _body, _ = _get(contents_url, token)
+        candidate = dict(repo)
+        candidate["has_evo_brain"] = status == 200
         if status == 200:
-            results.append(repo)
+            results.insert(0, candidate)
+        elif status == 404:
+            results.append(candidate)
         elif status not in (200, 404):
             # 403 rate-limit, 5xx, network hiccup — log and move on, the user
             # can retry. Don't error the whole listing for one flaky repo.

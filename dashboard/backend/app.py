@@ -8,7 +8,7 @@ from pathlib import Path
 from datetime import timedelta
 
 from dotenv import load_dotenv
-from flask import Flask, send_from_directory, request, jsonify
+from flask import Flask, send_from_directory, request, jsonify, g
 from flask_cors import CORS
 from flask_login import LoginManager, current_user, login_user
 
@@ -42,6 +42,14 @@ def _cors_allowed_origins():
     return "*" if not _is_production() else []
 
 app = Flask(__name__, static_folder=None)
+
+# Atrás do Traefik o scheme visto pelo Flask é http; sem honrar
+# X-Forwarded-Proto/Host, request.host_url gera redirect_uri http:// nos
+# fluxos OAuth (social-auth blueprints) e o provedor recusa o callback.
+# A porta 8080 não é exposta diretamente na VPS, então confiar em 1 hop
+# de proxy é seguro; sem os headers (acesso local) nada muda.
+from werkzeug.middleware.proxy_fix import ProxyFix
+app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 # Persist secret key so sessions survive restarts
 _secret_key = os.environ.get("EVONEXUS_SECRET_KEY")
 if not _secret_key:
@@ -75,8 +83,12 @@ if not _brain_key:
 app.config["SQLALCHEMY_DATABASE_URI"] = f"sqlite:///{WORKSPACE / 'dashboard' / 'data' / 'evonexus.db'}"
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 app.config["REMEMBER_COOKIE_DURATION"] = timedelta(days=30)
-# SameSite=Strict prevents cross-origin cookie riding (CSRF defense layer 1).
-app.config["SESSION_COOKIE_SAMESITE"] = "Strict"
+# SameSite=Lax: bloqueia cookie em requests cross-site mutantes (POST/iframe/
+# subresource — onde CSRF acontece) mas permite navegação top-level GET.
+# Strict quebrava TODO fluxo OAuth montado no dashboard: o redirect de volta
+# do provedor (twitter.com → /callback/twitter) é cross-site, o cookie de
+# sessão não era enviado e o state salvo em session sumia → "Invalid state".
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 
 # --- JSON encoding for API responses ---
 # With ensure_ascii=True (Flask default) jsonify escapes every non-ASCII
@@ -92,6 +104,12 @@ except AttributeError:
     app.config["JSON_AS_ASCII"] = False
 
 CORS(app, origins=_cors_allowed_origins(), supports_credentials=True)
+
+# --------------- Rate limiting (in-memory, single-process Flask) ---------------
+# Vault audit §2.S1 CRITICAL: all public endpoints require rate limiting.
+# The limiter singleton lives in rate_limit.py to avoid circular imports with blueprints.
+from rate_limit import limiter
+limiter.init_app(app)
 
 # --------------- Database ---------------
 from models import db, User, BrainRepoConfig, needs_setup, seed_roles, seed_systems
@@ -132,6 +150,7 @@ with app.app_context():
                 goal_id TEXT,
                 required_secrets TEXT DEFAULT '[]',
                 decision_prompt TEXT NOT NULL,
+                handler TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
@@ -179,6 +198,7 @@ with app.app_context():
                 current_value REAL NOT NULL DEFAULT 0,
                 due_date TEXT,
                 status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','achieved','on-hold','cancelled')),
+                completed_at TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
@@ -189,7 +209,8 @@ with app.app_context():
                 title TEXT NOT NULL,
                 description TEXT,
                 workspace_folder_path TEXT,
-                status TEXT NOT NULL DEFAULT 'active',
+                status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','completed','on-hold','cancelled')),
+                completed_at TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
@@ -205,6 +226,7 @@ with app.app_context():
                 current_value REAL NOT NULL DEFAULT 0.0,
                 due_date TEXT,
                 status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','achieved','on-hold','cancelled')),
+                completed_at TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
@@ -219,6 +241,8 @@ with app.app_context():
                 locked_at TEXT,
                 locked_by TEXT,
                 due_date TEXT,
+                started_at TEXT,
+                completed_at TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
@@ -228,7 +252,11 @@ with app.app_context():
             CREATE INDEX IF NOT EXISTS idx_goal_tasks_goal_status ON goal_tasks(goal_id, status);
         """)
         _conn.commit()
-    # Always ensure view and trigger exist (idempotent — safe to run on every startup)
+    # Always ensure view exists (idempotent — safe to run on every startup).
+    # trg_task_done_updates_goal used to be recreated here too, but
+    # goals.current_value now has a single source of truth (tickets, see
+    # heartbeat_outcome._recompute_goal_from_tickets) — the trigger is dropped
+    # in the migration below and must never be recreated on boot.
     _cur.executescript("""
         CREATE VIEW IF NOT EXISTS goal_progress_v AS
         SELECT g.id as goal_id, g.slug, g.target_value,
@@ -239,13 +267,6 @@ with app.app_context():
                     ELSE 0 END as pct_complete
         FROM goals g LEFT JOIN goal_tasks t ON t.goal_id = g.id
         GROUP BY g.id;
-        CREATE TRIGGER IF NOT EXISTS trg_task_done_updates_goal
-        AFTER UPDATE OF status ON goal_tasks
-        WHEN NEW.goal_id IS NOT NULL AND NEW.status = 'done' AND OLD.status != 'done'
-        BEGIN
-          UPDATE goals SET current_value = current_value + 1, updated_at = datetime('now') WHERE id = NEW.goal_id;
-          UPDATE goals SET status = 'achieved' WHERE id = NEW.goal_id AND current_value >= target_value AND status = 'active';
-        END;
     """)
     _conn.commit()
     # No seed data — Goals start empty. Users create Mission → Project → Goal via UI
@@ -335,6 +356,12 @@ with app.app_context():
         _conn.commit()
     # --- End thread-areas migration ---
 
+    # --- task_id link on tickets (ticket <-> goal_task real FK) ---
+    if "task_id" not in _ticket_cols:
+        _cur.execute("ALTER TABLE tickets ADD COLUMN task_id INTEGER REFERENCES goal_tasks(id) ON DELETE SET NULL")
+        _conn.commit()
+    # --- End task_id migration ---
+
     # --- Plugin provenance: source_plugin on tables that plugins can seed ---
     # When a plugin installs rows into projects/goals/missions/goal_tasks/
     # tickets/triggers, the row gets tagged with its slug. Uninstall then
@@ -351,6 +378,239 @@ with app.app_context():
     # --- End plugin provenance migration ---
 
     # --- End tickets migration ---
+
+    # --- goal-ticket-unification: approval + due_date columns on tickets ---
+    _ticket_cols = {row[1] for row in _cur.execute("PRAGMA table_info(tickets)").fetchall()}
+    if "due_date" not in _ticket_cols:
+        _cur.execute("ALTER TABLE tickets ADD COLUMN due_date TEXT")
+        _conn.commit()
+    if "requires_human_approval" not in _ticket_cols:
+        _cur.execute("ALTER TABLE tickets ADD COLUMN requires_human_approval INTEGER NOT NULL DEFAULT 0")
+        _conn.commit()
+    if "blocked_reason" not in _ticket_cols:
+        _cur.execute("ALTER TABLE tickets ADD COLUMN blocked_reason TEXT")
+        _conn.commit()
+    # --- End ticket approval columns ---
+
+    # --- goal-ticket-unification: sub-goal columns on goals ---
+    _goal_cols = {row[1] for row in _cur.execute("PRAGMA table_info(goals)").fetchall()}
+    if "parent_goal_id" not in _goal_cols:
+        _cur.execute("ALTER TABLE goals ADD COLUMN parent_goal_id INTEGER REFERENCES goals(id) ON DELETE SET NULL")
+        _conn.commit()
+    if "decomposition_state" not in _goal_cols:
+        _cur.execute("ALTER TABLE goals ADD COLUMN decomposition_state TEXT")
+        _conn.commit()
+    # --- End goal sub-goal columns ---
+
+    # --- goal-ticket-unification: goal_relations table (decorative this feature) ---
+    _cur.executescript("""
+        CREATE TABLE IF NOT EXISTS goal_relations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            goal_id INTEGER NOT NULL REFERENCES goals(id) ON DELETE CASCADE,
+            related_goal_id INTEGER NOT NULL REFERENCES goals(id) ON DELETE CASCADE,
+            relation_type TEXT NOT NULL DEFAULT 'relates_to'
+                CHECK(relation_type IN ('blocks','depends_on','relates_to')),
+            created_at TEXT NOT NULL,
+            CHECK (goal_id != related_goal_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_goal_relations_goal ON goal_relations(goal_id);
+        CREATE INDEX IF NOT EXISTS idx_goal_relations_related ON goal_relations(related_goal_id);
+    """)
+    _conn.commit()
+    # --- End goal_relations migration ---
+
+    # --- goal-ticket-unification: pending_approvals table (shared publish + decomposition gate) ---
+    # gate_type/mission_id/project_id cover ai-hierarchy-suggestions too
+    # (project_suggestion, goal_suggestion) — a fresh install gets the final
+    # shape directly; the rebuild block right below upgrades a DB that already
+    # has this table from before those two gate_types existed (SQLite can't
+    # ALTER a CHECK constraint in place).
+    _cur.executescript("""
+        CREATE TABLE IF NOT EXISTS pending_approvals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            gate_type TEXT NOT NULL CHECK(gate_type IN ('publish','decomposition','project_suggestion','goal_suggestion')),
+            ticket_id TEXT REFERENCES tickets(id) ON DELETE CASCADE,
+            goal_id INTEGER REFERENCES goals(id) ON DELETE CASCADE,
+            mission_id INTEGER REFERENCES missions(id) ON DELETE CASCADE,
+            project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+            agent TEXT,
+            attempt INTEGER NOT NULL DEFAULT 0,
+            idempotency_key TEXT NOT NULL UNIQUE,
+            status TEXT NOT NULL DEFAULT 'pending'
+                CHECK(status IN ('pending','approved','rejected','expired','published')),
+            payload TEXT,
+            telegram_chat_id TEXT,
+            telegram_message_id INTEGER,
+            approver_from_id TEXT,
+            reject_reason TEXT,
+            decided_by TEXT,
+            created_at TEXT NOT NULL,
+            nudged_at TEXT,
+            decided_at TEXT,
+            expires_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_pending_approvals_status ON pending_approvals(status, expires_at);
+    """)
+    _conn.commit()
+    # --- End pending_approvals migration ---
+
+    # --- ai-hierarchy-suggestions: upgrade a pre-existing pending_approvals
+    # (created before project_suggestion/goal_suggestion existed) in place.
+    # SQLite has no ALTER-a-CHECK-constraint — rebuild the table, copy rows,
+    # swap. Detected by sniffing the live CHECK text rather than a version
+    # flag, so this is safe to run unconditionally on every boot.
+    _cur.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='pending_approvals'"
+    )
+    _pa_row = _cur.fetchone()
+    if _pa_row and "project_suggestion" not in (_pa_row[0] or ""):
+        _cur.executescript("""
+            ALTER TABLE pending_approvals RENAME TO pending_approvals_old;
+            CREATE TABLE pending_approvals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                gate_type TEXT NOT NULL CHECK(gate_type IN ('publish','decomposition','project_suggestion','goal_suggestion')),
+                ticket_id TEXT REFERENCES tickets(id) ON DELETE CASCADE,
+                goal_id INTEGER REFERENCES goals(id) ON DELETE CASCADE,
+                mission_id INTEGER REFERENCES missions(id) ON DELETE CASCADE,
+                project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+                agent TEXT,
+                attempt INTEGER NOT NULL DEFAULT 0,
+                idempotency_key TEXT NOT NULL UNIQUE,
+                status TEXT NOT NULL DEFAULT 'pending'
+                    CHECK(status IN ('pending','approved','rejected','expired','published')),
+                payload TEXT,
+                telegram_chat_id TEXT,
+                telegram_message_id INTEGER,
+                approver_from_id TEXT,
+                reject_reason TEXT,
+                decided_by TEXT,
+                created_at TEXT NOT NULL,
+                nudged_at TEXT,
+                decided_at TEXT,
+                expires_at TEXT NOT NULL
+            );
+            INSERT INTO pending_approvals (
+                id, gate_type, ticket_id, goal_id, agent, attempt, idempotency_key,
+                status, payload, telegram_chat_id, telegram_message_id,
+                approver_from_id, reject_reason, decided_by, created_at, nudged_at,
+                decided_at, expires_at
+            )
+            SELECT
+                id, gate_type, ticket_id, goal_id, agent, attempt, idempotency_key,
+                status, payload, telegram_chat_id, telegram_message_id,
+                approver_from_id, reject_reason, decided_by, created_at, nudged_at,
+                decided_at, expires_at
+            FROM pending_approvals_old;
+            DROP TABLE pending_approvals_old;
+            CREATE INDEX IF NOT EXISTS idx_pending_approvals_status ON pending_approvals(status, expires_at);
+        """)
+        _conn.commit()
+    # --- End pending_approvals CHECK-constraint upgrade ---
+
+    # --- completed_at/started_at + projects.status CHECK constraint ---
+    # missions/goals/goal_tasks: plain additive ALTER (no CHECK involved).
+    _cur.execute("PRAGMA table_info(missions)")
+    if "completed_at" not in {row[1] for row in _cur.fetchall()}:
+        _cur.execute("ALTER TABLE missions ADD COLUMN completed_at TEXT")
+        _conn.commit()
+
+    _cur.execute("PRAGMA table_info(goals)")
+    if "completed_at" not in {row[1] for row in _cur.fetchall()}:
+        _cur.execute("ALTER TABLE goals ADD COLUMN completed_at TEXT")
+        _conn.commit()
+
+    _cur.execute("PRAGMA table_info(goal_tasks)")
+    _gt_cols = {row[1] for row in _cur.fetchall()}
+    if "started_at" not in _gt_cols:
+        _cur.execute("ALTER TABLE goal_tasks ADD COLUMN started_at TEXT")
+        _conn.commit()
+    if "completed_at" not in _gt_cols:
+        _cur.execute("ALTER TABLE goal_tasks ADD COLUMN completed_at TEXT")
+        _conn.commit()
+
+    # projects.status has no CHECK constraint today (unlike missions/goals) —
+    # SQLite can't ALTER one in, so this rebuilds the table (rename + create +
+    # copy + drop) the same way the pending_approvals upgrade above does.
+    # Sniffed via the missing completed_at column rather than a version flag,
+    # so this stays idempotent and safe to run on every boot.
+    _cur.execute("PRAGMA table_info(projects)")
+    if "completed_at" not in {row[1] for row in _cur.fetchall()}:
+        _cur.executescript("""
+            ALTER TABLE projects RENAME TO projects_old;
+            CREATE TABLE projects (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                slug TEXT UNIQUE NOT NULL,
+                mission_id INTEGER REFERENCES missions(id) ON DELETE CASCADE,
+                title TEXT NOT NULL,
+                description TEXT,
+                workspace_folder_path TEXT,
+                status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','completed','on-hold','cancelled')),
+                completed_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            INSERT INTO projects (
+                id, slug, mission_id, title, description, workspace_folder_path,
+                status, created_at, updated_at
+            )
+            SELECT
+                id, slug, mission_id, title, description, workspace_folder_path,
+                CASE
+                    WHEN status IN ('active','completed','on-hold','cancelled') THEN status
+                    WHEN status = 'achieved' THEN 'completed'
+                    ELSE 'active'
+                END,
+                created_at, updated_at
+            FROM projects_old;
+            DROP TABLE projects_old;
+            CREATE INDEX IF NOT EXISTS idx_projects_mission ON projects(mission_id);
+            CREATE INDEX IF NOT EXISTS idx_projects_status ON projects(status);
+        """)
+        _conn.commit()
+    # --- End completed_at/started_at + projects.status CHECK constraint ---
+
+    # --- goal-ticket-unification: drop legacy goal_tasks-driven rollup trigger ---
+    # current_value now has a single source of truth (tickets — see
+    # heartbeat_outcome._recompute_goal_from_tickets). The CREATE TRIGGER
+    # that used to live in the "Always ensure view and trigger exist" block
+    # above was deleted so it stops being recreated on every boot; this DROP
+    # handles existing DBs that already have the trigger installed.
+    _cur.execute("DROP TRIGGER IF EXISTS trg_task_done_updates_goal")
+    _conn.commit()
+    # --- End trigger drop ---
+
+    # --- ticket_activity reconciliation (Feature 1.3, run unconditionally) ---
+    # The CREATE TABLE IF NOT EXISTS ticket_activity above lives inside
+    # `if "tickets" not in _existing_tables2:` (line ~277). On any install
+    # where `tickets` already existed before ticket_activity was added to that
+    # executescript, the whole block — including ticket_activity's own
+    # CREATE TABLE — never ran, so the table can be missing entirely or stuck
+    # on an older column set with no path to catch up. Confirmed live
+    # 2026-07-15: production hit `sqlite3.OperationalError: table
+    # ticket_activity has no column named X` from heartbeat_outcome.py's
+    # INSERT (id, ticket_id, actor, action, payload, created_at) — that
+    # gated CREATE TABLE was the only place this table's shape was ever
+    # declared. Run unconditionally so it self-heals regardless of when
+    # `tickets` was created.
+    _cur.execute("""
+        CREATE TABLE IF NOT EXISTS ticket_activity (
+            id TEXT PRIMARY KEY,
+            ticket_id TEXT NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+            actor TEXT NOT NULL,
+            action TEXT NOT NULL,
+            payload TEXT,
+            created_at TEXT NOT NULL
+        );
+    """)
+    _cur.execute("CREATE INDEX IF NOT EXISTS idx_activity_ticket_created ON ticket_activity(ticket_id, created_at);")
+    _conn.commit()
+    _activity_cols = {row[1] for row in _cur.execute("PRAGMA table_info(ticket_activity)").fetchall()}
+    for _col, _decl in (("actor", "TEXT NOT NULL DEFAULT ''"), ("action", "TEXT NOT NULL DEFAULT ''"),
+                         ("payload", "TEXT"), ("created_at", "TEXT NOT NULL DEFAULT ''")):
+        if _col not in _activity_cols:
+            _cur.execute(f"ALTER TABLE ticket_activity ADD COLUMN {_col} {_decl}")
+            _conn.commit()
+    # --- End ticket_activity reconciliation ---
 
     # --- Knowledge connections migration (pgvector-knowledge feature) ---
     _existing_tables3 = {row[0] for row in _cur.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
@@ -450,9 +710,11 @@ with app.app_context():
                 PRIMARY KEY (plugin_slug, handler_path)
             );
             CREATE INDEX IF NOT EXISTS idx_plugins_status ON plugins_installed(status);
-            CREATE INDEX IF NOT EXISTS idx_plugin_audit_plugin ON plugin_audit_log(plugin_id, created_at);
             CREATE INDEX IF NOT EXISTS idx_hook_cb_disabled ON plugin_hook_circuit_state(disabled_until);
         """)
+        _pal_cols = {row[1] for row in _cur.execute("PRAGMA table_info(plugin_audit_log)").fetchall()}
+        if "plugin_id" in _pal_cols:
+            _cur.execute("CREATE INDEX IF NOT EXISTS idx_plugin_audit_plugin ON plugin_audit_log(plugin_id, created_at)")
         _conn.commit()
     # --- End plugins migration ---
 
@@ -516,6 +778,10 @@ with app.app_context():
     # source_plugin: tag heartbeats that were contributed by a plugin so the
     # plugin detail page can filter them via GET /api/heartbeats?source_plugin=.
     _hb_cols = {row[1] for row in _cur.execute("PRAGMA table_info(heartbeats)").fetchall()}
+    if "handler" not in _hb_cols:
+        _cur.execute("ALTER TABLE heartbeats ADD COLUMN handler TEXT")
+        _conn.commit()
+        _hb_cols.add("handler")
     if "source_plugin" not in _hb_cols:
         _cur.execute("ALTER TABLE heartbeats ADD COLUMN source_plugin TEXT")
         _conn.commit()
@@ -603,6 +869,94 @@ with app.app_context():
         _conn.commit()
     # --- End Wave 2.2r migration ---
 
+    # --- B3 safe_uninstall migration: plugin_orphans table ---
+    _existing_tables_b3 = {row[0] for row in _cur.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    if "plugin_orphans" not in _existing_tables_b3:
+        _cur.executescript("""
+            CREATE TABLE IF NOT EXISTS plugin_orphans (
+                id TEXT PRIMARY KEY,
+                slug TEXT NOT NULL,
+                tablename TEXT NOT NULL,
+                orphaned_at TEXT NOT NULL,
+                orphaned_by_user_id INTEGER,
+                original_plugin_version TEXT,
+                original_sha256 TEXT,
+                original_publisher_url TEXT,
+                recovered_at TEXT,
+                UNIQUE(slug, tablename)
+            );
+            CREATE INDEX IF NOT EXISTS idx_plugin_orphans_slug ON plugin_orphans(slug);
+        """)
+        _conn.commit()
+    # --- End B3 safe_uninstall migration ---
+
+    # --- social-media-production migration: media_jobs table ---
+    _existing_tables_smp = {row[0] for row in _cur.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    if "media_jobs" not in _existing_tables_smp:
+        _cur.executescript(
+            """
+            CREATE TABLE media_jobs (
+                id TEXT PRIMARY KEY,
+                project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
+                campaign_id TEXT,
+                goal_id INTEGER REFERENCES goals(id) ON DELETE SET NULL,
+                task_id INTEGER REFERENCES goal_tasks(id) ON DELETE SET NULL,
+                created_by TEXT NOT NULL DEFAULT 'system',
+                title TEXT NOT NULL,
+                brief TEXT,
+                platform TEXT NOT NULL CHECK(platform IN ('instagram','youtube','linkedin','tiktok')),
+                postiz_integration_id TEXT,
+                format TEXT NOT NULL DEFAULT 'vertical',
+                width INTEGER NOT NULL,
+                height INTEGER NOT NULL,
+                fps INTEGER NOT NULL DEFAULT 30,
+                duration_seconds REAL NOT NULL,
+                language TEXT NOT NULL DEFAULT 'pt-BR',
+                caption TEXT,
+                platform_settings TEXT,
+                publication_mode TEXT NOT NULL DEFAULT 'draft' CHECK(publication_mode IN ('draft','schedule')),
+                scheduled_at TEXT,
+                scheduled_at_utc TEXT,
+                timezone TEXT NOT NULL DEFAULT 'America/Bahia',
+                status TEXT NOT NULL DEFAULT 'queued' CHECK(status IN (
+                    'queued','preparing','generating','rendering','validating',
+                    'ready_for_review','rejected','approved','uploading',
+                    'creating_draft','draft_created','scheduling','scheduled',
+                    'published','retryable_failure','failed','cancelled'
+                )),
+                workspace_path TEXT,
+                render_path TEXT,
+                render_sha256 TEXT,
+                render_size_bytes INTEGER,
+                render_duration_seconds REAL,
+                render_width INTEGER,
+                render_height INTEGER,
+                render_fps INTEGER,
+                render_has_audio INTEGER,
+                postiz_media_id TEXT,
+                postiz_media_path TEXT,
+                postiz_media_name TEXT,
+                postiz_post_id TEXT,
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT,
+                reject_reason TEXT,
+                locked_at TEXT,
+                locked_by TEXT,
+                lock_timeout_seconds INTEGER,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                approved_at TEXT,
+                published_at TEXT,
+                CHECK ((locked_at IS NULL AND locked_by IS NULL) OR (locked_at IS NOT NULL AND locked_by IS NOT NULL))
+            );
+            CREATE INDEX idx_media_jobs_status ON media_jobs(status);
+            CREATE INDEX idx_media_jobs_project ON media_jobs(project_id);
+            CREATE INDEX idx_media_jobs_locked ON media_jobs(locked_at);
+            """
+        )
+        _conn.commit()
+    # --- End social-media-production migration ---
+
     # Fix corrupted datetime columns (NULL or non-string values crash SQLAlchemy)
     for _tbl, _col in [("roles", "created_at"), ("users", "created_at"), ("users", "last_login")]:
         try:
@@ -621,6 +975,9 @@ with app.app_context():
     # ({active_provider, providers: {...}}), copy providers.example.json
     # over it. This recovers from broken state left by older versions of
     # the onboarding wizard that naively wrote {<id>: {api_key, enabled}}.
+    # If the schema is valid but older than the bundled example, merge missing
+    # providers/fields from providers.example.json without overwriting secrets
+    # stored in the persistent Docker volume.
     try:
         _providers_file = WORKSPACE / "config" / "providers.json"
         _providers_example = WORKSPACE / "config" / "providers.example.json"
@@ -639,6 +996,18 @@ with app.app_context():
                 import shutil as _shutil
                 _shutil.copy2(_providers_example, _providers_file)
                 print("[migration] providers.json had invalid schema, restored from providers.example.json")
+            elif _ok and _providers_example.is_file():
+                try:
+                    from routes.providers import _merge_provider_defaults as _merge_provider_defaults
+                    _merged, _changed = _merge_provider_defaults(_data)
+                    if _changed:
+                        _providers_file.write_text(
+                            _json.dumps(_merged, indent=2, ensure_ascii=False) + "\n",
+                            encoding="utf-8",
+                        )
+                        print("[migration] providers.json merged missing provider defaults")
+                except Exception as _merge_exc:
+                    print(f"[migration] providers.json default merge skipped: {_merge_exc}")
     except Exception as _mig_exc:
         print(f"[migration] providers.json normalization skipped: {_mig_exc}")
     # --- End providers.json migration ---
@@ -732,7 +1101,7 @@ login_manager.init_app(app)
 
 @login_manager.user_loader
 def load_user(user_id):
-    return User.query.get(int(user_id))
+    return db.session.get(User, int(user_id))
 
 @login_manager.unauthorized_handler
 def unauthorized():
@@ -751,10 +1120,20 @@ PUBLIC_PATHS = {
     "/api/agents/active",
 }
 
+from routes._helpers import valid_approval_bridge_token
+
+
 def _try_api_token_auth():
     """Resolve an Authorization: Bearer <token> header against DASHBOARD_API_TOKEN.
     On match, log in the configured service user for the duration of this request.
     Returns True if a valid token was found and applied, False otherwise.
+
+    Sets g.auth_via_api_token = True on success — any route that must be
+    reachable ONLY by a real human sitting at a logged-in browser session
+    (not by an agent that happens to hold DASHBOARD_API_TOKEN, which many
+    do via EvoClient) checks this flag. See
+    routes/approvals.py::decide_approval_via_dashboard for the concrete case
+    this exists for (panorama 2026-07-17, item 1).
     """
     expected = os.environ.get("DASHBOARD_API_TOKEN", "").strip()
     if not expected:
@@ -776,6 +1155,7 @@ def _try_api_token_auth():
         return False
     # Log in for this request only (no remember cookie)
     login_user(user, remember=False, fresh=False)
+    g.auth_via_api_token = True
     return True
 
 
@@ -796,6 +1176,7 @@ def auth_middleware():
         path in PUBLIC_PATHS
         or path.startswith("/api/docs")
         or path.startswith("/api/triggers/webhook/")
+        or path.startswith("/api/instagram/webhook")
         or (path.startswith("/api/shares/") and "/view" in path)
         or path.startswith("/api/knowledge/v1/")
     ):
@@ -805,6 +1186,18 @@ def auth_middleware():
     if needs_setup():
         if path not in PUBLIC_PATHS:
             return jsonify({"error": "Setup required", "needs_setup": True}), 403
+
+    # Approval bridge (goal-ticket-unification V11): the Telegram bot's
+    # callback_query handler calls /api/approvals/*/decision with
+    # APPROVAL_BRIDGE_TOKEN, never DASHBOARD_API_TOKEN — that token alone
+    # doesn't satisfy _try_api_token_auth below, so without this branch the
+    # request 401s before routes/approvals.py's own auth check ever runs.
+    # Deliberately NOT added to PUBLIC_PATHS (that would skip auth entirely)
+    # and NOT folded into _try_api_token_auth (that would let the bridge
+    # token authenticate on every other endpoint too — V11 scopes it to this
+    # one path only).
+    if path.startswith("/api/approvals/") and valid_approval_bridge_token(request.headers.get("Authorization")):
+        return None
 
     # Try API token auth first (Bearer header) for headless agents / CLI tools
     if not current_user.is_authenticated:
@@ -842,6 +1235,9 @@ from routes.shares import bp as shares_bp
 from routes.heartbeats import bp as heartbeats_bp
 from routes.goals import bp as goals_bp
 from routes.tickets import bp as tickets_bp
+from routes.media_jobs import bp as media_jobs_bp
+from routes.integrations_core_postiz import bp as integrations_core_postiz_bp
+from routes.approvals import bp as approvals_bp
 from routes.health import bp as health_bp
 from routes.knowledge import bp as knowledge_bp
 from routes.knowledge_public import bp as knowledge_public_bp
@@ -850,6 +1246,8 @@ from routes.knowledge_v1 import bp as knowledge_v1_bp
 from routes.databases import bp as databases_bp
 from routes.plugins import bp as plugins_bp
 from routes.mcp_servers import bp as mcp_servers_bp
+from routes.plugin_public_pages import bp as plugin_public_pages_bp
+from routes.instagram import bp as instagram_api_bp
 
 # Brain Repo + Onboarding blueprints (loaded after routes are created)
 try:
@@ -890,6 +1288,9 @@ app.register_blueprint(tasks_bp)
 app.register_blueprint(triggers_bp)
 app.register_blueprint(terminal_proxy_bp)
 
+# Instagram API routes (webhooks, publish, comments, DMs)
+app.register_blueprint(instagram_api_bp)
+
 # Mount the terminal-server WebSocket proxy on the same Sock instance the
 # rest of the app uses. Done after the blueprint is registered so route
 # names are unique. Without this, browsers connecting from a host other
@@ -914,6 +1315,9 @@ app.register_blueprint(shares_bp)
 app.register_blueprint(heartbeats_bp)
 app.register_blueprint(goals_bp)
 app.register_blueprint(tickets_bp)
+app.register_blueprint(media_jobs_bp)
+app.register_blueprint(integrations_core_postiz_bp)
+app.register_blueprint(approvals_bp)
 app.register_blueprint(health_bp)
 app.register_blueprint(knowledge_bp)
 app.register_blueprint(knowledge_public_bp)
@@ -922,8 +1326,15 @@ app.register_blueprint(knowledge_v1_bp)
 app.register_blueprint(databases_bp)
 app.register_blueprint(plugins_bp)
 app.register_blueprint(mcp_servers_bp)
+# B2.0: plugin public pages (unauthenticated, token-bound portals)
+app.register_blueprint(plugin_public_pages_bp)
 
 # --------------- Social Auth blueprints ---------------
+# The social-auth package lives as a sibling directory; add it once so the
+# dashboard backend can mount the same OAuth blueprints on port 8080.
+SOCIAL_AUTH_DIR = WORKSPACE / "social-auth"
+if SOCIAL_AUTH_DIR.is_dir() and str(SOCIAL_AUTH_DIR) not in sys.path:
+    sys.path.insert(0, str(SOCIAL_AUTH_DIR))
 from auth.youtube import bp as youtube_auth_bp
 from auth.instagram import bp as instagram_auth_bp
 from auth.linkedin import bp as linkedin_auth_bp

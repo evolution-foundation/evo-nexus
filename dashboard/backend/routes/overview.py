@@ -1,9 +1,10 @@
 """Overview endpoint — summary data for the dashboard home."""
 
 import json
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from flask import Blueprint, jsonify
 from routes._helpers import WORKSPACE, safe_read
+from models import db
 
 bp = Blueprint("overview", __name__)
 
@@ -88,8 +89,18 @@ def _build_routines(raw_metrics: dict) -> list[dict]:
     """Transform raw metrics into routines table."""
     routines = []
     for name, v in sorted(raw_metrics.items(), key=lambda x: x[1].get("last_run", ""), reverse=True):
-        rate = v.get("success_rate", 0)
-        status = "healthy" if rate >= 90 else ("warning" if rate >= 50 else "critical")
+        # Derived fresh from raw counts, not the stored success_rate field —
+        # see the comment in Routines.tsx's transformRoutineMetrics for why
+        # (one routine used to write it as a 0-1 fraction instead of 0-100).
+        runs_v = v.get("runs", 0)
+        rate = round((v.get("successes", 0) / runs_v) * 100, 1) if runs_v > 0 else 0
+        last_success = v.get("last_success")
+        if last_success is False:
+            status = "critical"
+        elif last_success is True and rate < 90:
+            status = "warning"
+        else:
+            status = "healthy" if rate >= 90 else ("warning" if rate >= 50 else "critical")
         routines.append({
             "name": name,
             "last_run": (v.get("last_run") or "")[:16],
@@ -97,6 +108,69 @@ def _build_routines(raw_metrics: dict) -> list[dict]:
             "runs": v.get("runs", 0),
         })
     return routines[:10]
+
+
+def _needs_attention() -> dict:
+    """Aggregated cross-system health (panorama 2026-07-17, item 19) — before
+    this, answering "is anything wrong right now" meant visiting Heartbeats,
+    Kanban and the Telegram approval history separately. One query per
+    signal, each cheap and best-effort (a failure in one must never blank
+    the whole card).
+    """
+    heartbeat_failures: list[dict] = []
+    try:
+        rows = db.session.execute(db.text(
+            "SELECT hr.heartbeat_id, hr.error, hr.started_at "
+            "FROM heartbeat_runs hr "
+            "JOIN (SELECT heartbeat_id, MAX(started_at) AS max_started "
+            "      FROM heartbeat_runs GROUP BY heartbeat_id) latest "
+            "  ON latest.heartbeat_id = hr.heartbeat_id AND latest.max_started = hr.started_at "
+            "WHERE hr.status = 'fail' "
+            "ORDER BY hr.started_at DESC LIMIT 20"
+        )).fetchall()
+        heartbeat_failures = [
+            {"heartbeat_id": r.heartbeat_id, "error": (r.error or "")[:200], "started_at": r.started_at}
+            for r in rows
+        ]
+    except Exception:
+        pass
+
+    stale_locked_tickets: list[dict] = []
+    try:
+        rows = db.session.execute(db.text(
+            "SELECT id, title, locked_by, locked_at, lock_timeout_seconds FROM tickets "
+            "WHERE locked_at IS NOT NULL "
+            "AND datetime(locked_at, '+' || lock_timeout_seconds || ' seconds') < datetime('now') "
+            "LIMIT 20"
+        )).fetchall()
+        stale_locked_tickets = [
+            {"id": r.id, "title": r.title, "locked_by": r.locked_by, "locked_at": r.locked_at}
+            for r in rows
+        ]
+    except Exception:
+        pass
+
+    aged_approvals: list[dict] = []
+    try:
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        rows = db.session.execute(db.text(
+            "SELECT id, gate_type, created_at FROM pending_approvals "
+            "WHERE status = 'pending' AND created_at < :cutoff "
+            "ORDER BY created_at ASC LIMIT 20"
+        ), {"cutoff": cutoff}).fetchall()
+        aged_approvals = [
+            {"id": r.id, "gate_type": r.gate_type, "created_at": r.created_at}
+            for r in rows
+        ]
+    except Exception:
+        pass
+
+    return {
+        "heartbeat_failures": heartbeat_failures,
+        "stale_locked_tickets": stale_locked_tickets,
+        "aged_approvals": aged_approvals,
+        "total": len(heartbeat_failures) + len(stale_locked_tickets) + len(aged_approvals),
+    }
 
 
 @bp.route("/api/overview")
@@ -118,4 +192,5 @@ def overview():
         "metrics": _build_overview_metrics(raw_metrics, ic),
         "routines": _build_routines(raw_metrics),
         "integration_count": ic,
+        "needs_attention": _needs_attention(),
     })

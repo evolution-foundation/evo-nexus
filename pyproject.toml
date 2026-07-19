@@ -1,6 +1,6 @@
 [project]
 name = "evo-nexus"
-version = "0.32.3"
+version = "0.33.0"
 description = "Unofficial open source toolkit for Claude Code — AI-powered business operating system"
 requires-python = ">=3.10"
 dependencies = [
@@ -22,14 +22,22 @@ dependencies = [
     "psycopg2-binary",
     "alembic>=1.13",
     "tiktoken>=0.7",
-    "sentence-transformers>=3.0",
     "openai>=1.0",
     "google-genai>=0.3",
     "anthropic>=0.25",
-    "marker-pdf>=1.6.1",
     "watchdog>=4.0",
     "sqlparse>=0.4,<1.0",
     "jsonschema>=4.21",
+    "flask-limiter>=3.5",
+]
+
+[project.optional-dependencies]
+knowledge-ml = [
+    "marker-pdf>=1.6.1",
+    "sentence-transformers>=3.0",
+]
+local-embeddings = [
+    "sentence-transformers>=3.0",
 ]
 
 [project.scripts]

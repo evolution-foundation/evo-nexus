@@ -17,13 +17,69 @@ cd "$SCRIPT_DIR" || exit 1
 
 # Load environment variables
 if [ -f .env ]; then
-  set -a
-  source .env
-  set +a
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="${line%$'\r'}"
+    [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
+    [[ "$line" != *"="* ]] && continue
+    key="${line%%=*}"
+    value="${line#*=}"
+    key="$(printf '%s' "$key" | xargs)"
+    [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
+    export "$key=$value"
+  done < .env
 fi
 
 # Ensure logs dir exists (fresh installs / reboots after manual cleanup)
 mkdir -p "$SCRIPT_DIR/logs"
+
+if [ -x "$SCRIPT_DIR/.venv/bin/python" ]; then
+  PYTHON_BIN="$SCRIPT_DIR/.venv/bin/python"
+elif [ -x "$SCRIPT_DIR/.venv/bin/python3" ]; then
+  PYTHON_BIN="$SCRIPT_DIR/.venv/bin/python3"
+else
+  PYTHON_BIN="python3"
+fi
+
+start_detached() {
+  local log_file="$1"
+  shift
+  if command -v setsid >/dev/null 2>&1; then
+    setsid "$@" > "$log_file" 2>&1 < /dev/null &
+  else
+    nohup "$@" > "$log_file" 2>&1 < /dev/null &
+  fi
+}
+
+kill_repo_pid_file() {
+  local pid_file="$1"
+  local expected_name="$2"
+  [ -f "$pid_file" ] || return 0
+
+  local pid
+  pid="$(tr -cd '0-9' < "$pid_file")"
+  [ -n "$pid" ] || return 0
+  [ -d "/proc/$pid" ] || return 0
+
+  local cwd cmdline
+  cwd="$(readlink "/proc/$pid/cwd" 2>/dev/null || true)"
+  cmdline="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)"
+  if [ "$cwd" = "$SCRIPT_DIR" ] && [[ "$cmdline" == *"$expected_name"* ]]; then
+    kill "$pid" 2>/dev/null || true
+    sleep 1
+    kill -0 "$pid" 2>/dev/null && kill -TERM "$pid" 2>/dev/null || true
+  fi
+}
+
+kill_tcp_port() {
+  local port="$1"
+  if command -v fuser >/dev/null 2>&1; then
+    fuser -k -n tcp "$port" 2>/dev/null || true
+  elif command -v lsof >/dev/null 2>&1; then
+    local pids
+    pids=$(lsof -ti "tcp:$port" 2>/dev/null || true)
+    [ -n "$pids" ] && kill $pids 2>/dev/null || true
+  fi
+}
 
 # Kill existing services (including scheduler).
 #
@@ -34,26 +90,20 @@ mkdir -p "$SCRIPT_DIR/logs"
 # listener by its actual port; fall back to a strict pattern pinned to the
 # Python binary we spawn and the absolute script path so at worst we match
 # siblings inside this repo, never strangers.
-pkill -f 'terminal-server/bin/server.js' 2>/dev/null
+TERMINAL_PORT="${EVONEXUS_TERMINAL_PORT:-32352}"
 DASHBOARD_PORT="${EVONEXUS_PORT:-8080}"
-if command -v fuser >/dev/null 2>&1; then
-  fuser -k -n tcp "$DASHBOARD_PORT" 2>/dev/null || true
-elif command -v lsof >/dev/null 2>&1; then
-  pids=$(lsof -ti "tcp:$DASHBOARD_PORT" 2>/dev/null || true)
-  [ -n "$pids" ] && kill $pids 2>/dev/null || true
-fi
-# Also kill by pinned interpreter + absolute script path (no generic python wildcard).
-VENV_PY="$SCRIPT_DIR/.venv/bin/python"
-pkill -f "$VENV_PY $SCRIPT_DIR/dashboard/backend/app.py" 2>/dev/null || true
-pkill -f "$VENV_PY $SCRIPT_DIR/scheduler.py" 2>/dev/null || true
+kill_tcp_port "$TERMINAL_PORT"
+kill_tcp_port "$DASHBOARD_PORT"
+kill_repo_pid_file "$SCRIPT_DIR/ADWs/logs/scheduler.pid" "scheduler.py"
+kill_repo_pid_file "$SCRIPT_DIR/ADWs/logs/scheduler-shell.pid" "scheduler.py"
 sleep 1
 
 # Start terminal-server (must run FROM the project root for agent discovery)
-nohup node dashboard/terminal-server/bin/server.js > "$SCRIPT_DIR/logs/terminal-server.log" 2>&1 &
+start_detached "$SCRIPT_DIR/logs/terminal-server.log" node dashboard/terminal-server/bin/server.js
 
 # Start scheduler
-nohup "$SCRIPT_DIR/.venv/bin/python" scheduler.py > "$SCRIPT_DIR/logs/scheduler.log" 2>&1 &
+start_detached "$SCRIPT_DIR/logs/scheduler.log" "$PYTHON_BIN" scheduler.py
 
 # Start Flask dashboard
 cd dashboard/backend || exit 1
-nohup "$SCRIPT_DIR/.venv/bin/python" app.py > "$SCRIPT_DIR/logs/dashboard.log" 2>&1 &
+start_detached "$SCRIPT_DIR/logs/dashboard.log" "$PYTHON_BIN" app.py

@@ -1,0 +1,9 @@
+{
+  "name": "evo-nexus-media-worker",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Pinned HyperFrames CLI install for the OmniNexus media-worker (social-media-production). Never install via npx without a lockfile in the render critical path.",
+  "dependencies": {
+    "hyperframes": "0.7.64"
+  }
+}

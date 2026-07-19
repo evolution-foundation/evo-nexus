@@ -1,10 +1,12 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
+import { useSearchParams, useNavigate } from 'react-router-dom'
 import {
   Target, ChevronDown, ChevronRight, Plus, RefreshCw,
   CheckCircle2, Circle, Clock, XCircle, PauseCircle,
-  X,
+  X, Ticket as TicketIcon, ArrowUp, Minus, ArrowDown,
 } from 'lucide-react'
+import CreateProjectModal from '../components/CreateProjectModal'
 
 // ---- Types ----
 
@@ -21,6 +23,15 @@ interface GoalTask {
   updated_at: string
 }
 
+interface GoalTicket {
+  id: string
+  title: string
+  status: 'open' | 'in_progress' | 'blocked' | 'review' | 'resolved' | 'closed'
+  priority: 'urgent' | 'high' | 'medium' | 'low'
+  assignee_agent: string | null
+  due_date: string | null
+}
+
 interface Goal {
   id: number
   slug: string
@@ -33,9 +44,14 @@ interface Goal {
   current_value: number
   due_date: string | null
   status: 'active' | 'achieved' | 'on-hold' | 'cancelled'
+  parent_goal_id: number | null
   created_at: string
   updated_at: string
+  // Legacy, frozen since goal-ticket-unification — kept only for goals that
+  // predate it. New work lives in `tickets` below.
   tasks?: GoalTask[]
+  // The real work items: tickets linked via tickets.goal_id.
+  tickets?: GoalTicket[]
 }
 
 interface GoalProject {
@@ -176,6 +192,27 @@ function Select(props: React.SelectHTMLAttributes<HTMLSelectElement>) {
 
 // ---- Task row ----
 
+const PRIORITY_ICON: Record<string, React.ReactNode> = {
+  urgent: <ArrowUp size={10} className="text-red-400" />,
+  high: <ArrowUp size={10} className="text-orange-400" />,
+  medium: <Minus size={10} className="text-yellow-400" />,
+  low: <ArrowDown size={10} className="text-[#667085]" />,
+}
+
+function PriorityBadge({ priority }: { priority: number | string | null | undefined }) {
+  if (priority === null || priority === undefined) return null
+  // GoalTask.priority is a legacy numeric rank; Ticket.priority is a label —
+  // normalize both to the same visual so the two lists read consistently.
+  const label = typeof priority === 'number'
+    ? (priority >= 4 ? 'urgent' : priority === 3 ? 'high' : priority === 2 ? 'medium' : 'low')
+    : priority
+  return (
+    <span className="inline-flex items-center gap-0.5 shrink-0" title={`priority: ${label}`}>
+      {PRIORITY_ICON[label] || null}
+    </span>
+  )
+}
+
 function TaskRow({ task, onStatusChange }: { task: GoalTask; onStatusChange: (id: number, status: string) => void }) {
   return (
     <div className="flex items-center gap-3 py-1.5 px-2 rounded-lg hover:bg-white/5 group">
@@ -185,6 +222,7 @@ function TaskRow({ task, onStatusChange }: { task: GoalTask; onStatusChange: (id
       >
         {statusIcon(task.status, 14)}
       </button>
+      <PriorityBadge priority={task.priority} />
       <span className={`text-xs flex-1 ${task.status === 'done' ? 'line-through text-[#667085]' : 'text-[#D0D5DD]'}`}>
         {task.title}
       </span>
@@ -194,6 +232,31 @@ function TaskRow({ task, onStatusChange }: { task: GoalTask; onStatusChange: (id
       {task.due_date && (
         <span className={`text-[10px] shrink-0 ${isOverdue(task.due_date) ? 'text-red-400' : isDueSoon(task.due_date) ? 'text-yellow-400' : 'text-[#667085]'}`}>
           {task.due_date}
+        </span>
+      )}
+    </div>
+  )
+}
+
+function TicketRow({ ticket }: { ticket: GoalTicket }) {
+  const navigate = useNavigate()
+  const done = ticket.status === 'resolved' || ticket.status === 'closed'
+  return (
+    <div
+      onClick={() => navigate(`/tickets/${ticket.id}`)}
+      className="flex items-center gap-3 py-1.5 px-2 rounded-lg hover:bg-white/5 group cursor-pointer"
+    >
+      {statusIcon(ticket.status === 'resolved' || ticket.status === 'closed' ? 'done' : ticket.status === 'in_progress' ? 'in_progress' : 'open', 14)}
+      <PriorityBadge priority={ticket.priority} />
+      <span className={`text-xs flex-1 ${done ? 'line-through text-[#667085]' : 'text-[#D0D5DD]'}`}>
+        {ticket.title}
+      </span>
+      {ticket.assignee_agent && (
+        <span className="text-[10px] text-[#667085] shrink-0">@{ticket.assignee_agent}</span>
+      )}
+      {ticket.due_date && (
+        <span className={`text-[10px] shrink-0 ${isOverdue(ticket.due_date) ? 'text-red-400' : isDueSoon(ticket.due_date) ? 'text-yellow-400' : 'text-[#667085]'}`}>
+          {ticket.due_date}
         </span>
       )}
     </div>
@@ -217,6 +280,8 @@ function GoalRow({
   const p = pct(goal.current_value, goal.target_value)
   const tasks = goal.tasks || []
   const doneTasks = tasks.filter((t) => t.status === 'done').length
+  const tickets = goal.tickets || []
+  const doneTickets = tickets.filter((tk) => tk.status === 'resolved' || tk.status === 'closed').length
 
   return (
     <div className="border border-[#21262d] rounded-lg mb-2 overflow-hidden">
@@ -226,6 +291,9 @@ function GoalRow({
       >
         {expanded ? <ChevronDown size={14} className="text-[#667085] shrink-0" /> : <ChevronRight size={14} className="text-[#667085] shrink-0" />}
         {statusIcon(goal.status)}
+        <span className="text-[8px] tracking-wider uppercase text-[#667085] bg-[#21262d] px-1.5 py-0.5 rounded shrink-0">
+          {goal.parent_goal_id ? 'Sub-meta' : 'Meta'}
+        </span>
         <span className="text-sm text-[#D0D5DD] flex-1 font-medium">{goal.title}</span>
 
         {/* Progress */}
@@ -258,15 +326,37 @@ function GoalRow({
 
       {expanded && (
         <div className="border-t border-[#21262d] bg-[#0C111D]/40 px-4 py-2">
-          {tasks.length === 0 ? (
-            <p className="text-xs text-[#667085] py-1">No tasks. <button onClick={() => onCreateTask(goal.id)} className="text-[#00FFA7] hover:underline">Add one</button></p>
-          ) : (
+          {/* Tickets are the real work items post goal-ticket-unification —
+              shown first, since this is what's actually being worked on. */}
+          {tickets.length > 0 && (
+            <div className="mb-2">
+              <div className="flex items-center gap-1.5 text-[10px] text-[#667085] mb-1">
+                <TicketIcon size={11} />
+                {doneTickets}/{tickets.length} tickets done
+              </div>
+              {tickets.map((tk) => (
+                <TicketRow key={tk.id} ticket={tk} />
+              ))}
+            </div>
+          )}
+
+          {/* Legacy goal_tasks — frozen since goal-ticket-unification, only
+              shown for goals that predate it. Never created going forward. */}
+          {tasks.length > 0 && (
             <div className="mb-1">
-              <div className="text-[10px] text-[#667085] mb-1">{doneTasks}/{tasks.length} tasks done</div>
+              <div className="text-[10px] text-[#667085] mb-1">
+                {doneTasks}/{tasks.length} tasks done (legado)
+              </div>
               {tasks.map((t) => (
                 <TaskRow key={t.id} task={t} onStatusChange={onTaskStatusChange} />
               ))}
             </div>
+          )}
+
+          {tickets.length === 0 && tasks.length === 0 && (
+            <p className="text-xs text-[#667085] py-1">
+              Nenhum ticket ainda. <button onClick={() => onCreateTask(goal.id)} className="text-[#00FFA7] hover:underline">Adicionar um</button>
+            </p>
           )}
           <button
             onClick={() => onCreateTask(goal.id)}
@@ -312,6 +402,7 @@ function ProjectCard({
       >
         {expanded ? <ChevronDown size={16} className="text-[#667085]" /> : <ChevronRight size={16} className="text-[#667085]" />}
         <div className="flex-1">
+          <span className="text-[9px] tracking-widest uppercase text-[#667085] font-semibold block">Projeto</span>
           <div className="flex items-center gap-2">
             <span className="text-white font-semibold text-sm">{project.title}</span>
             <span className="text-[10px] text-[#667085] bg-[#21262d] px-2 py-0.5 rounded-full">{project.slug}</span>
@@ -322,13 +413,16 @@ function ProjectCard({
         </div>
         <div className="flex items-center gap-4 shrink-0">
           <div className="text-right">
+            {/* Aggregate across child Goals — Project itself has no metric of
+                its own, this is a rollup, not a distinct target (see the
+                "Projeto" label above: it's a grouping, not a measurable). */}
             <div className="text-xs text-[#667085]">{active} active · {achieved} achieved</div>
             {totalTarget > 0 && (
               <div className="flex items-center gap-2 mt-1">
                 <div className="w-32">
                   <ProgressBar current={totalCurrent} target={totalTarget} />
                 </div>
-                <span className="text-xs text-[#00FFA7] font-mono">{pct(totalCurrent, totalTarget)}%</span>
+                <span className="text-xs text-[#667085] font-mono">{pct(totalCurrent, totalTarget)}% agregado</span>
               </div>
             )}
           </div>
@@ -361,6 +455,82 @@ function ProjectCard({
     </div>
   )
 }
+
+// ---- Create Mission Modal ----
+
+function CreateMissionModal({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
+  const [form, setForm] = useState({
+    slug: '', title: '', description: '', target_metric: '', target_value: '', due_date: '', status: 'active',
+  })
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+
+  const handleSubmit = async () => {
+    if (!form.slug || !form.title) { setError('Slug and title are required'); return }
+    setLoading(true)
+    try {
+      await apiFetch('/api/missions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...form,
+          target_value: form.target_value ? Number(form.target_value) : undefined,
+        }),
+      })
+      onCreated()
+      onClose()
+    } catch (e: any) {
+      setError(e.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <Modal title="Create Mission" onClose={onClose}>
+      {error && <div className="text-red-400 text-xs mb-3">{error}</div>}
+      <Field label="Slug (unique identifier)">
+        <Input value={form.slug} onChange={(e) => setForm({ ...form, slug: e.target.value })} placeholder="evo-revenue-1m-q4-2026" />
+      </Field>
+      <Field label="Title">
+        <Input value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} placeholder="Evolution MRR $1M Q4 2026" />
+      </Field>
+      <Field label="Description">
+        <Input value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder="Optional description" />
+      </Field>
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="Target metric">
+          <Input value={form.target_metric} onChange={(e) => setForm({ ...form, target_metric: e.target.value })} placeholder="MRR" />
+        </Field>
+        <Field label="Target value">
+          <Input type="number" value={form.target_value} onChange={(e) => setForm({ ...form, target_value: e.target.value })} placeholder="1000000" />
+        </Field>
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="Due date">
+          <Input type="date" value={form.due_date} onChange={(e) => setForm({ ...form, due_date: e.target.value })} />
+        </Field>
+        <Field label="Status">
+          <Select value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}>
+            <option value="active">Active</option>
+            <option value="on-hold">On Hold</option>
+          </Select>
+        </Field>
+      </div>
+      <div className="flex justify-end gap-2 mt-4">
+        <button onClick={onClose} className="px-4 py-2 text-sm text-[#667085] hover:text-white transition-colors">Cancel</button>
+        <button
+          onClick={handleSubmit}
+          disabled={loading}
+          className="px-4 py-2 text-sm bg-[#00FFA7] text-black font-semibold rounded-lg hover:bg-[#00FFA7]/90 transition-colors disabled:opacity-50"
+        >
+          {loading ? 'Creating...' : 'Create'}
+        </button>
+      </div>
+    </Modal>
+  )
+}
+
 
 // ---- Create Goal Modal ----
 
@@ -507,6 +677,7 @@ type DueFilter = 'all' | 'overdue' | 'this-week' | 'this-month'
 
 export default function Goals() {
   const { t } = useTranslation()
+  const [searchParams] = useSearchParams()
   const [missions, setMissions] = useState<Mission[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -514,6 +685,8 @@ export default function Goals() {
   const [dueFilter, setDueFilter] = useState<DueFilter>('all')
   const [createGoalForProject, setCreateGoalForProject] = useState<number | null>(null)
   const [createTaskForGoal, setCreateTaskForGoal] = useState<number | null>(null)
+  const [showCreateMission, setShowCreateMission] = useState(false)
+  const [createProjectForMission, setCreateProjectForMission] = useState<number | null>(null)
 
   const load = useCallback(async () => {
     try {
@@ -528,8 +701,11 @@ export default function Goals() {
               ...proj,
               goals: await Promise.all(
                 (proj.goals || []).map(async (goal: Goal) => {
-                  const tasks = await apiFetch(`/api/goal-tasks?goal_id=${goal.id}`)
-                  return { ...goal, tasks }
+                  const [tasks, ticketsResp] = await Promise.all([
+                    apiFetch(`/api/goal-tasks?goal_id=${goal.id}`),
+                    apiFetch(`/api/tickets?goal_id=${goal.id}&limit=100&display_mode=all`),
+                  ])
+                  return { ...goal, tasks, tickets: ticketsResp.tickets || [] }
                 })
               ),
             }))
@@ -545,6 +721,14 @@ export default function Goals() {
   }, [])
 
   useEffect(() => { load() }, [load])
+
+  useEffect(() => {
+    if (loading) return
+    const projectId = searchParams.get('project')
+    if (!projectId) return
+    const el = document.getElementById(`project-${projectId}`)
+    el?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  }, [loading, missions, searchParams])
 
   const handleTaskStatusChange = async (taskId: number, status: string) => {
     try {
@@ -629,12 +813,20 @@ export default function Goals() {
             <p className="text-xs text-[#667085]">Mission → Project → Goal → Task hierarchy</p>
           </div>
         </div>
-        <button
-          onClick={load}
-          className="flex items-center gap-2 px-3 py-1.5 text-xs text-[#667085] hover:text-white border border-[#21262d] rounded-lg hover:border-[#344054] transition-colors"
-        >
-          <RefreshCw size={12} /> Refresh
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setShowCreateMission(true)}
+            className="flex items-center gap-2 px-3 py-1.5 text-xs bg-[#00FFA7]/15 text-[#00FFA7] border border-[#00FFA7]/30 rounded-lg hover:bg-[#00FFA7]/25 transition-colors"
+          >
+            <Plus size={12} /> {t('goals.newMission')}
+          </button>
+          <button
+            onClick={load}
+            className="flex items-center gap-2 px-3 py-1.5 text-xs text-[#667085] hover:text-white border border-[#21262d] rounded-lg hover:border-[#344054] transition-colors"
+          >
+            <RefreshCw size={12} /> Refresh
+          </button>
+        </div>
       </div>
 
       {/* Top urgent goals stats */}
@@ -692,9 +884,15 @@ export default function Goals() {
       {filteredMissions.length === 0 ? (
         <div className="text-center py-16 px-4">
           <p className="text-sm text-[#e6edf3] mb-2">Nenhuma Mission criada ainda.</p>
-          <p className="text-xs text-[#667085] max-w-md mx-auto">
-            Missions são os objetivos de topo da sua organização. Projects e Goals descendem delas. Use a skill <code className="text-[#00FFA7]">/create-goal</code> para criar a primeira.
+          <p className="text-xs text-[#667085] max-w-md mx-auto mb-4">
+            Missions são os objetivos de topo da sua organização. Projects e Goals descendem delas.
           </p>
+          <button
+            onClick={() => setShowCreateMission(true)}
+            className="px-4 py-2 text-sm bg-[#00FFA7] text-black font-semibold rounded-lg hover:bg-[#00FFA7]/90 transition-colors"
+          >
+            Criar sua primeira Mission
+          </button>
         </div>
       ) : (
         filteredMissions.map((mission) => (
@@ -705,7 +903,8 @@ export default function Goals() {
                 <div className="flex items-center gap-3">
                   <Target size={18} className="text-[#00FFA7]" />
                   <div>
-                    <h2 className="text-white font-bold text-base">{mission.title}</h2>
+                    <span className="text-[9px] tracking-widest uppercase text-[#00FFA7]/70 font-semibold">Missão</span>
+                    <h2 className="text-white font-bold text-base leading-tight">{mission.title}</h2>
                     {mission.description && <p className="text-xs text-[#667085] mt-0.5">{mission.description}</p>}
                   </div>
                 </div>
@@ -730,21 +929,41 @@ export default function Goals() {
               <p className="text-xs text-[#667085] px-2">No projects in this mission.</p>
             ) : (
               (mission.projects || []).map((project) => (
-                <ProjectCard
-                  key={project.id}
-                  project={project}
-                  onTaskStatusChange={handleTaskStatusChange}
-                  onRecalculate={handleRecalculate}
-                  onCreateGoal={(pid) => setCreateGoalForProject(pid)}
-                  onCreateTask={(gid) => setCreateTaskForGoal(gid)}
-                />
+                <div id={`project-${project.id}`} key={project.id}>
+                  <ProjectCard
+                    project={project}
+                    onTaskStatusChange={handleTaskStatusChange}
+                    onRecalculate={handleRecalculate}
+                    onCreateGoal={(pid) => setCreateGoalForProject(pid)}
+                    onCreateTask={(gid) => setCreateTaskForGoal(gid)}
+                  />
+                </div>
               ))
             )}
+            <button
+              onClick={() => setCreateProjectForMission(mission.id)}
+              className="flex items-center gap-1 text-xs text-[#667085] hover:text-[#00FFA7] transition-colors mt-1 px-2"
+            >
+              <Plus size={12} /> {t('goals.newProject')}
+            </button>
           </div>
         ))
       )}
 
       {/* Modals */}
+      {showCreateMission && (
+        <CreateMissionModal
+          onClose={() => setShowCreateMission(false)}
+          onCreated={load}
+        />
+      )}
+      {createProjectForMission !== null && (
+        <CreateProjectModal
+          defaultMissionId={createProjectForMission}
+          onClose={() => setCreateProjectForMission(null)}
+          onCreated={load}
+        />
+      )}
       {createGoalForProject !== null && (
         <CreateGoalModal
           projectId={createGoalForProject}

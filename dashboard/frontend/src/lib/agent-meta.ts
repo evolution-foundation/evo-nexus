@@ -151,3 +151,14 @@ export function getAgentMeta(name: string): AgentMeta {
   const base = _registry[name] || DEFAULT_META
   return { ...base, command: _registry[name]?.command || `/${name}` }
 }
+
+/**
+ * All known agent slugs (native seed + hydrated plugin agents), sorted by
+ * display label. Synchronous — reflects whatever hydrateAgentMeta() has
+ * loaded so far (native seed is always present even pre-hydration).
+ */
+export function getAllAgentSlugs(): Array<{ slug: string; label: string }> {
+  return Object.entries(_registry)
+    .map(([slug, meta]) => ({ slug, label: meta.label }))
+    .sort((a, b) => a.label.localeCompare(b.label))
+}

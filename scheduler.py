@@ -72,10 +72,24 @@ def release_lock():
 
 
 def run_adw(name: str, script: str, args: str = ""):
-    """Execute a routine as subprocess."""
+    """Execute a routine as subprocess.
+
+    YAML-configured routines are always requested with a "custom/" prefix
+    (see _load_routines_from_yaml) even when the real script lives elsewhere
+    — e.g. daily_status_report.py sits directly in ADWs/routines/ (not
+    custom/), and publish_scheduled.py sits at the repo's top-level scripts/.
+    Moving either would break their own ROOT-relative path resolution
+    (calendar/ledger/DB paths computed from Path(__file__).parent chains), so
+    this tries a few candidate locations instead of relocating them:
+    1. exactly what the caller asked for (custom/<script>)
+    2. ADWs/routines/<basename>, ignoring any custom/ prefix
+    3. top-level scripts/<basename>
+    """
     now = datetime.now().strftime("%H:%M")
-    script_path = ROUTINES_DIR / script
-    if not script_path.exists():
+    basename = Path(script).name
+    candidates = [ROUTINES_DIR / script, ROUTINES_DIR / basename, WORKSPACE / "scripts" / basename]
+    script_path = next((p for p in candidates if p.exists()), None)
+    if script_path is None:
         print(f"  {now} ✗ {name} — script not found: {script}")
         return
 
@@ -99,6 +113,14 @@ def run_adw(name: str, script: str, args: str = ""):
         print(f"  {now} ✗ {name} error: {e}")
 
 
+def _hourly_report_safe():
+    """Wrapper that only runs hourly report during business hours (08h-20h BRT)."""
+    from datetime import datetime, timezone, timedelta
+    brt = datetime.now(timezone.utc) + timedelta(hours=-3)
+    if 8 <= brt.hour < 20:
+        run_adw("Hourly Report", "hourly_report.py")
+
+
 def setup_schedule():
     """Configure core routines. Custom routines loaded from config/routines.yaml."""
     import schedule
@@ -107,13 +129,39 @@ def setup_schedule():
     schedule.every().day.at("07:00").do(run_adw, "Good Morning", "good_morning.py")
     schedule.every().day.at("21:00").do(run_adw, "End of Day", "end_of_day.py")
     schedule.every().day.at("21:15").do(run_adw, "Memory Sync", "memory_sync.py")
-    # Disabled — replaced by Weekly Review (Team) in routines.yaml
-    # schedule.every().friday.at("08:00").do(run_adw, "Weekly Review", "weekly_review.py")
+    # Reativado (panorama 2026-07-17, item 4) — o comentário anterior dizia
+    # "replaced by Weekly Review (Team) in routines.yaml", mas essa entrada
+    # nunca existiu em config/routines.yaml; nada mais checa Goal/Ticket
+    # vencido sem isto.
+    schedule.every().friday.at("08:00").do(run_adw, "Weekly Review", "weekly_review.py")
     schedule.every().sunday.at("09:00").do(run_adw, "Memory Lint", "memory_lint.py")
     schedule.every().day.at("21:00").do(run_adw, "Daily Backup", "backup.py")
+    # Exercise every NVIDIA model so the active chain has fresh live traffic
+    # evidence in /costs. Runs late at night to stay out of the way of heartbeats.
+    schedule.every().day.at("04:00").do(run_adw, "Uso Modelos DIA", "uso_modelos_dia.py")
+
+    # Hourly activity report during business hours (08h-20h BRT)
+    schedule.every().hour.do(_hourly_report_safe)
 
     # ── Custom routines (from config/routines.yaml if exists) ──
     _load_custom_routines(schedule)
+
+
+def _coerce_interval(interval, time_str):
+    """Return an interval in minutes, or None to fall back to a daily .at(time).
+
+    Accepts an explicit `interval` (minutes) or a cron-style `*/N * * * *` time
+    field (common mistake / convenience), converting it to N minutes. Anything
+    else (HH:MM) returns None so the caller uses the daily-at path.
+    """
+    if interval is not None:
+        return int(interval)
+    if isinstance(time_str, str):
+        import re
+        m = re.match(r"^\*/(\d+)\s+\*\s+\*\s+\*\s+\*$", time_str.strip())
+        if m:
+            return int(m.group(1))
+    return None
 
 
 def _load_routines_from_yaml(schedule, config_path: Path, is_plugin: bool = False,
@@ -155,10 +203,15 @@ def _load_routines_from_yaml(schedule, config_path: Path, is_plugin: bool = Fals
                 if make_id in _disabled:
                     print(f"  [{source_label}] skipped disabled routine '{name}' ({make_id})")
                     continue
-            if r.get("interval"):
-                schedule.every(int(r["interval"])).minutes.do(run_adw, name, f"custom/{script}", args)
-            elif r.get("time"):
-                schedule.every().day.at(r["time"]).do(run_adw, name, f"custom/{script}", args)
+            try:
+                interval_min = _coerce_interval(r.get("interval"), r.get("time"))
+                if interval_min is not None:
+                    schedule.every(interval_min).minutes.do(run_adw, name, f"custom/{script}", args)
+                elif r.get("time"):
+                    schedule.every().day.at(r["time"]).do(run_adw, name, f"custom/{script}", args)
+            except Exception as exc:
+                print(f"  [{source_label}] SKIPPED routine '{name}': invalid schedule "
+                      f"(time={r.get('time')!r}, interval={r.get('interval')!r}): {exc}")
 
         for r in config.get("weekly", []) or []:
             if not r.get("enabled", True):
@@ -175,10 +228,15 @@ def _load_routines_from_yaml(schedule, config_path: Path, is_plugin: bool = Fals
             day = r.get("day", "friday").lower()
             time_str = r.get("time", "09:00")
             days = r.get("days", [day])
-            for d in days:
-                getattr(schedule.every(), d, schedule.every().friday).at(time_str).do(
-                    run_adw, name, f"custom/{script}", args
-                )
+            try:
+                for d in days:
+                    getattr(schedule.every(), d, schedule.every().friday).at(time_str).do(
+                        run_adw, name, f"custom/{script}", args
+                    )
+            except Exception as exc:
+                print(f"  [{source_label}] SKIPPED weekly routine '{name}': invalid time "
+                      f"{time_str!r}: {exc}")
+                continue
 
         global _monthly_routines
         monthly = config.get("monthly", []) or []
@@ -200,10 +258,21 @@ def _load_routines_from_yaml(schedule, config_path: Path, is_plugin: bool = Fals
             _monthly_routines = monthly
 
     except Exception as e:
-        if is_plugin:
-            print(f"  Warning: Failed to load plugin routines from {config_path}: {e}")
-        else:
-            raise
+        # Confirmed live 2026-07-14: a single bad indent in config/routines.yaml
+        # (invalid YAML) raised here and propagated all the way up through
+        # setup_schedule() -> main(), crashing the scheduler process before it
+        # ever reached its run loop — before ANY routine, including the
+        # hardcoded core ones registered earlier in setup_schedule(), could
+        # fire. If the container restart-loops on the same broken file, every
+        # routine goes silent indefinitely with no error visible anywhere
+        # except scheduler logs. Never crash the whole process over the
+        # custom-routines file — log loudly and keep going with whatever
+        # loaded successfully (core routines are registered before this call,
+        # so they're unaffected either way).
+        source = "core config" if not is_plugin else f"plugin routines from {config_path}"
+        print(f"  ERROR: Failed to load {source} ({config_path}): {e}", flush=True)
+        print(f"  Scheduler continuing WITHOUT these routines — fix {config_path} and "
+              f"send SIGHUP (or restart) to reload.", flush=True)
 
 
 def _load_disabled_routines() -> dict[str, set]:

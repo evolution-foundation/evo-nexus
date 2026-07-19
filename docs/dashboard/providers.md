@@ -9,6 +9,8 @@ EvoNexus uses Anthropic's `claude` CLI by default. To run on any other backend (
 | Provider | Binary | Notes |
 |---|---|---|
 | **Anthropic** (default) | `claude` | Native Anthropic auth, no extra config |
+| **NVIDIA NIM** | `openclaude` | OpenAI-compatible endpoint (`integrate.api.nvidia.com/v1`) — DeepSeek, GLM, Kimi, Qwen, Nemotron and other hosted models with generous free tiers |
+| **OmniRoute** (`omnirouter`) | `openclaude` | Self-hosted gateway (237+ providers, automatic fallback, token compression). On the VPS stack it runs as the `omniroute` service and is reached via the internal Swarm alias `http://omniroute:20128/v1` — works even when the container has no external DNS |
 | **OpenRouter** | `openclaude` | 200+ models via one API — Claude, GPT, Gemini, Llama, etc. |
 | **OpenAI** | `openclaude` | GPT-4o, GPT-4.1, o3 via OpenAI API |
 | **Google Gemini** | `openclaude` | Gemini 2.5 Pro/Flash via Google AI |
@@ -36,6 +38,22 @@ The Providers page shows a banner at the top indicating whether `claude` and `op
 The active provider is stored in `config/providers.json`. Both the terminal-server and the ADW runner re-read this file on every session spawn, so switching takes effect **immediately** — no restart needed.
 
 A green "Active" badge marks the currently selected provider. Every other provider can still be configured and tested without affecting the active one.
+
+## Fallback Chain (heartbeats and background runs)
+
+Heartbeats and other background invocations don't call the active provider blindly — they go through `dashboard/backend/provider_fallback.py`, which builds a **provider chain** and rotates on failure (429/quota, network errors, non-zero exits):
+
+- The chain starts at `active_provider` and follows its `fallback_providers` list in `config/providers.json` (e.g. `nvidia → omnirouter → anthropic`).
+- Within a provider, `fallback_models` rotates through alternate models before leaving the provider (NVIDIA ships a 12-model chain).
+- The last link is usually `anthropic` (native `claude`) — note that on a fresh VPS container this requires a `claude` login, otherwise the final attempt exits with code 1.
+- Failed provider/model pairs go on a short cooldown so parallel runs don't hammer a throttled endpoint.
+- Disable with `HEARTBEAT_PROVIDER_FALLBACK=0`.
+
+**VPS note:** containers on the Swarm stack may not resolve external hosts (ENOTFOUND on `integrate.api.nvidia.com`, `openrouter.ai`, …). Keep `omnirouter` in the chain — it resolves via internal Docker DNS and is the reliable path for heartbeats on the VPS.
+
+## Per-Channel Provider: `telegram_provider`
+
+`config/providers.json` also accepts a `telegram_provider` key that overrides the provider used by the **Telegram provider bot** (Magneto) without touching the terminal's `active_provider`. On the VPS this is set to `omnirouter` for the DNS reason above. See [Telegram Integration](../integrations/telegram.md#provider-mode-magneto).
 
 ## Testing a Provider
 

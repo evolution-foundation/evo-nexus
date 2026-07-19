@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.33.0] - 2026-04-25
+
+Plugin contract release. Five PRs merged in one day to unblock the EvoNexus Plugin Nutri (and any future plugin needing per-endpoint role enforcement, public token-bound portals, or safe uninstall). Plus a UX fix so `409 CONFLICT` from plugin install actually says *why* it conflicted.
+
+### Added
+
+- **`requires_role` on `PluginWritableResource`** (PR #55) — plugins can declare a list of roles allowed on each writable endpoint. The host returns `403` when `current_user.role` is not in the list. `'admin'` always passes (super-user override). Backwards compatible: resources without the field accept any authenticated user.
+- **Auto-injected readonly bind params** (PR #55) — every `readonly_data` query receives `:current_user_id` and `:current_user_role` server-side. Plugins reference them directly in SQL for scoping (`WHERE primary_nutritionist_id = :current_user_id`). Both names are reserved — clients that try to spoof them via `?current_user_id=...` get `400`.
+- **`public_pages` capability** (PR #53) — token-bound public portals at `/p/{slug}/{route_prefix}/{token}`. Token validated against a plugin-declared `token_source.column`. CSP, rate limit, and security headers applied. Read-only `readonly_data` queries can be exposed to the portal via `public_via` + `bind_token_param`.
+- **HTML shell content negotiation** (PR #56) — when a request includes `text/html` in `Accept`, the host renders a minimal HTML shell that loads the plugin bundle as a module and instantiates the declared custom element with `data-token`. Programmatic clients (`Accept: application/javascript`, default `*/*`) keep getting the raw bundle. Plugins ship a single JS bundle and get a working browser experience for free.
+- **`safe_uninstall` capability** (PR #54) — three-step uninstall wizard with `preserved_tables` (renamed to `_orphan_{slug}_*` instead of dropped), pre-uninstall hook (sandboxed: read-only DB, no `BRAIN_REPO_MASTER_KEY`), and required user confirmation (checkbox + typed phrase + ZIP password). Reinstall verifies SHA256 and restores access to preserved data.
+- **Rate limit + security headers** (PR #52) — `flask-limiter` with in-memory storage on the public share endpoint and any future `/p/...` route. Five security headers applied to public responses (`Referrer-Policy`, `Cache-Control: no-store`, HSTS, `X-Content-Type-Options`, `Pragma`).
+
+### Fixed
+
+- **Plugin install wizard now shows the actual reason for `409 CONFLICT`.** The frontend was treating any 4xx as an opaque error string. Now `buildError` in `lib/api.ts` falls back to `data.conflicts[0]` when the standard `error`/`message` fields are absent (which is the case for the plugin preview endpoint), so a version mismatch shows up as `"409 CONFLICT: Plugin 'nutri' requires EvoNexus >= 0.33.0, but installed version is 0.32.3."` instead of just `"409 CONFLICT"`. `PluginInstallModal` also fixes the type of `conflicts` (was `Record<string, unknown>`, the backend always returned `string[]`) and renders each conflict as a list item.
+
+### Compat
+
+- All existing plugins (PM Essentials, etc.) work unchanged. New manifest fields default to absent / `None` and the auto-injected bind params are silently ignored if the SQL doesn't reference them. The `409` body shape for plugin install was already `{conflicts: [...], manifest, ...}` — only the frontend's interpretation changed.
+
 ## [0.32.3] - 2026-04-25
 
 Patch release fixing a long-standing Workspace UI bug where folders refused to open and the dev console flooded with `400 Path is a directory` requests, plus a small UX win on the file share dialog (reuse existing share links instead of generating a new token every time). Also includes the upstream PR #51 (private-repo plugin update flow + ClickUp webhook compat + DetachedInstanceError).
