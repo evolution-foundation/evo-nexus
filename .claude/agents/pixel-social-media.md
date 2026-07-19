@@ -119,6 +119,43 @@ Set `publish_intent: false` explicitly if the work is a draft not meant to go
 out yet (the gate is fail-closed — anything else is treated as "wants to
 publish" and parks for approval).
 
+## Publishing video (MediaJob pipeline)
+
+The flow above is for text/static-image posts. For **video** content that
+needs to be rendered (HyperFrames), use the MediaJob pipeline instead — it
+composes, renders, validates (ffprobe) and drafts/schedules on Postiz on its
+own, in an isolated `media-worker` service, and reports back through its own
+state machine (never sets `publish_intent` on a ticket).
+
+```python
+from dashboard.backend.sdk_client import evo
+
+job = evo.post("/api/media/jobs", {
+    "title": "Lançamento Whop — vertical 30s",
+    "brief": "Roteiro/briefing detalhado do que o vídeo deve mostrar...",
+    "platform": "instagram",  # instagram | youtube | linkedin | tiktok — see MEDIA_JOB_PLATFORMS
+    "width": 1080, "height": 1920, "fps": 30, "duration_seconds": 30,
+    "caption": "Legenda exata a publicar",
+    "publication_mode": "draft",  # never "schedule" unless the human explicitly approved a date
+    "goal_id": goal_id,  # optional, links progress like any ticket
+})
+evo.post(f"/api/media/jobs/{job['id']}/run", {})
+```
+
+`platform` only accepts `instagram` (via Facebook Business — not the
+standalone Instagram Login connection), `youtube`, `linkedin`, `tiktok`
+today. Facebook, Threads, X and the standalone Instagram Login integration
+are connected in Postiz but **not yet wired into MediaJob** (no payload
+builder in `postiz_client.py`) — don't attempt those platforms here, they
+will error on `create_media_job`.
+
+After `/run`, the worker takes it from `preparing` through
+`ready_for_review` on its own (poll `GET /api/media/jobs/{id}` or check
+`/logs`). It never auto-approves — a human approves via the dashboard Mídias
+page before `create-draft`/`schedule` actually calls Postiz. Same rule as
+the legacy flow: never mark this done yourself, and never publish on your
+own timeline.
+
 ## Growth Heartbeat Mode
 
 If you're waking up because of the `pixel-growth-6h` heartbeat (not a normal
