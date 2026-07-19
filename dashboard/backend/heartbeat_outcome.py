@@ -31,9 +31,6 @@ import os
 import re
 import time
 from datetime import datetime, timedelta, timezone
-from urllib.parse import urlparse
-
-import requests
 
 # Valid ticket states (see .claude/rules/tickets.md)
 _VALID_STATUS = {"open", "in_progress", "blocked", "review", "resolved", "closed"}
@@ -752,7 +749,13 @@ def _run_publish_action(approval_row, conn) -> dict:
     We therefore poll GET /public/v1/posts and return published=True only after
     every returned post id reaches state=PUBLISHED. QUEUE/ERROR/timeouts remain
     fail-closed and the ticket is not resolved.
+
+    HTTP transport lives in postiz_client.PostizClient (social-media-production
+    feature) — this function is the only caller for the legacy ticket-publish
+    flow, kept separate from the MediaJob pipeline's use of the same client.
     """
+    from postiz_client import PostizClient, PostizError, build_instagram_payload
+
     try:
         payload = json.loads(approval_row.payload or "{}")
     except (ValueError, TypeError):
@@ -769,26 +772,19 @@ def _run_publish_action(approval_row, conn) -> dict:
             "detail": "publish_content vazio; o resumo result nunca é publicado como conteúdo.",
         }
 
-    postiz_url = os.environ.get("POSTIZ_URL", "").strip().rstrip("/")
-    api_key = os.environ.get("POSTIZ_API_KEY", "").strip()
-    if not postiz_url or not api_key:
+    client = PostizClient.from_env()
+    if client is None:
         return {
             "published": False,
             "detail": "POSTIZ_URL/POSTIZ_API_KEY não configurados no serviço do dashboard.",
         }
 
-    headers = {"Authorization": api_key, "Content-Type": "application/json"}
-    timeout = float(os.environ.get("POSTIZ_HTTP_TIMEOUT_SECONDS", "30"))
     try:
-        integrations_response = requests.get(
-            f"{postiz_url}/public/v1/integrations", headers=headers, timeout=timeout
-        )
-        integrations_response.raise_for_status()
-        integrations = integrations_response.json()
-    except (requests.RequestException, ValueError) as exc:
+        integrations = client.list_integrations()
+    except PostizError as exc:
         return {"published": False, "detail": f"Falha ao consultar integrações do Postiz: {exc}"}
 
-    integration = _select_postiz_integration(target, integrations)
+    integration = client.select_integration(target, integrations)
     if not integration:
         return {
             "published": False,
@@ -800,7 +796,7 @@ def _run_publish_action(approval_row, conn) -> dict:
         return {"published": False, "detail": "publish_media deve ser uma lista de URLs HTTPS."}
     media = []
     for index, media_url in enumerate(media_urls):
-        if not isinstance(media_url, str) or not _is_safe_publish_media_url(media_url):
+        if not isinstance(media_url, str) or not client.is_safe_media_url(media_url):
             return {"published": False, "detail": f"URL de mídia inválida: {media_url!r}."}
         media.append({"id": f"evonexus-{index}", "path": media_url})
 
@@ -810,116 +806,37 @@ def _run_publish_action(approval_row, conn) -> dict:
             "detail": "Instagram requer publish_media com ao menos uma URL HTTPS.",
         }
 
-    post_body = {
-        "type": "now",
-        "date": _now_iso(),
-        "shortLink": False,
-        "tags": [],
-        "creationMethod": "API",
-        "posts": [{
-            "integration": {"id": integration["id"]},
-            "value": [{"content": content, "image": media}],
-            "settings": _postiz_settings(target),
-        }],
-    }
+    # instagram gets the real per-platform builder (post_type="post" matches
+    # the pre-refactor behavior exactly); every other legacy PUBLISH_CHANNELS
+    # target (linkedin/x/youtube/discord/whatsapp) keeps the old generic
+    # {"__type": target} shape — MediaJob's dedicated builders in
+    # postiz_client.py are for the new pipeline, not this legacy ticket flow.
+    settings = build_instagram_payload(post_type="post") if target == "instagram" else {"__type": target}
+
     try:
-        create_response = requests.post(
-            f"{postiz_url}/public/v1/posts",
-            headers=headers,
-            json=post_body,
-            timeout=timeout,
+        created = client.create_post_now(
+            integration_id=integration["id"], content=content, media=media, settings=settings,
+            now_iso_utc=_now_iso(),
         )
-        create_response.raise_for_status()
-        created = create_response.json()
-    except (requests.RequestException, ValueError) as exc:
+    except PostizError as exc:
         return {"published": False, "detail": f"Postiz recusou a publicação: {exc}"}
 
-    if not isinstance(created, list):
-        return {"published": False, "detail": f"Resposta inesperada do Postiz: {created!r}"}
     post_ids = [item.get("postId") for item in created if isinstance(item, dict) and item.get("postId")]
     if not post_ids:
         return {"published": False, "detail": f"Postiz não retornou postId: {created!r}"}
 
-    return _wait_for_postiz_publication(postiz_url, headers, post_ids, timeout)
-
-
-def _select_postiz_integration(target: str, integrations) -> dict | None:
-    if not isinstance(integrations, list):
-        return None
-    configured_id = os.environ.get(f"POSTIZ_INTEGRATION_{target.upper()}_ID", "").strip()
-    candidates = [
-        integration for integration in integrations
-        if isinstance(integration, dict)
-        and integration.get("identifier") == target
-        and not integration.get("disabled")
-    ]
-    if configured_id:
-        return next((item for item in candidates if item.get("id") == configured_id), None)
-    return candidates[0] if len(candidates) == 1 else None
-
-
-def _is_safe_publish_media_url(value: str) -> bool:
-    parsed = urlparse(value)
-    if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
-        return False
-    allowed_hosts = {
-        host.strip().lower()
-        for host in os.environ.get("POSTIZ_ALLOWED_MEDIA_HOSTS", "").split(",")
-        if host.strip()
-    }
-    hostname = parsed.hostname.lower()
-    return bool(allowed_hosts) and any(
-        hostname == allowed or hostname.endswith(f".{allowed}") for allowed in allowed_hosts
-    )
-
-
-def _postiz_settings(target: str) -> dict:
-    if target == "instagram":
-        return {"__type": "instagram", "post_type": "post"}
-    return {"__type": target}
-
-
-def _wait_for_postiz_publication(
-    postiz_url: str, headers: dict, post_ids: list[str], http_timeout: float
-) -> dict:
     wait_seconds = float(os.environ.get("POSTIZ_PUBLISH_TIMEOUT_SECONDS", "90"))
     poll_seconds = max(float(os.environ.get("POSTIZ_PUBLISH_POLL_SECONDS", "3")), 0.1)
-    deadline = time.monotonic() + wait_seconds
-    start = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
-    end = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
-
-    while time.monotonic() <= deadline:
-        try:
-            response = requests.get(
-                f"{postiz_url}/public/v1/posts",
-                headers=headers,
-                params={"startDate": start, "endDate": end},
-                timeout=http_timeout,
-            )
-            response.raise_for_status()
-            body = response.json()
-        except (requests.RequestException, ValueError) as exc:
-            return {"published": False, "detail": f"Falha ao confirmar publicação no Postiz: {exc}"}
-
-        posts = body.get("posts", body) if isinstance(body, dict) else body
-        states = {
-            item.get("id"): item.get("state")
-            for item in posts or []
-            if isinstance(item, dict) and item.get("id") in post_ids
-        }
-        if any(states.get(post_id) == "ERROR" for post_id in post_ids):
-            return {"published": False, "detail": f"Postiz marcou publicação como ERROR: {states}."}
-        if all(states.get(post_id) == "PUBLISHED" for post_id in post_ids):
-            return {
-                "published": True,
-                "detail": f"Postiz confirmou PUBLISHED para {', '.join(post_ids)}.",
-            }
-        time.sleep(poll_seconds)
-
-    return {
-        "published": False,
-        "detail": f"Postiz não confirmou PUBLISHED em {wait_seconds:g}s para {', '.join(post_ids)}.",
-    }
+    window = (
+        (datetime.now(timezone.utc) - timedelta(days=1)).isoformat(),
+        (datetime.now(timezone.utc) + timedelta(days=1)).isoformat(),
+    )
+    try:
+        return client.wait_for_publication(
+            post_ids, wait_seconds=wait_seconds, poll_seconds=poll_seconds, window=window
+        )
+    except PostizError as exc:
+        return {"published": False, "detail": f"Falha ao confirmar publicação no Postiz: {exc}"}
 
 
 def _last_review_reset_at(ticket_id: str, conn) -> str | None:

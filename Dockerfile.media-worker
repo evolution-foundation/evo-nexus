@@ -1,0 +1,128 @@
+# ============================================================================
+# Dockerfile.media-worker — social-media-production render worker
+#
+# Isolated Swarm service (replicas=1) that runs the CPU-heavy part of the
+# social-media pipeline: OpenCode/HyperFrames composition, deterministic
+# HyperFrames render, ffprobe validation. Never runs inside the dashboard
+# web process (Etapa 3). Talks to the dashboard exclusively through
+# DASHBOARD_API_TOKEN + /api/media/jobs/* — no direct DB/socket access.
+#
+# Root is /workspace (not /app) deliberately: provider_fallback.py resolves
+# its WORKSPACE constant as two parents up from its own file location
+# (dashboard/backend/provider_fallback.py -> repo root) to find
+# config/providers.json and .env — mirroring the exact layout of
+# Dockerfile.swarm/Dockerfile.swarm.dashboard means that resolution, and the
+# evonexus_config volume mount path, need no special-casing for this image.
+#
+# System dependencies below were verified, not guessed: built and ran
+# `hyperframes doctor` inside this exact image (see
+# workspace/development/features/social-media-production/ for the report) —
+# every apt package here is required to turn Chrome from "missing shared
+# library" into a passing doctor check on node:22-slim (Debian 12/bookworm).
+# ============================================================================
+FROM node:22-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3 python3-pip python3-venv \
+        curl ca-certificates git jq unzip \
+        ffmpeg \
+        # Headless Chrome runtime deps (Debian 12/bookworm package names —
+        # verified via `hyperframes doctor` inside this image, not guessed).
+        fonts-liberation fonts-noto-color-emoji \
+        libasound2 libatk-bridge2.0-0 libatk1.0-0 libatspi2.0-0 libcairo2 \
+        libcups2 libdbus-1-3 libdrm2 libexpat1 libgbm1 libglib2.0-0 \
+        libgtk-3-0 libnspr4 libnss3 libpango-1.0-0 libx11-6 libx11-xcb1 \
+        libxcb1 libxcomposite1 libxdamage1 libxext6 libxfixes3 libxkbcommon0 \
+        libxrandr2 xdg-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+ENV PATH="/root/.local/bin:${PATH}"
+
+# opencode CLI — pinned to the same version as Dockerfile.swarm /
+# Dockerfile.swarm.dashboard (never @latest — see those files for why).
+ARG CACHEBUST=1
+RUN npm install -g opencode-ai@1.17.18
+
+ENV TZ=America/Bahia
+RUN ln -snf /usr/share/zoneinfo/${TZ} /etc/localtime && echo "${TZ}" > /etc/timezone
+
+WORKDIR /workspace
+
+# HyperFrames — deterministic install (Etapa 4): package.json + lockfile,
+# `npm ci`, pinned version (0.7.64, verified against npm registry
+# 2026-07-19). Never `npx hyperframes` without this lockfile on the render
+# critical path.
+COPY media_worker/package.json media_worker/package-lock.json ./
+RUN npm ci
+
+# chrome-headless-shell — the officially recommended browser for HyperFrames'
+# optimized capture path (`hyperframes doctor` prints this exact command when
+# only a regular Chrome/Chromium is available). Pinned by whatever
+# @puppeteer/browsers resolves for this Node/Chrome-for-Testing release at
+# build time; rebuild to pick up a newer Chrome-for-Testing release.
+RUN npx --yes @puppeteer/browsers install chrome-headless-shell \
+    && CHS_BIN="$(find /workspace/chrome-headless-shell -type f -name 'chrome-headless-shell' | head -1)" \
+    && ln -s "$CHS_BIN" /usr/local/bin/chrome-headless-shell
+ENV HYPERFRAMES_BROWSER_PATH=/usr/local/bin/chrome-headless-shell
+
+# media_render.py resolves the hyperframes binary relative to the job's own
+# project/ directory first (no per-job node_modules — each job is a fresh
+# composition, not a fresh npm install) and falls back to PATH — put the one
+# pinned install on PATH so every job finds the same deterministic binary.
+RUN ln -s /workspace/node_modules/.bin/hyperframes /usr/local/bin/hyperframes
+
+# Python deps — minimal on purpose (media_executor/media_render/
+# media_validation/media_manifest/media_workspace/postiz_client/
+# provider_fallback/sdk_client only need requests + jsonschema; the worker
+# never imports Flask/SQLAlchemy/chromadb — those stay in the dashboard image).
+COPY media_worker/requirements.txt /workspace/media_worker/requirements.txt
+# --break-system-packages: node:22-slim's Python 3.11 is Debian-managed
+# (PEP 668) and refuses system-wide pip installs by default. Safe here — the
+# container has no other Python workload to conflict with.
+RUN uv pip install --system --break-system-packages -r /workspace/media_worker/requirements.txt
+
+# Application code — the worker script plus the specific dashboard/backend
+# modules it imports directly (not via HTTP; only DB/RBAC-facing operations
+# go through the API — see media_worker/worker.py's module docstring).
+COPY media_worker/worker.py /workspace/media_worker/worker.py
+COPY dashboard/backend/sdk_client.py \
+     dashboard/backend/provider_fallback.py \
+     dashboard/backend/media_executor.py \
+     dashboard/backend/media_render.py \
+     dashboard/backend/media_validation.py \
+     dashboard/backend/media_manifest.py \
+     dashboard/backend/media_workspace.py \
+     dashboard/backend/media_state_machine.py \
+     dashboard/backend/postiz_client.py \
+     /workspace/dashboard/backend/
+
+# opencode needs its own provider config discoverable via
+# ~/.config/opencode/opencode.json (same mechanism as Dockerfile.swarm.dashboard) —
+# scoped here to just the HyperFrames + social-media-production skills
+# (Etapa 5 / ADR-6), never the full 199-skill catalog.
+COPY media_worker/opencode.json /root/.config/opencode/opencode.json
+COPY .claude/skills-media /workspace/.claude/skills-media
+# Canonical source is .claude/skills/social-media-production/ (same
+# convention as every other EvoNexus skill) — copied into the worker's
+# scoped skills directory at build time rather than duplicated on disk.
+COPY .claude/skills/social-media-production /workspace/.claude/skills-media/social-media-production
+
+# config/.env are provided by the evonexus_config volume at runtime; these
+# empty placeholders only satisfy path checks so the build-time verification
+# steps below (opencode --version, hyperframes doctor) don't need a live
+# volume mounted during `docker build`.
+RUN mkdir -p /workspace/config /workspace/workspace/.locks
+
+# Build-time verification (briefing Etapa 4: "Crie um teste de build que
+# falhe quando essas dependências não estiverem disponíveis"). Fails the
+# image build if Chrome/FFmpeg/Node aren't all green.
+RUN hyperframes doctor || (echo "hyperframes doctor reported a hard failure" && exit 1)
+RUN ffmpeg -version && ffprobe -version && opencode --version
+
+LABEL org.opencontainers.image.title="evo-nexus-media-worker" \
+      org.opencontainers.image.description="social-media-production render worker (HyperFrames + OpenCode via OmniRoute + FFmpeg)" \
+      org.opencontainers.image.source="https://github.com/EvolutionAPI/evo-nexus" \
+      org.opencontainers.image.licenses="MIT"
+
+CMD ["python3", "media_worker/worker.py"]

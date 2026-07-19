@@ -179,6 +179,7 @@ const translations = {
       projects: 'Projetos',
       goals: 'Metas',
       kanban: 'Kanban',
+      media: 'Mídias',
       approvals: 'Aprovações',
       tasks: 'Tarefas',
       triggers: 'Gatilhos',

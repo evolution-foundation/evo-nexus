@@ -359,6 +359,7 @@ class FallbackAttempt:
     timeout_seconds: int
     agent: str = ""
     env_overrides: dict = field(default_factory=dict)
+    cwd: "Path | None" = None
     _result: dict | None = field(default=None, repr=False)
 
     def run(self) -> dict:
@@ -371,6 +372,7 @@ class FallbackAttempt:
             env_overrides=self.env_overrides,
             provider_id=self.provider_id,
             model=self.model,
+            cwd=self.cwd,
         )
         return self._result
 
@@ -453,6 +455,7 @@ def _invoke_cli(
     env_overrides: dict | None = None,
     provider_id: str | None = None,
     model: str | None = None,
+    cwd: Path | None = None,
 ) -> dict:
     cli_bin = shutil.which(cli_command)
     if not cli_bin:
@@ -506,7 +509,7 @@ def _invoke_cli(
             "skip_advance_model": True,
         }
     try:
-        return _invoke_cli_run(cmd, run_env, timeout_seconds, WORKSPACE, output_mode=output_mode)
+        return _invoke_cli_run(cmd, run_env, timeout_seconds, cwd or WORKSPACE, output_mode=output_mode)
     finally:
         lk.release()
 
@@ -673,6 +676,7 @@ class FallbackEngine:
         agent: str = "",
         force_provider: str | None = None,
         force_model: str | None = None,
+        cwd: Path | None = None,
     ) -> Iterator[FallbackAttempt]:
         config = _read_providers_config()
         attempt_num = 0
@@ -736,6 +740,7 @@ class FallbackEngine:
                     timeout_seconds=attempt_timeout,
                     agent=agent,
                     env_overrides=env_overrides,
+                    cwd=cwd,
                 )
                 self._attempts_log.append(attempt)
                 yield attempt
@@ -840,8 +845,25 @@ def invoke_with_fallback(
     agent: str = "",
     force_provider: str | None = None,
     force_model: str | None = None,
+    cwd: Path | None = None,
 ) -> dict:
-    """Invoke CLI with automatic 429 fallback. Returns the first successful result."""
+    """Invoke CLI with automatic 429 fallback. Returns the first successful result.
+
+    `cwd` (social-media-production): when given, the subprocess runs in that
+    directory instead of the shared repo-root WORKSPACE, and the
+    cross-container `_workspace_bash_lock` is skipped entirely — that mutex
+    exists to protect concurrent Bash/Agent sessions racing on the shared
+    `/workspace` git worktree (heartbeats vs. the Telegram orchestrator); an
+    isolated job directory (e.g. a media-worker rendering job) is not part
+    of that tree and gains nothing from serializing behind it. Concurrency
+    for isolated-cwd callers is the caller's own responsibility (e.g. the
+    media-worker's replicas=1 + per-job DB lock).
+    """
+    if cwd is not None:
+        return _invoke_with_fallback_locked(
+            prompt=prompt, max_turns=max_turns, timeout_seconds=timeout_seconds,
+            agent=agent, force_provider=force_provider, force_model=force_model, cwd=cwd,
+        )
     holder = f"agent={agent or 'none'}"
     try:
         with _workspace_bash_lock(holder):
@@ -866,13 +888,14 @@ def _invoke_with_fallback_locked(
     agent: str = "",
     force_provider: str | None = None,
     force_model: str | None = None,
+    cwd: Path | None = None,
 ) -> dict:
     engine = FallbackEngine()
     last_result = None
 
     for attempt in engine.attempts(
         prompt=prompt, max_turns=max_turns, timeout_seconds=timeout_seconds,
-        agent=agent, force_provider=force_provider, force_model=force_model,
+        agent=agent, force_provider=force_provider, force_model=force_model, cwd=cwd,
     ):
         result = attempt.run()
         result["provider_id"] = attempt.provider_id

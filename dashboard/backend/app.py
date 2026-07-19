@@ -890,6 +890,73 @@ with app.app_context():
         _conn.commit()
     # --- End B3 safe_uninstall migration ---
 
+    # --- social-media-production migration: media_jobs table ---
+    _existing_tables_smp = {row[0] for row in _cur.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    if "media_jobs" not in _existing_tables_smp:
+        _cur.executescript(
+            """
+            CREATE TABLE media_jobs (
+                id TEXT PRIMARY KEY,
+                project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
+                campaign_id TEXT,
+                goal_id INTEGER REFERENCES goals(id) ON DELETE SET NULL,
+                task_id INTEGER REFERENCES goal_tasks(id) ON DELETE SET NULL,
+                created_by TEXT NOT NULL DEFAULT 'system',
+                title TEXT NOT NULL,
+                brief TEXT,
+                platform TEXT NOT NULL CHECK(platform IN ('instagram','youtube','linkedin','tiktok')),
+                postiz_integration_id TEXT,
+                format TEXT NOT NULL DEFAULT 'vertical',
+                width INTEGER NOT NULL,
+                height INTEGER NOT NULL,
+                fps INTEGER NOT NULL DEFAULT 30,
+                duration_seconds REAL NOT NULL,
+                language TEXT NOT NULL DEFAULT 'pt-BR',
+                caption TEXT,
+                platform_settings TEXT,
+                publication_mode TEXT NOT NULL DEFAULT 'draft' CHECK(publication_mode IN ('draft','schedule')),
+                scheduled_at TEXT,
+                scheduled_at_utc TEXT,
+                timezone TEXT NOT NULL DEFAULT 'America/Bahia',
+                status TEXT NOT NULL DEFAULT 'queued' CHECK(status IN (
+                    'queued','preparing','generating','rendering','validating',
+                    'ready_for_review','rejected','approved','uploading',
+                    'creating_draft','draft_created','scheduling','scheduled',
+                    'published','retryable_failure','failed','cancelled'
+                )),
+                workspace_path TEXT,
+                render_path TEXT,
+                render_sha256 TEXT,
+                render_size_bytes INTEGER,
+                render_duration_seconds REAL,
+                render_width INTEGER,
+                render_height INTEGER,
+                render_fps INTEGER,
+                render_has_audio INTEGER,
+                postiz_media_id TEXT,
+                postiz_media_path TEXT,
+                postiz_media_name TEXT,
+                postiz_post_id TEXT,
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT,
+                reject_reason TEXT,
+                locked_at TEXT,
+                locked_by TEXT,
+                lock_timeout_seconds INTEGER,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                approved_at TEXT,
+                published_at TEXT,
+                CHECK ((locked_at IS NULL AND locked_by IS NULL) OR (locked_at IS NOT NULL AND locked_by IS NOT NULL))
+            );
+            CREATE INDEX idx_media_jobs_status ON media_jobs(status);
+            CREATE INDEX idx_media_jobs_project ON media_jobs(project_id);
+            CREATE INDEX idx_media_jobs_locked ON media_jobs(locked_at);
+            """
+        )
+        _conn.commit()
+    # --- End social-media-production migration ---
+
     # Fix corrupted datetime columns (NULL or non-string values crash SQLAlchemy)
     for _tbl, _col in [("roles", "created_at"), ("users", "created_at"), ("users", "last_login")]:
         try:
@@ -1168,6 +1235,8 @@ from routes.shares import bp as shares_bp
 from routes.heartbeats import bp as heartbeats_bp
 from routes.goals import bp as goals_bp
 from routes.tickets import bp as tickets_bp
+from routes.media_jobs import bp as media_jobs_bp
+from routes.integrations_core_postiz import bp as integrations_core_postiz_bp
 from routes.approvals import bp as approvals_bp
 from routes.health import bp as health_bp
 from routes.knowledge import bp as knowledge_bp
@@ -1246,6 +1315,8 @@ app.register_blueprint(shares_bp)
 app.register_blueprint(heartbeats_bp)
 app.register_blueprint(goals_bp)
 app.register_blueprint(tickets_bp)
+app.register_blueprint(media_jobs_bp)
+app.register_blueprint(integrations_core_postiz_bp)
 app.register_blueprint(approvals_bp)
 app.register_blueprint(health_bp)
 app.register_blueprint(knowledge_bp)

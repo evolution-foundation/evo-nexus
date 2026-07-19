@@ -48,6 +48,11 @@ services:
       - evonexus_claude_auth:/root/.claude
       - evonexus_codex_auth:/root/.codex
       - evonexus_openclaude_auth:/root/.openclaude
+      ## social-media-production: same volume the media-worker renders into.
+      ## The dashboard needs read access to serve /api/media/jobs/{id}/video
+      ## and to upload the finished MP4 directly to Postiz — it never
+      ## renders here itself (see Dockerfile.media-worker).
+      - evonexus_media:/workspace/media
 
     networks:
       network_public:
@@ -63,10 +68,20 @@ services:
       - POSTIZ_URL=${POSTIZ_URL}
       - POSTIZ_API_KEY=${POSTIZ_API_KEY}
       - POSTIZ_INTEGRATION_INSTAGRAM_ID=${POSTIZ_INTEGRATION_INSTAGRAM_ID}
+      - POSTIZ_INTEGRATION_YOUTUBE_ID=${POSTIZ_INTEGRATION_YOUTUBE_ID}
       - POSTIZ_INTEGRATION_LINKEDIN_ID=${POSTIZ_INTEGRATION_LINKEDIN_ID}
+      - POSTIZ_INTEGRATION_TIKTOK_ID=${POSTIZ_INTEGRATION_TIKTOK_ID}
       - POSTIZ_ALLOWED_MEDIA_HOSTS=${POSTIZ_ALLOWED_MEDIA_HOSTS}
+      - POSTIZ_REQUEST_TIMEOUT_SECONDS=${POSTIZ_REQUEST_TIMEOUT_SECONDS:-120}
+      - POSTIZ_UPLOAD_TIMEOUT_SECONDS=${POSTIZ_UPLOAD_TIMEOUT_SECONDS:-900}
       - POSTIZ_PUBLISH_TIMEOUT_SECONDS=${POSTIZ_PUBLISH_TIMEOUT_SECONDS:-90}
       - POSTIZ_PUBLISH_POLL_SECONDS=${POSTIZ_PUBLISH_POLL_SECONDS:-3}
+      ## social-media-production (MediaJob pipeline)
+      - MEDIA_WORKSPACE=/workspace/media
+      - MEDIA_TIMEZONE=${MEDIA_TIMEZONE:-America/Bahia}
+      - MEDIA_MAX_FILE_SIZE_BYTES=${MEDIA_MAX_FILE_SIZE_BYTES:-1073741824}
+      - MEDIA_RETENTION_DAYS=${MEDIA_RETENTION_DAYS:-7}
+      - SOCIAL_DEFAULT_POST_MODE=${SOCIAL_DEFAULT_POST_MODE:-draft}
       - EVONEXUS_API_URL=http://localhost:8080
       - CORS_ALLOWED_ORIGINS=https://${EVONEXUS_DOMAIN}
       - TZ=${TZ:-America/Sao_Paulo}
@@ -216,6 +231,65 @@ services:
           memory: 1024M
 
   ## --------------------------------------------------------------------------
+  ## social-media-production — media-worker (HyperFrames + OpenCode/OmniRoute
+  ## + FFmpeg render/validate). Isolated on purpose: CPU-heavy rendering never
+  ## runs inside the dashboard's web process. replicas=1 + concurrency=1
+  ## (enforced by the worker's own polling loop) — only one render at a time.
+  ## Never mounts /var/run/docker.sock, never publishes a port.
+  ## --------------------------------------------------------------------------
+  evonexus_media_worker:
+    image: excarplex/evo-nexus-media-worker:latest
+
+    volumes:
+      - evonexus_media:/workspace/media
+      # Only what the worker actually needs to run OpenCode via the active
+      # OmniRoute-backed provider — no dashboard_data, no .claude auth
+      # volumes for other CLIs, no backups.
+      - evonexus_config:/workspace/config
+
+    networks:
+      - network_public
+
+    environment:
+      - DASHBOARD_API_TOKEN=${DASHBOARD_API_TOKEN}
+      - EVONEXUS_API_URL=http://evonexus-dashboard:8080
+      - MEDIA_WORKSPACE=/workspace/media
+      - MEDIA_SKILLS_DIR=/workspace/.claude/skills-media
+      - MEDIA_WORKER_POLL_SECONDS=${MEDIA_WORKER_POLL_SECONDS:-10}
+      - MEDIA_JOB_TIMEOUT_SECONDS=${MEDIA_JOB_TIMEOUT_SECONDS:-3600}
+      - MEDIA_MAX_FILE_SIZE_BYTES=${MEDIA_MAX_FILE_SIZE_BYTES:-1073741824}
+      - TZ=${TZ:-America/Bahia}
+
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      resources:
+        ## First service in this stack to use `reservations` (not just
+        ## `limits`) — rendering is the first genuinely CPU-heavy workload
+        ## introduced here, and without a guaranteed floor a render could
+        ## starve the dashboard's Flask/terminal processes on an 8 vCPU box.
+        ## See workspace/development/features/social-media-production/
+        ## [C]architecture-social-media-production.md ADR-9.
+        reservations:
+          cpus: "1.0"
+          memory: 1024M
+        limits:
+          cpus: "4.0"
+          memory: 5120M
+      ## No HTTP port to healthcheck against (the worker is a polling loop,
+      ## not a server) — liveness is a touched-file heartbeat instead.
+      # Uncomment if your Swarm/Portainer version supports HEALTHCHECK CMD
+      # test overrides at the compose level:
+      # healthcheck:
+      #   test: ["CMD-SHELL", "test $(($(date +%s) - $(date -r /tmp/media-worker.alive +%s))) -lt 120"]
+      #   interval: 30s
+      #   timeout: 5s
+      #   retries: 3
+      #   start_period: 60s
+
+  ## --------------------------------------------------------------------------
   ## OPCIONAL — OmniRoute (https://github.com/diegosouzapw/OmniRoute, MIT)
   ## Gateway de IA local: roteia 237+ providers (90+ com free tier) por um
   ## único endpoint OpenAI-compatível, com fallback automático, compressão de
@@ -304,6 +378,11 @@ volumes:
   evonexus_claude_auth:
   evonexus_codex_auth:
   evonexus_openclaude_auth:
+  ## social-media-production: MediaJob workspaces + renders. Shared between
+  ## evonexus_dashboard (streaming/upload) and evonexus_media_worker
+  ## (rendering). Not wiped by MEDIA_RETENTION_DAYS immediately after
+  ## upload — see media_workspace.py.
+  evonexus_media:
   omniroute_data:
 
 networks:

@@ -116,6 +116,7 @@ ALL_RESOURCES = {
     "heartbeats": ["view", "execute", "manage"],
     "goals": ["view", "execute", "manage"],
     "tickets": ["view", "execute", "manage"],
+    "media_jobs": ["view", "execute", "manage"],
 }
 
 # Agent layer mapping (file-stem names)
@@ -194,6 +195,7 @@ BUILTIN_ROLES = {
             "knowledge": ["view", "manage"],
             "heartbeats": ["view", "execute"],
             "tickets": ["view", "execute"],
+            "media_jobs": ["view", "execute"],
         },
     },
     "viewer": {
@@ -219,6 +221,7 @@ BUILTIN_ROLES = {
             "knowledge": ["view"],
             "heartbeats": ["view"],
             "tickets": ["view"],
+            "media_jobs": ["view"],
         },
     },
 }
@@ -938,6 +941,135 @@ class PendingApproval(db.Model):
             "nudged_at": self.nudged_at,
             "decided_at": self.decided_at,
             "expires_at": self.expires_at,
+        }
+
+
+# --------------- MediaJob model (social-media-production) ---------------
+
+MEDIA_JOB_PLATFORMS = ("instagram", "youtube", "linkedin", "tiktok")
+MEDIA_JOB_PUBLICATION_MODES = ("draft", "schedule")
+
+
+class MediaJob(db.Model):
+    """A social-media video production job: brief -> HyperFrames render ->
+    ffprobe validation -> human review -> Postiz upload -> draft/schedule.
+
+    Status is never written directly by route code — every transition must
+    go through media_state_machine.assert_transition() first (see that
+    module for the full matrix and the reasoning behind each edge).
+    """
+
+    __tablename__ = "media_jobs"
+    __table_args__ = (
+        db.CheckConstraint(
+            "platform IN ('instagram','youtube','linkedin','tiktok')",
+            name="ck_media_job_platform",
+        ),
+        db.CheckConstraint(
+            "publication_mode IN ('draft','schedule')",
+            name="ck_media_job_publication_mode",
+        ),
+        db.CheckConstraint(
+            "(locked_at IS NULL AND locked_by IS NULL) OR (locked_at IS NOT NULL AND locked_by IS NOT NULL)",
+            name="ck_media_job_lock_consistency",
+        ),
+    )
+
+    id = db.Column(db.String(36), primary_key=True)  # uuid4
+    project_id = db.Column(db.Integer, db.ForeignKey("projects.id", ondelete="SET NULL"), nullable=True)
+    campaign_id = db.Column(db.String(200), nullable=True)
+    goal_id = db.Column(db.Integer, db.ForeignKey("goals.id", ondelete="SET NULL"), nullable=True)
+    task_id = db.Column(db.Integer, db.ForeignKey("goal_tasks.id", ondelete="SET NULL"), nullable=True)
+    created_by = db.Column(db.String(100), nullable=False, default="system")
+    title = db.Column(db.String(500), nullable=False)
+    brief = db.Column(db.Text, nullable=True)
+    platform = db.Column(db.String(20), nullable=False)
+    postiz_integration_id = db.Column(db.String(100), nullable=True)
+    format = db.Column(db.String(20), nullable=False, default="vertical")
+    width = db.Column(db.Integer, nullable=False)
+    height = db.Column(db.Integer, nullable=False)
+    fps = db.Column(db.Integer, nullable=False, default=30)
+    duration_seconds = db.Column(db.Float, nullable=False)
+    language = db.Column(db.String(10), nullable=False, default="pt-BR")
+    caption = db.Column(db.Text, nullable=True)
+    platform_settings = db.Column(db.Text, nullable=True)  # JSON string
+    publication_mode = db.Column(db.String(10), nullable=False, default="draft")
+    scheduled_at = db.Column(db.String(30), nullable=True)       # user-facing, MEDIA_TIMEZONE
+    scheduled_at_utc = db.Column(db.String(30), nullable=True)   # normalized ISO-8601 UTC
+    timezone = db.Column(db.String(50), nullable=False, default="America/Bahia")
+    status = db.Column(db.String(20), nullable=False, default="queued")
+    workspace_path = db.Column(db.Text, nullable=True)
+    render_path = db.Column(db.Text, nullable=True)
+    render_sha256 = db.Column(db.String(64), nullable=True)
+    render_size_bytes = db.Column(db.Integer, nullable=True)
+    render_duration_seconds = db.Column(db.Float, nullable=True)
+    render_width = db.Column(db.Integer, nullable=True)
+    render_height = db.Column(db.Integer, nullable=True)
+    render_fps = db.Column(db.Integer, nullable=True)
+    render_has_audio = db.Column(db.Integer, nullable=True)  # 0/1, SQLite has no bool
+    postiz_media_id = db.Column(db.String(100), nullable=True)
+    postiz_media_path = db.Column(db.Text, nullable=True)
+    postiz_media_name = db.Column(db.String(300), nullable=True)
+    postiz_post_id = db.Column(db.String(100), nullable=True)
+    attempt_count = db.Column(db.Integer, nullable=False, default=0)
+    last_error = db.Column(db.Text, nullable=True)
+    reject_reason = db.Column(db.Text, nullable=True)
+    locked_at = db.Column(db.String(30), nullable=True)
+    locked_by = db.Column(db.String(100), nullable=True)
+    lock_timeout_seconds = db.Column(db.Integer, nullable=True)
+    created_at = db.Column(db.String(30), nullable=False)
+    updated_at = db.Column(db.String(30), nullable=False)
+    approved_at = db.Column(db.String(30), nullable=True)
+    published_at = db.Column(db.String(30), nullable=True)
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "project_id": self.project_id,
+            "campaign_id": self.campaign_id,
+            "goal_id": self.goal_id,
+            "task_id": self.task_id,
+            "created_by": self.created_by,
+            "title": self.title,
+            "brief": self.brief,
+            "platform": self.platform,
+            "postiz_integration_id": self.postiz_integration_id,
+            "format": self.format,
+            "width": self.width,
+            "height": self.height,
+            "fps": self.fps,
+            "duration_seconds": self.duration_seconds,
+            "language": self.language,
+            "caption": self.caption,
+            "platform_settings": json.loads(self.platform_settings) if self.platform_settings else {},
+            "publication_mode": self.publication_mode,
+            "scheduled_at": self.scheduled_at,
+            "scheduled_at_utc": self.scheduled_at_utc,
+            "timezone": self.timezone,
+            "status": self.status,
+            "workspace_path": self.workspace_path,
+            "render_path": self.render_path,
+            "render_sha256": self.render_sha256,
+            "render_size_bytes": self.render_size_bytes,
+            "render_duration_seconds": self.render_duration_seconds,
+            "render_width": self.render_width,
+            "render_height": self.render_height,
+            "render_fps": self.render_fps,
+            "render_has_audio": bool(self.render_has_audio) if self.render_has_audio is not None else None,
+            "postiz_media_id": self.postiz_media_id,
+            "postiz_media_path": self.postiz_media_path,
+            "postiz_media_name": self.postiz_media_name,
+            "postiz_post_id": self.postiz_post_id,
+            "attempt_count": self.attempt_count,
+            "last_error": self.last_error,
+            "reject_reason": self.reject_reason,
+            "locked_at": self.locked_at,
+            "locked_by": self.locked_by,
+            "lock_timeout_seconds": self.lock_timeout_seconds,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+            "approved_at": self.approved_at,
+            "published_at": self.published_at,
         }
 
 

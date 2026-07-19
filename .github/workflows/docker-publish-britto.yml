@@ -37,6 +37,8 @@ jobs:
             dockerfile: Dockerfile.swarm
           - image: evo-nexus-dashboard
             dockerfile: Dockerfile.swarm.dashboard
+          - image: evo-nexus-media-worker
+            dockerfile: Dockerfile.media-worker
 
     steps:
       - name: Checkout

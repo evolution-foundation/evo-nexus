@@ -52,12 +52,16 @@ INTEGRATIONS = [
     {"name": "Evo CRM", "keys": ["EVO_CRM_TOKEN", "EVO_CRM_URL"], "category": "crm"},
     {"name": "AI Image Creator", "keys": ["AI_IMG_CREATOR_"], "category": "creative", "prefix": True},
     # Postiz — social publishing bridge. Called server-side by the dashboard
-    # after a human approves a publish gate; POSTIZ_API_KEY is denylisted from
-    # agent subprocess env (goal-ticket-unification). POSTIZ_INTEGRATION_*_ID
-    # pin a specific connected account when a platform has more than one.
+    # after a human approves a publish gate, or by the MediaJob pipeline
+    # (social-media-production) after a MediaJob is approved. POSTIZ_API_KEY
+    # is denylisted from agent subprocess env (goal-ticket-unification).
+    # POSTIZ_INTEGRATION_*_ID pin a specific connected account when a
+    # platform has more than one. This entry is read-only status (configured
+    # bool) — use PUT /api/integrations/core/postiz for masked admin config.
     {"name": "Postiz", "keys": [
         "POSTIZ_URL", "POSTIZ_API_KEY",
-        "POSTIZ_INTEGRATION_INSTAGRAM_ID", "POSTIZ_INTEGRATION_LINKEDIN_ID",
+        "POSTIZ_INTEGRATION_INSTAGRAM_ID", "POSTIZ_INTEGRATION_YOUTUBE_ID",
+        "POSTIZ_INTEGRATION_LINKEDIN_ID", "POSTIZ_INTEGRATION_TIKTOK_ID",
         "POSTIZ_ALLOWED_MEDIA_HOSTS",
     ], "category": "social"},
     # MinIO / S3 — media host for the publish flow (int-minio skill). Agents

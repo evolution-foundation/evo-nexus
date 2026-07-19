@@ -1,0 +1,5 @@
+# Minimal — the worker never imports Flask/SQLAlchemy/chromadb (those live
+# only in the dashboard image). Kept in sync with pyproject.toml's pins for
+# the same two packages.
+requests>=2.31
+jsonschema>=4.21

@@ -502,8 +502,15 @@ def test_run_publish_action_requires_exact_content(conn):
 
 
 class _PostizResponse:
-    def __init__(self, body):
+    """Mock for requests.Response as consumed by postiz_client.PostizClient._request
+    (status_code + json()/text; heartbeat_outcome no longer calls requests
+    directly since the social-media-production refactor extracted PostizClient).
+    """
+
+    def __init__(self, body, status_code: int = 200):
         self._body = body
+        self.status_code = status_code
+        self.text = json.dumps(body) if not isinstance(body, str) else body
 
     def raise_for_status(self):
         return None
@@ -526,23 +533,26 @@ def test_run_publish_action_confirms_postiz_published(conn):
         "POSTIZ_PUBLISH_TIMEOUT_SECONDS": "1",
         "POSTIZ_PUBLISH_POLL_SECONDS": "0.1",
     }
-    get_responses = [
+    # Call order inside _run_publish_action: GET integrations, POST posts
+    # (create), GET posts (publication-confirmation poll).
+    responses = [
         _PostizResponse([{
             "id": "int-linkedin", "identifier": "linkedin", "disabled": False,
         }]),
+        _PostizResponse([{"postId": "post-1", "integration": "int-linkedin"}]),
         _PostizResponse({"posts": [{"id": "post-1", "state": "PUBLISHED"}]}),
     ]
     with patch.dict("os.environ", env, clear=False), \
-         patch("heartbeat_outcome.requests.get", side_effect=get_responses) as mock_get, \
-         patch("heartbeat_outcome.requests.post", return_value=_PostizResponse([
-             {"postId": "post-1", "integration": "int-linkedin"}
-         ])) as mock_post:
+         patch("postiz_client.requests.request", side_effect=responses) as mock_request:
         result = heartbeat_outcome._run_publish_action(_Row(), conn)
 
     assert result["published"] is True
     assert "PUBLISHED" in result["detail"]
-    assert mock_get.call_count == 2
-    sent = mock_post.call_args.kwargs["json"]
+    assert mock_request.call_count == 3
+    post_call = mock_request.call_args_list[1]
+    assert post_call.args[0] == "POST"
+    assert post_call.args[1].endswith("/public/v1/posts")
+    sent = post_call.kwargs["json"]
     assert sent["type"] == "now"
     assert sent["posts"][0]["integration"]["id"] == "int-linkedin"
     assert sent["posts"][0]["value"][0]["content"] == "Texto exato aprovado."
@@ -562,13 +572,15 @@ def test_run_publish_action_rejects_ambiguous_integration(conn):
     with patch.dict("os.environ", {
         "POSTIZ_URL": "https://postiz.example.com", "POSTIZ_API_KEY": "key",
     }, clear=False), patch(
-        "heartbeat_outcome.requests.get", return_value=_PostizResponse(integrations)
-    ), patch("heartbeat_outcome.requests.post") as mock_post:
+        "postiz_client.requests.request", return_value=_PostizResponse(integrations)
+    ) as mock_request:
         result = heartbeat_outcome._run_publish_action(_Row(), conn)
 
     assert result["published"] is False
     assert "inequívoca" in result["detail"]
-    mock_post.assert_not_called()
+    # Only the integrations lookup — never a POST to create a post.
+    assert mock_request.call_count == 1
+    assert mock_request.call_args.args[0] == "GET"
 
 
 def test_run_publish_action_instagram_requires_allowlisted_media(conn):
@@ -584,13 +596,14 @@ def test_run_publish_action_instagram_requires_allowlisted_media(conn):
         "POSTIZ_API_KEY": "key",
         "POSTIZ_ALLOWED_MEDIA_HOSTS": "cdn.example.com",
     }, clear=False), patch(
-        "heartbeat_outcome.requests.get",
+        "postiz_client.requests.request",
         return_value=_PostizResponse([{
             "id": "int-instagram", "identifier": "instagram", "disabled": False,
         }]),
-    ), patch("heartbeat_outcome.requests.post") as mock_post:
+    ) as mock_request:
         result = heartbeat_outcome._run_publish_action(_Row(), conn)
 
     assert result["published"] is False
     assert "URL de mídia inválida" in result["detail"]
-    mock_post.assert_not_called()
+    assert mock_request.call_count == 1
+    assert mock_request.call_args.args[0] == "GET"

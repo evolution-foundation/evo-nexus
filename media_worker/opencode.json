@@ -1,0 +1,22 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "opencode": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "OpenCode",
+      "options": {
+        "baseURL": "{env:OPENAI_BASE_URL}",
+        "apiKey": "{env:OPENAI_API_KEY}"
+      },
+      "models": {
+        "auto": { "name": "OpenCode auto (LKGP)" }
+      }
+    }
+  },
+  "agent": {
+    "build": {
+      "steps": 20,
+      "tools": { "skill": true }
+    }
+  }
+}

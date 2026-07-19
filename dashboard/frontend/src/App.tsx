@@ -41,6 +41,7 @@ const HeartbeatsList = lazyDefault(() => import('./pages/Heartbeats'))
 const HeartbeatDetail = lazyNamed(() => import('./pages/Heartbeats'), 'HeartbeatDetail')
 const Activity = lazyDefault(() => import('./pages/Activity'))
 const Goals = lazyDefault(() => import('./pages/Goals'))
+const Media = lazyDefault(() => import('./pages/Media'))
 const ProjectsOverview = lazyDefault(() => import('./pages/ProjectsOverview'))
 const Kanban = lazyDefault(() => import('./pages/Kanban'))
 const Approvals = lazyDefault(() => import('./pages/Approvals'))
@@ -269,6 +270,7 @@ function AppContent() {
               {hasPermission('users', 'manage') && <Route path="/roles" element={<Roles />} />}
               {hasPermission('workspace', 'manage') && <Route path="/shares" element={<ShareLinks />} />}
               <Route path="/goals" element={<Goals />} />
+              {hasPermission('media_jobs', 'view') && <Route path="/media" element={<Media />} />}
               <Route path="/projects" element={<ProjectsOverview />} />
               <Route path="/plugins" element={<Plugins />} />
               <Route path="/plugins/:slug" element={<PluginDetail />} />

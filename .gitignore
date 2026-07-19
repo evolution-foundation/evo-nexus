@@ -62,6 +62,13 @@ dashboard/frontend/node_modules/
 dashboard/terminal-server/node_modules/
 dashboard/frontend/dist/
 
+# social-media-production: media-worker's pinned HyperFrames install +
+# downloaded chrome-headless-shell binary — package.json/package-lock.json
+# ARE tracked (deterministic install source of truth), the resolved
+# node_modules/browser download are not.
+media_worker/node_modules/
+media_worker/chrome-headless-shell/
+
 # ── Evo Method (separate project) ────────
 _evo/
 _evo-output/
