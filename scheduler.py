@@ -5,6 +5,8 @@ Runs core routines on schedule. Custom routines loaded from config/routines.yaml
 Usage: runs automatically with make dashboard-app
 """
 
+import json
+import shlex
 import subprocess
 import os
 import sys
@@ -15,9 +17,17 @@ from datetime import datetime
 from pathlib import Path
 
 WORKSPACE = Path(__file__).parent
-PYTHON = "uv run python" if os.system("command -v uv > /dev/null 2>&1") == 0 else "python3"
+# Routines run with the SAME interpreter as the scheduler. This used to be
+# "uv run python", which re-syncs the venv against uv.lock on every single run and
+# silently REMOVES any package not declared in pyproject.toml. A routine whose
+# dependency was installed ad-hoc would therefore delete that dependency while
+# starting up, then fail — quietly, on every run. sys.executable has no such
+# side effect. Declaring deps in pyproject.toml remains the correct practice;
+# this just stops the scheduler from punishing the ones that aren't.
+PYTHON = shlex.quote(sys.executable or "python3")
 ROUTINES_DIR = WORKSPACE / "ADWs" / "routines"
 PID_FILE = WORKSPACE / "ADWs" / "logs" / "scheduler.pid"
+FAILURE_LOG = WORKSPACE / "ADWs" / "logs" / "routine-failures.jsonl"
 
 # SIGHUP reload flag — set by handler, cleared by main loop (ADR-2)
 _reload_flag = threading.Event()
@@ -71,12 +81,37 @@ def release_lock():
     PID_FILE.unlink(missing_ok=True)
 
 
+def _alert_failure(name: str, detail: str):
+    """Persist + notify a routine failure. Silence is the failure mode fixed here.
+
+    A routine that fails by printing to buffered stdout is indistinguishable from
+    one that never ran at all. The JSONL record is written first and always; the
+    Telegram notification is best-effort and can never take the scheduler down.
+    """
+    ts = datetime.now().isoformat(timespec="seconds")
+    try:
+        FAILURE_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with open(FAILURE_LOG, "a") as f:
+            f.write(json.dumps({"ts": ts, "routine": name, "detail": detail},
+                               ensure_ascii=False) + "\n")
+    except Exception as e:
+        print(f"  WARN: could not write {FAILURE_LOG}: {e}", flush=True)
+
+    try:
+        sys.path.insert(0, str(WORKSPACE / "ADWs"))
+        from runner import send_telegram
+        send_telegram(f"\U0001F6A8 Routine failed — {name}\n{detail}\n({ts})")
+    except Exception as e:
+        print(f"  WARN: Telegram alert not sent: {e}", flush=True)
+
+
 def run_adw(name: str, script: str, args: str = ""):
     """Execute a routine as subprocess."""
     now = datetime.now().strftime("%H:%M")
     script_path = ROUTINES_DIR / script
     if not script_path.exists():
-        print(f"  {now} ✗ {name} — script not found: {script}")
+        print(f"  {now} ✗ {name} — script not found: {script}", flush=True)
+        _alert_failure(name, f"script not found: {script}")
         return
 
     try:
@@ -92,11 +127,16 @@ def run_adw(name: str, script: str, args: str = ""):
             text=True,
         )
         status = "✓" if result.returncode == 0 else "✗"
-        print(f"  {now} {status} {name}")
+        print(f"  {now} {status} {name}", flush=True)
+        if result.returncode != 0:
+            tail = (result.stderr or result.stdout or "").strip()[-400:]
+            _alert_failure(name, f"exit {result.returncode}\n{tail}")
     except subprocess.TimeoutExpired:
-        print(f"  {now} ✗ {name} timeout (15min)")
+        print(f"  {now} ✗ {name} timeout (15min)", flush=True)
+        _alert_failure(name, "timed out after 15min")
     except Exception as e:
-        print(f"  {now} ✗ {name} error: {e}")
+        print(f"  {now} ✗ {name} error: {e}", flush=True)
+        _alert_failure(name, f"scheduler exception: {e}")
 
 
 def setup_schedule():
