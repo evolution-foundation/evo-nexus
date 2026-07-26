@@ -1,10 +1,29 @@
 """Services endpoint — check running background services."""
 
+import json
+import os
 import subprocess
+from datetime import datetime, timezone
+from pathlib import Path
+
 from flask import Blueprint, jsonify
 from routes._helpers import WORKSPACE
 
 bp = Blueprint("services", __name__)
+SCHEDULER_STATUS_FILE = WORKSPACE / "ADWs" / "logs" / "scheduler-status.json"
+SCHEDULER_HEARTBEAT_MAX_AGE_SECONDS = 90
+
+
+def _now_utc() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _is_containerized() -> bool:
+    return os.environ.get("EVONEXUS_CONTAINERIZED") == "1" or Path("/.dockerenv").exists()
+
+
+def _check_dashboard() -> dict:
+    return {"running": True, "detail": "Running (serving this API)"}
 
 
 def _check_process(cmd_args: list[str], pipe_grep: str | None = None) -> dict:
@@ -23,20 +42,51 @@ def _check_process(cmd_args: list[str], pipe_grep: str | None = None) -> dict:
         return {"running": False, "detail": ""}
 
 
-def _check_scheduler() -> dict:
-    """Check if scheduler thread is running inside the dashboard process."""
+def _check_local_scheduler() -> dict:
     import threading
-    for t in threading.enumerate():
-        if t.name == "scheduler" and t.is_alive():
+
+    for thread in threading.enumerate():
+        if thread.name == "scheduler" and thread.is_alive():
             return {"running": True, "detail": "Running (embedded in dashboard)"}
-    # Fallback: check for standalone scheduler.py process
-    result = _check_process(["ps", "aux"], pipe_grep="scheduler.py")
-    return result
+    return _check_process(["ps", "aux"], pipe_grep="scheduler.py")
+
+
+def _check_scheduler_heartbeat() -> dict | None:
+    try:
+        payload = json.loads(SCHEDULER_STATUS_FILE.read_text(encoding="utf-8"))
+        updated_at = datetime.fromisoformat(payload["updated_at"].replace("Z", "+00:00"))
+        age = (_now_utc() - updated_at.astimezone(timezone.utc)).total_seconds()
+    except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+        return None
+
+    if age <= SCHEDULER_HEARTBEAT_MAX_AGE_SECONDS:
+        return {"running": True, "detail": "Running (shared heartbeat)"}
+    return {"running": False, "detail": "Heartbeat stale"}
+
+
+def _check_scheduler() -> dict:
+    heartbeat = _check_scheduler_heartbeat()
+    if heartbeat is not None:
+        return heartbeat
+    return _check_local_scheduler()
+
+
+def _managed_service_error(service_id: str):
+    if _is_containerized() and service_id in {"scheduler", "dashboard"}:
+        return jsonify({"error": f"{service_id.capitalize()} is managed by Docker Swarm; use the orchestrator to control it."}), 409
+    return None
 
 
 @bp.route("/api/services")
 def list_services():
     services = [
+        {
+            "id": "dashboard",
+            "name": "Dashboard",
+            "description": "Dashboard API and web interface",
+            "command": "make dashboard-app",
+            **_check_dashboard(),
+        },
         {
             "id": "scheduler",
             "name": "Scheduler",
@@ -67,13 +117,6 @@ def list_services():
             "command": "make imessage",
             "category": "channel",
             **_check_process(["screen", "-list"], pipe_grep="imessage"),
-        },
-        {
-            "id": "dashboard",
-            "name": "Dashboard App",
-            "description": "This dashboard (React + Flask)",
-            "command": "make dashboard-app",
-            **_check_process(["ps", "aux"], pipe_grep="app.py"),
         },
     ]
 
@@ -114,7 +157,9 @@ def run_routine(routine_id):
     python_bin = shutil.which("uv")
     cmd_args = ["uv", "run", "python", str(script_path)] if python_bin else ["python3", str(script_path)]
     try:
-        subprocess.Popen(cmd_args, cwd=WORKSPACE_STR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        env = os.environ.copy()
+        env["EVONEXUS_TRIGGERED_BY"] = "manual"
+        subprocess.Popen(cmd_args, cwd=WORKSPACE_STR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
         return jsonify({"status": "started", "routine": routine_id, "script": script})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -128,6 +173,10 @@ def restart_all_services():
     'systemctl restart' which doesn't reliably kill children on Type=oneshot
     services with KillMode=none.
     """
+    managed_error = _managed_service_error("dashboard")
+    if managed_error:
+        return managed_error
+
     import shutil
     import os
     workspace = str(WORKSPACE)
@@ -176,6 +225,10 @@ STOP_CMDS: dict[str, list[str]] = {
 
 @bp.route("/api/services/<service_id>/start", methods=["POST"])
 def start_service(service_id):
+    managed_error = _managed_service_error(service_id)
+    if managed_error:
+        return managed_error
+
     cmd_args = START_CMDS.get(service_id)
     if not cmd_args:
         return jsonify({"error": f"Unknown service: {service_id}"}), 400
@@ -281,6 +334,10 @@ def service_logs(service_id):
 
 @bp.route("/api/services/<service_id>/stop", methods=["POST"])
 def stop_service(service_id):
+    managed_error = _managed_service_error(service_id)
+    if managed_error:
+        return managed_error
+
     cmd_args = STOP_CMDS.get(service_id)
     if not cmd_args:
         return jsonify({"error": f"Unknown service: {service_id}"}), 400

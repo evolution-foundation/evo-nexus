@@ -42,6 +42,12 @@ services:
       - evonexus-dev-memory:/workspace/memory
       - evonexus-dev-workspace:/workspace/workspace
       - evonexus-dev-claude:/root/.claude
+      - evonexus-dev-tailscale:/var/lib/tailscale
+    cap_add:
+      - NET_ADMIN
+    sysctls:
+      - net.ipv4.ip_forward=1
+      - net.ipv6.conf.all.forwarding=1
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/api/version"]
@@ -56,3 +62,4 @@ volumes:
   evonexus-dev-memory:
   evonexus-dev-workspace:
   evonexus-dev-claude:
+  evonexus-dev-tailscale:

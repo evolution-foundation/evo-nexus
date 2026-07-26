@@ -206,9 +206,9 @@ def _sync_heartbeats_to_db():
                        (id, agent, interval_seconds, max_turns, timeout_seconds,
                         lock_timeout_seconds, wake_triggers, enabled, goal_id,
                         required_secrets, decision_prompt, source_plugin,
-                        created_at, updated_at)
+                        handler, created_at, updated_at)
                        VALUES (:id, :agent, :ivs, :mt, :ts, :lts, :wt, :en, :gid,
-                               :rs, :dp, :sp, :cat, :uat)"""),
+                               :rs, :dp, :sp, :handler, :cat, :uat)"""),
                     {
                         "id": hb.id, "agent": hb.agent, "ivs": hb.interval_seconds,
                         "mt": hb.max_turns, "ts": hb.timeout_seconds,
@@ -216,6 +216,7 @@ def _sync_heartbeats_to_db():
                         "wt": json.dumps(hb.wake_triggers), "en": int(hb.enabled),
                         "gid": hb.goal_id, "rs": json.dumps(hb.required_secrets),
                         "dp": hb.decision_prompt, "sp": hb.source_plugin,
+                        "handler": hb.handler,
                         "cat": now, "uat": now,
                     },
                 )
@@ -226,15 +227,15 @@ def _sync_heartbeats_to_db():
                        agent=:agent, interval_seconds=:ivs, max_turns=:mt,
                        timeout_seconds=:ts, lock_timeout_seconds=:lts,
                        wake_triggers=:wt, goal_id=:gid,
-                       required_secrets=:rs, decision_prompt=:dp,
-                       source_plugin=:sp, updated_at=:uat
+                        required_secrets=:rs, decision_prompt=:dp,
+                       source_plugin=:sp, handler=:handler, updated_at=:uat
                        WHERE id=:id"""),
                     {
                         "agent": hb.agent, "ivs": hb.interval_seconds, "mt": hb.max_turns,
                         "ts": hb.timeout_seconds, "lts": hb.lock_timeout_seconds,
                         "wt": json.dumps(hb.wake_triggers), "gid": hb.goal_id,
                         "rs": json.dumps(hb.required_secrets), "dp": hb.decision_prompt,
-                        "sp": hb.source_plugin, "uat": now,
+                        "sp": hb.source_plugin, "handler": hb.handler, "uat": now,
                         "id": hb.id,
                     },
                 )

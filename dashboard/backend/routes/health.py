@@ -85,13 +85,38 @@ def _check_provider_config() -> dict:
             return {"status": "warning", "detail": "providers.json is missing"}
 
         raw = json.loads(config_path.read_text(encoding="utf-8"))
-        active = raw.get("active_provider") if isinstance(raw, dict) else None
+        # ``active`` is the current schema; ``active_provider`` remains
+        # accepted for backwards-compatible local configurations.
+        active = (raw.get("active") or raw.get("active_provider")) if isinstance(raw, dict) else None
         if not active or active == "none":
             return {"status": "warning", "detail": "No active provider configured"}
 
         return {"status": "ok", "active": active}
     except Exception as exc:
         return {"status": "error", "detail": f"Provider config error: {str(exc)[:150]}"}
+
+
+def _check_capabilities() -> dict:
+    config_path = WORKSPACE / "config" / "providers.json"
+    if not config_path.exists():
+        return {"status": "warning", "flags": {}}
+    try:
+        raw = json.loads(config_path.read_text(encoding="utf-8"))
+        providers = raw.get("providers", {}) if isinstance(raw, dict) else {}
+        active = raw.get("active") if isinstance(raw, dict) else None
+        selected = providers.get(active, {}) if isinstance(providers, dict) else {}
+        capabilities = selected.get("capabilities", {}) if isinstance(selected, dict) else {}
+        return {"status": "ok", "flags": capabilities if isinstance(capabilities, dict) else {}}
+    except Exception as exc:
+        return {"status": "error", "detail": f"Invalid provider capabilities: {str(exc)[:150]}"}
+
+
+def _check_runtime_revision() -> dict:
+    revision = os.environ.get("EVONEXUS_REVISION", "").strip()
+    scheduler_revision = os.environ.get("EVONEXUS_SCHEDULER_REVISION", "").strip()
+    if not revision or not scheduler_revision:
+        return {"status": "ok", "parity": None, "detail": "Runtime revision metadata is unavailable"}
+    return {"status": "ok" if revision == scheduler_revision else "error", "dashboard": revision, "scheduler": scheduler_revision, "parity": revision == scheduler_revision}
 
 
 def _overall_status(checks: dict) -> str:
@@ -112,6 +137,8 @@ def _build_report(deep: bool = False) -> dict:
     }
     if deep:
         checks["providers"] = _check_provider_config()
+        checks["capabilities"] = _check_capabilities()
+        checks["runtime_revision"] = _check_runtime_revision()
 
     status = _overall_status(checks)
     return {

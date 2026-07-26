@@ -76,26 +76,25 @@ long-running service. External REST APIs do not.
   your resolver has a different name).
 - A DNS A record pointing `evonexus.<yourdomain>` to the Swarm ingress.
 - Docker images are pulled from Docker Hub at
-  `evoapicloud/evo-nexus-{dashboard,runtime}` (published by the included
-  GitHub Actions workflow on every version tag and push to `main`).
-- The images are public, so no `docker login` is needed on the Swarm
-  managers. If you fork the project and publish to your own namespace,
-  update the `image:` lines in `evonexus.stack.yml`.
+  `evoapicloud/evo-nexus-{dashboard,runtime}` and are published by the
+  GitHub Actions workflow with immutable `sha-<revision>` tags.
+- As imagens públicas não exigem `docker login` nos managers do Swarm.
+  Defina `EVONEXUS_IMAGE_REGISTRY` apenas ao usar outro registry.
 
 ### Steps
 
-1. **Build and publish the images.** Push a version tag (`vX.Y.Z`) or use
-   the Actions tab to run *Build & Publish Docker Images (Swarm)*
-   manually. The workflow builds both images in parallel and publishes
-   them with the version tag and `:latest`.
+1. **Build and publish the images.** Push a version tag (`vX.Y.Z`) ou use
+   Actions para executar *Build & Publish Docker Images (Swarm)*. O workflow
+   publica as duas imagens com a mesma tag imutável `sha-<revision>`.
 
 2. **Open Portainer → Stacks → Add stack.**
    - Name: `evonexus`
    - Paste the contents of `evonexus.stack.yml`
    - Replace the placeholders: `evonexus.example.com` (your hostname,
      two places) and `traefik-public` (your Traefik overlay network
-     name, several places). The images already point at the official
-     `evoapicloud/evo-nexus-*` namespace on Docker Hub.
+     name, several places).
+   - Defina `EVONEXUS_IMAGE_TAG=sha-<revision>` nas variáveis de ambiente
+     da stack antes do deploy.
    - Click **Deploy**
 
 3. **Watch the containers come up.** `evonexus_dashboard` serves the SPA
@@ -151,6 +150,14 @@ Portainer preserves named volumes across stack updates by default. If
 you removed and recreated the stack, data in `evonexus_config`,
 `evonexus_workspace`, etc. is gone unless you backed them up. Confirm
 with `docker volume ls` on the manager.
+
+## Canary e rollback do runtime
+
+Não faça rollout de Hermes em todos os serviços de uma vez. Escolha uma tag imutável `sha-<revision>` produzida pelo workflow e aplique-a igualmente às imagens `evo-nexus-dashboard` e `evo-nexus-runtime`; nunca use `latest` em produção. Exemplo sem segredos: `export EVONEXUS_IMAGE_TAG=sha-<revision>` e `docker stack deploy -c evonexus.stack.yml evonexus`. Registre os dois digests antes do canary. Configure `EVONEXUS_REVISION` e `EVONEXUS_SCHEDULER_REVISION` com esse commit; `/api/health/deep` deve indicar `runtime_revision.parity: true` antes de ampliar o rollout.
+
+No canary, verifique `docker service ps evonexus_evonexus_dashboard`, `docker service ps evonexus_evonexus_scheduler` e que os health checks passaram: o dashboard exige `claude` e `hermes`; o scheduler usa a imagem runtime, que instala ambos. Em seguida, valide chat Hermes, checkout/comentário/release de ticket, heartbeat associado a goal, tarefa `skill`/`prompt`/`script`, cancelamento e recuperação após reinício. Mantenha Claude no smoke de regressão. Não exponha tokens, perfis secretos ou valores de configuração em logs, evidências ou health checks.
+
+Para rollback, reexporte `EVONEXUS_IMAGE_TAG=sha-<revision-anterior>` e execute novamente `docker stack deploy -c evonexus.stack.yml evonexus`, retornando **dashboard e scheduler juntos** à mesma revisão registrada. A migração de `RuntimeRun` é aditiva e mantém `task_id`; não remova colunas até expirar a janela de compatibilidade. Se o canary falhar, selecione explicitamente Claude ou desabilite o perfil Hermes afetado, pare novas execuções Hermes e preserve `RuntimeRun`/evidências para auditoria.
 
 ## What is NOT changed from the main codebase
 

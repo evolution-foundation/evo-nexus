@@ -149,7 +149,7 @@ class TestPostgresDialect:
     def test_compat_error_mentions_migration_guide(self, tmp_path):
         mig = _make_migrations(tmp_path, ["install.sql"])
         with _patch_engine_dialect("postgresql"):
-            with pytest.raises(PluginCompatError, match="plugin-migration-v1.md"):
+            with pytest.raises(PluginCompatError, match="plugin-contract.md"):
                 resolve_plugin_sql(mig, "install")
 
     def test_prefers_postgres_file_over_legacy(self, tmp_path):
@@ -210,7 +210,7 @@ class TestErrorMessages:
             with pytest.warns(DeprecationWarning) as record:
                 resolve_plugin_sql(mig, "install")
         assert "my-plugin" in str(record[0].message)
-        assert "plugin-migration-v1.md" in str(record[0].message)
+        assert "plugin-contract.md" in str(record[0].message)
 
     def test_file_not_found_names_hook(self, tmp_path):
         mig = _make_migrations(tmp_path, [])

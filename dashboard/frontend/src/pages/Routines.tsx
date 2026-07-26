@@ -36,7 +36,7 @@ interface Routine {
   total_cost: number
   avg_cost: number
   last_run: string
-  status: 'healthy' | 'warning' | 'critical'
+  status: 'healthy' | 'warning' | 'critical' | 'neutral'
 }
 
 // Agent color mapping (same as Agents page)
@@ -93,8 +93,8 @@ function transformRoutineMetrics(data: any): Routine[] {
     const totalCost = Number(m.total_cost_usd || 0)
     const avgCost = Number(m.avg_cost_usd || 0)
     const avgSeconds = Number(m.avg_seconds || 0)
-    const status: 'healthy' | 'warning' | 'critical' =
-      successRate >= 90 ? 'healthy' : successRate >= 70 ? 'warning' : 'critical'
+    const status: Routine['status'] =
+      runs === 0 ? 'neutral' : successRate >= 90 ? 'healthy' : successRate >= 70 ? 'warning' : 'critical'
     return {
       name,
       agent: m.agent || '',
@@ -295,15 +295,18 @@ export default function Routines() {
                               backgroundColor:
                                 r.status === 'healthy' ? 'rgba(0,255,167,0.10)' :
                                 r.status === 'warning' ? 'rgba(251,191,36,0.10)' :
-                                'rgba(239,68,68,0.10)',
+                                r.status === 'critical' ? 'rgba(239,68,68,0.10)' :
+                                'rgba(102,112,133,0.10)',
                               color:
                                 r.status === 'healthy' ? '#00FFA7' :
                                 r.status === 'warning' ? '#FBBF24' :
-                                '#EF4444',
+                                r.status === 'critical' ? '#EF4444' :
+                                '#98A2B3',
                               borderColor:
                                 r.status === 'healthy' ? 'rgba(0,255,167,0.25)' :
                                 r.status === 'warning' ? 'rgba(251,191,36,0.25)' :
-                                'rgba(239,68,68,0.25)',
+                                r.status === 'critical' ? 'rgba(239,68,68,0.25)' :
+                                'rgba(102,112,133,0.25)',
                             }}
                           >
                             <span
@@ -315,7 +318,7 @@ export default function Routines() {
                                   '#EF4444',
                               }}
                             />
-                            {r.status}
+                            {r.status === 'neutral' ? 'never run' : r.status}
                           </span>
                         </td>
                         <td className="py-3 pr-4 text-[#e6edf3] text-[13px] font-medium">{r.name}</td>
@@ -342,7 +345,7 @@ export default function Routines() {
                           <span className={`text-[13px] font-medium ${
                             r.success_pct >= 90 ? 'text-[#00FFA7]' : r.success_pct >= 70 ? 'text-[#FBBF24]' : 'text-red-400'
                           }`}>
-                            {r.success_pct}%
+                            {r.runs === 0 ? '-' : `${r.success_pct}%`}
                           </span>
                         </td>
                         <td className="py-3 pr-4 text-[#667085] text-right text-[13px]">{r.avg_time}</td>

@@ -29,6 +29,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from sqlalchemy import text
+from secret_redaction import redact_secrets
 
 # Workspace root
 WORKSPACE = Path(__file__).resolve().parent.parent.parent
@@ -52,18 +53,38 @@ def _get_db():
 
 
 def _row_to_dict(row) -> dict:
-    """Convert a SQLAlchemy Row to a plain dict."""
+    """Convert a SQLAlchemy Row or sqlite3.Row to a plain dict."""
     if row is None:
         return {}
-    return dict(row._mapping)
+    try:
+        return dict(row._mapping)
+    except AttributeError:
+        return dict(row)
+
+
+def _execute(conn, statement: str, params=None):
+    """Execute named-parameter SQL on SQLAlchemy or legacy sqlite3 connections."""
+    if hasattr(conn, "dialect"):
+        return conn.execute(text(statement), params or {})
+    return conn.execute(statement, params or {})
+
+
+def _row_value(row, key: str):
+    """Read a column from either a SQLAlchemy Row or sqlite3.Row."""
+    if row is None:
+        return None
+    try:
+        return row._mapping[key]
+    except AttributeError:
+        return row[key]
 
 
 def _load_heartbeat(heartbeat_id: str) -> dict | None:
     """Load heartbeat config from DB."""
     conn = _get_db()
     try:
-        row = conn.execute(
-            text("SELECT * FROM heartbeats WHERE id = :hid"), {"hid": heartbeat_id}
+        row = _execute(
+            conn, "SELECT * FROM heartbeats WHERE id = :hid", {"hid": heartbeat_id}
         ).fetchone()
         if not row:
             return None
@@ -84,24 +105,28 @@ def _upsert_heartbeat_from_yaml(heartbeat_id: str) -> dict | None:
     now = _now_iso()
     conn = _get_db()
     try:
-        conn.execute(
-            text("""INSERT INTO heartbeats
+        _execute(
+            conn, """INSERT INTO heartbeats
                (id, agent, interval_seconds, max_turns, timeout_seconds,
                 lock_timeout_seconds, wake_triggers, enabled, goal_id,
-                required_secrets, decision_prompt, created_at, updated_at)
-               VALUES (:id, :agent, :ivs, :mt, :ts, :lts, :wt, :en, :gid, :rs, :dp, :cat, :uat)
+                required_secrets, decision_prompt, source_plugin, handler,
+                created_at, updated_at)
+               VALUES (:id, :agent, :ivs, :mt, :ts, :lts, :wt, :en, :gid, :rs, :dp, :sp, :handler, :cat, :uat)
                ON CONFLICT(id) DO UPDATE SET
                    agent=excluded.agent, interval_seconds=excluded.interval_seconds,
                    max_turns=excluded.max_turns, timeout_seconds=excluded.timeout_seconds,
                    lock_timeout_seconds=excluded.lock_timeout_seconds,
                    wake_triggers=excluded.wake_triggers, enabled=excluded.enabled,
                    goal_id=excluded.goal_id, required_secrets=excluded.required_secrets,
-                   decision_prompt=excluded.decision_prompt, updated_at=excluded.updated_at"""),
+                   decision_prompt=excluded.decision_prompt,
+                   source_plugin=excluded.source_plugin, handler=excluded.handler,
+                   updated_at=excluded.updated_at""",
             {
                 "id": hb.id, "agent": hb.agent, "ivs": hb.interval_seconds, "mt": hb.max_turns,
                 "ts": hb.timeout_seconds, "lts": hb.lock_timeout_seconds,
                 "wt": json.dumps(hb.wake_triggers), "en": int(hb.enabled), "gid": hb.goal_id,
                 "rs": json.dumps(hb.required_secrets), "dp": hb.decision_prompt,
+                "sp": hb.source_plugin, "handler": hb.handler,
                 "cat": now, "uat": now,
             },
         )
@@ -126,11 +151,11 @@ def step1_load_identity(agent: str) -> str:
 def step2_check_approvals(agent: str, conn) -> list:
     """Query pending approvals for this agent. Stub in F1.1."""
     try:
-        rows = conn.execute(
-            text("SELECT * FROM approvals WHERE assignee_agent = :agent AND status = 'pending' LIMIT 10"),
+        rows = _execute(
+            conn, "SELECT * FROM approvals WHERE assignee_agent = :agent AND status = 'pending' LIMIT 10",
             {"agent": agent},
         ).fetchall()
-        return [dict(r._mapping) for r in rows]
+        return [_row_to_dict(r) for r in rows]
     except Exception:
         # approvals table may not exist yet
         return []
@@ -141,8 +166,8 @@ def step2_check_approvals(agent: str, conn) -> list:
 def step3_query_inbox(agent: str, conn) -> list:
     """Query tickets assigned to agent from the tickets table (F1.3)."""
     try:
-        rows = conn.execute(
-            text("""SELECT id, title, description, priority, status, goal_id, project_id, created_at
+        rows = _execute(
+            conn, """SELECT id, title, description, priority, status, goal_id, project_id, created_at
                FROM tickets
                WHERE assignee_agent = :agent AND status IN ('open','in_progress')
                AND locked_at IS NULL
@@ -155,10 +180,10 @@ def step3_query_inbox(agent: str, conn) -> list:
                    ELSE 0
                  END DESC,
                  created_at ASC
-               LIMIT 10"""),
+               LIMIT 10""",
             {"agent": agent},
         ).fetchall()
-        return [dict(r._mapping) for r in rows]
+        return [_row_to_dict(r) for r in rows]
     except Exception:
         # tickets table may not exist yet (F1.3 not merged)
         return []
@@ -179,14 +204,36 @@ def step4_pick_priority(identity: str, approvals: list, inbox: list, decision_pr
 
 
 # ── Step 5: Atomic checkout ──────────────────────────────────────────────────
-# Locking semantics live in `ticket_inbox.checkout_ticket` (Feature 1.3).
-# When the heartbeat decides to act on a ticket from step 3, the work code
-# (Claude subprocess in step 7) is responsible for calling `ticket_inbox` to
-# lock it. This step is a no-op pass-through — kept for protocol numbering.
 
-def step5_atomic_checkout(task_id: str | None, run_id: str, conn) -> bool:
-    """No-op pass-through. See ticket_inbox.checkout_ticket for real lock semantics."""
-    return True
+def step5_atomic_checkout(task_id: str | None, run_id: str, lock_timeout: int, conn) -> bool:
+    """Atomic ticket checkout. Returns True if lock acquired or no ticket to lock."""
+    if not task_id:
+        return True
+    try:
+        now = _now_iso()
+        cursor = _execute(
+            conn,
+            """UPDATE tickets
+               SET locked_at = :now,
+                   locked_by = :run_id,
+                   lock_timeout_seconds = :lock_timeout
+               WHERE id = :task_id AND locked_at IS NULL""",
+            {
+                "now": now,
+                "run_id": run_id,
+                "lock_timeout": lock_timeout,
+                "task_id": task_id,
+            },
+        )
+        conn.commit()
+        return cursor.rowcount == 1
+    except Exception as exc:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        print(f"[heartbeat_runner] step5 checkout failed: {exc}", flush=True)
+        return False
 
 
 # ── Step 6: Assemble context ──────────────────────────────────────────────────
@@ -227,7 +274,44 @@ If you decide to skip, briefly explain why.
     return base_prompt
 
 
-# ── Step 7: Work — invoke Claude ──────────────────────────────────────────────
+# ── Step 7: Work — provider-aware normalized runtime ─────────────────────────
+
+def step7_invoke_runtime(
+    agent: str,
+    prompt: str,
+    max_turns: int,
+    timeout_seconds: int,
+    *,
+    heartbeat_id: str,
+    requested_profile: str | None = None,
+) -> dict:
+    """Invoke the configured provider; never select a CLI by local availability."""
+    from runtime_service import RuntimeRequest, RuntimeService
+
+    result = RuntimeService().invoke(RuntimeRequest(
+        origin_type="heartbeat",
+        origin_id=heartbeat_id,
+        agent_slug=agent,
+        prompt=prompt,
+        max_turns=max_turns,
+        timeout_seconds=timeout_seconds,
+        requested_profile=requested_profile,
+    ))
+    return {
+        "status": "success" if result.status == "succeeded" else result.status,
+        "output": result.output,
+        "error": result.error,
+        "duration_ms": result.duration_ms,
+        "tokens_in": result.tokens_in,
+        "tokens_out": result.tokens_out,
+        "cost_usd": result.cost_usd,
+        "provider": result.provider,
+        "requested_profile": result.requested_profile,
+        "resolved_profile": result.resolved_profile,
+        "exit_code": result.exit_code,
+        "fallback_from": result.fallback_from,
+    }
+
 
 def step7_invoke_claude(
     agent: str,
@@ -235,28 +319,50 @@ def step7_invoke_claude(
     max_turns: int,
     timeout_seconds: int,
 ) -> dict:
-    """Invoke Claude via subprocess with hard timeout. Returns result dict."""
+    """Invoke Claude/OpenClaude/Hermes via subprocess with hard timeout. Returns result dict."""
     import shutil
 
-    claude_bin = shutil.which("claude")
-    if not claude_bin:
+    # Try Claude Code first, then OpenClaude, then Hermes (fallback chain)
+    cli_bin = None
+    for cli in ["claude", "openclaude", "hermes"]:
+        if shutil.which(cli):
+            cli_bin = cli
+            break
+
+    if not cli_bin:
         return {
             "status": "fail",
-            "error": "claude binary not found in PATH",
+            "error": "No CLI binary found in PATH (tried: claude, openclaude, hermes)",
             "output": "",
             "tokens_in": None,
             "tokens_out": None,
             "cost_usd": None,
         }
 
-    cmd = [
-        claude_bin,
-        "--print",
-        "--max-turns", str(max_turns),
-        "--dangerously-skip-permissions",
-        "--output-format", "json",
-        prompt,  # positional argument — Claude CLI does not have a -p flag
-    ]
+    # Build command based on CLI type
+    if cli_bin == "hermes":
+        cmd = [
+            cli_bin,
+            "chat",
+            "-Q",
+            "-q", prompt,
+        ]
+        if max_turns:
+            env = os.environ.copy()
+            env["HERMES_MAX_ITERATIONS"] = str(max_turns)
+        else:
+            env = os.environ.copy()
+    else:
+        # Claude Code / OpenClaude
+        cmd = [
+            cli_bin,
+            "--print",
+            "--max-turns", str(max_turns),
+            "--dangerously-skip-permissions",
+            "--output-format", "json",
+            prompt,  # positional argument — Claude CLI does not have a -p flag
+        ]
+        env = os.environ.copy()
 
     start_time = time.time()
     proc = None
@@ -271,6 +377,7 @@ def step7_invoke_claude(
             stderr=subprocess.PIPE,
             text=True,
             cwd=str(WORKSPACE),
+            env=env,
             start_new_session=True,  # new process group for clean kill
         )
 
@@ -310,6 +417,26 @@ def step7_invoke_claude(
     }
 
 
+# ── Decision parsing ─────────────────────────────────────────────────────────
+
+def parse_decision(output: str) -> tuple[str, dict | None]:
+    """Extract {"action":"work"|"skip"} from runtime output. Returns (action, raw_json_or_None)."""
+    if not output:
+        return "work", None
+    for line in reversed(output.strip().splitlines()):
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            data = json.loads(line)
+            action = data.get("action", "").lower()
+            if action in ("work", "skip"):
+                return action, data
+        except (json.JSONDecodeError, AttributeError):
+            continue
+    return "work", None
+
+
 # ── Step 8: Persist status ────────────────────────────────────────────────────
 
 def step8_persist(run_id: str, heartbeat_id: str, result: dict, trigger_id: str | None, triggered_by: str, prompt_preview: str, conn):
@@ -324,24 +451,38 @@ def step8_persist(run_id: str, heartbeat_id: str, result: dict, trigger_id: str 
     now = _now_iso()
 
     # Upsert run (idempotent: if run_id already exists with status != running, skip)
-    existing = conn.execute(
-        text("SELECT run_id, status FROM heartbeat_runs WHERE run_id = :rid"), {"rid": run_id}
+    existing = _execute(
+        conn, "SELECT run_id, status FROM heartbeat_runs WHERE run_id = :rid", {"rid": run_id}
     ).fetchone()
 
-    if existing and existing.status != "running":
-        print(f"[heartbeat_runner] run_id={run_id} already finalized ({existing.status}), skipping duplicate persist", flush=True)
+    if existing and _row_value(existing, "status") != "running":
+        print(f"[heartbeat_runner] run_id={run_id} already finalized ({_row_value(existing, 'status')}), skipping duplicate persist", flush=True)
         return
 
-    conn.execute(
-        text("""INSERT INTO heartbeat_runs
+    decision_json = result.get("decision_json")
+    _execute(
+        conn, """INSERT INTO heartbeat_runs
            (run_id, heartbeat_id, trigger_id, started_at, ended_at, duration_ms,
-            tokens_in, tokens_out, cost_usd, status, prompt_preview, error, triggered_by)
-           VALUES (:rid, :hbid, :trid, :sat, :eat, :dms, :ti, :to, :cu, :st, :pp, :err, :tby)
+            tokens_in, tokens_out, cost_usd, status, prompt_preview, error, triggered_by,
+            decision_action, decision_json, provider, resolved_profile, stdout_tail, stderr_tail, runtime_run_id)
+           VALUES (:rid, :hbid, :trid, :sat, :eat, :dms, :ti, :to, :cu, :st, :pp, :err, :tby,
+                   :decision_action, :decision_json, :provider, :resolved_profile,
+                   :stdout_tail, :stderr_tail, :runtime_run_id)
            ON CONFLICT(run_id) DO UPDATE SET
                ended_at=excluded.ended_at,
                duration_ms=excluded.duration_ms,
+               tokens_in=excluded.tokens_in,
+               tokens_out=excluded.tokens_out,
+               cost_usd=excluded.cost_usd,
                status=excluded.status,
-               error=excluded.error"""),
+               error=excluded.error,
+               decision_action=excluded.decision_action,
+               decision_json=excluded.decision_json,
+               provider=excluded.provider,
+               resolved_profile=excluded.resolved_profile,
+               stdout_tail=excluded.stdout_tail,
+               stderr_tail=excluded.stderr_tail,
+               runtime_run_id=excluded.runtime_run_id""",
         {
             "rid": run_id, "hbid": heartbeat_id, "trid": trigger_id,
             "sat": result.get("started_at", now), "eat": now,
@@ -350,20 +491,27 @@ def step8_persist(run_id: str, heartbeat_id: str, result: dict, trigger_id: str 
             "cu": result.get("cost_usd"),
             "st": result["status"],
             "pp": prompt_preview[:1000] if prompt_preview else None,
-            "err": result.get("error"),
+            "err": redact_secrets(result.get("error"), limit=2000) or None,
             "tby": triggered_by,
+            "decision_action": result.get("decision_action"),
+            "decision_json": redact_secrets(json.dumps(decision_json)) if decision_json else None,
+            "provider": result.get("provider"),
+            "resolved_profile": result.get("resolved_profile"),
+            "stdout_tail": redact_secrets(result.get("output"))[-2000:] or None,
+            "stderr_tail": redact_secrets(result.get("error"))[-2000:] or None,
+            "runtime_run_id": result.get("runtime_run_id"),
         },
     )
 
     # PG mode: store the full prompt (no truncation) in the companion table.
     # Both writes share the same transaction for atomicity.
     if get_dialect() == "postgresql" and prompt_preview:
-        conn.execute(
-            text("""
+        _execute(
+            conn, """
                 INSERT INTO heartbeat_run_prompts (run_id, prompt_full, created_at)
                 VALUES (:rid, :pf, :now)
                 ON CONFLICT (run_id) DO UPDATE SET prompt_full = EXCLUDED.prompt_full
-            """),
+            """,
             {"rid": run_id, "pf": prompt_preview, "now": now},
         )
 
@@ -383,7 +531,7 @@ def step8_persist(run_id: str, heartbeat_id: str, result: dict, trigger_id: str 
             "cost_usd": result.get("cost_usd"),
             "triggered_by": triggered_by,
             "ts": now,
-            "error": result.get("error"),
+            "error": redact_secrets(result.get("error"), limit=2000) or None,
         }
         with open(log_file, "a", encoding="utf-8") as f:
             f.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
@@ -392,18 +540,18 @@ def step8_persist(run_id: str, heartbeat_id: str, result: dict, trigger_id: str 
 # ── Step 9: Release checkout ──────────────────────────────────────────────────
 
 def step9_release_checkout(task_id: str | None, run_id: str, conn):
-    """Release task lock. Stub in F1.1."""
+    """Release ticket lock. Owner-only: only the run that acquired it can release."""
     if not task_id:
         return
     try:
-        conn.execute(
-            text("""UPDATE tasks SET locked_at = NULL, locked_by = NULL
-               WHERE id = :tid AND locked_by = :rid"""),
+        _execute(
+            conn, """UPDATE tickets SET locked_at = NULL, locked_by = NULL
+               WHERE id = :tid AND locked_by = :rid""",
             {"tid": task_id, "rid": run_id},
         )
         conn.commit()
     except Exception:
-        pass  # Table may not exist in F1.1
+        pass  # Table may not exist
 
 
 # ── System heartbeat dispatcher ───────────────────────────────────────────────
@@ -474,24 +622,28 @@ def run_heartbeat(heartbeat_id: str, triggered_by: str = "manual", trigger_id: s
         print(f"[heartbeat_runner] ERROR heartbeat not found: {heartbeat_id}", flush=True)
         sys.exit(1)
 
+    if not hb.get("enabled"):
+        print(f"[heartbeat_runner] heartbeat_id={heartbeat_id} is disabled, skipping", flush=True)
+        return run_id
+
     conn = _get_db()
 
     try:
         # Idempotence check: abort if this run_id already exists in a final state
-        existing = conn.execute(
-            text("SELECT run_id, status FROM heartbeat_runs WHERE run_id = :rid"), {"rid": run_id}
+        existing = _execute(
+            conn, "SELECT run_id, status FROM heartbeat_runs WHERE run_id = :rid", {"rid": run_id}
         ).fetchone()
-        if existing and existing.status != "running":
+        if existing and _row_value(existing, "status") != "running":
             print(f"[heartbeat_runner] run_id={run_id} already finalized, aborting", flush=True)
             return
 
         # Insert initial row (so we can track "running" state)
         try:
-            conn.execute(
-                text("""INSERT INTO heartbeat_runs
+            _execute(
+                conn, """INSERT INTO heartbeat_runs
                    (run_id, heartbeat_id, trigger_id, started_at, status, triggered_by)
                    VALUES (:rid, :hbid, :trid, :sat, 'running', :tby)
-                   ON CONFLICT(run_id) DO NOTHING"""),
+                   ON CONFLICT(run_id) DO NOTHING""",
                 {"rid": run_id, "hbid": heartbeat_id, "trid": trigger_id, "sat": started_at, "tby": triggered_by},
             )
             conn.commit()
@@ -505,7 +657,9 @@ def run_heartbeat(heartbeat_id: str, triggered_by: str = "manual", trigger_id: s
         try:
             # Special case: agent='system' heartbeats run a Python script directly
             # instead of invoking Claude. The script path is resolved by heartbeat id.
-            if hb["agent"] == "system":
+            # Handler heartbeats use in-process dispatch (step 7) even when agent='system',
+            # so skip this short-circuit when a handler is set.
+            if not (hb.get("handler") or "").strip() and hb["agent"] == "system":
                 full_prompt = f"[system heartbeat] {heartbeat_id}"
                 result = _run_system_heartbeat(heartbeat_id, hb["timeout_seconds"])
                 result["agent"] = "system"
@@ -527,14 +681,8 @@ def run_heartbeat(heartbeat_id: str, triggered_by: str = "manual", trigger_id: s
                 decision_ctx = step4_pick_priority(identity, approvals, inbox, hb["decision_prompt"])
                 print(f"[heartbeat_runner] step4 decision context assembled", flush=True)
 
-                # Step 5
-                task_id = None  # no specific task in F1.1
-                checkout_ok = step5_atomic_checkout(task_id, run_id, conn)
-                if not checkout_ok:
-                    print(f"[heartbeat_runner] step5 checkout conflict, skipping", flush=True)
-                    result = {"status": "success", "error": None, "agent": hb["agent"], "duration_ms": 0}
-                    step8_persist(run_id, heartbeat_id, result, trigger_id, triggered_by, "", conn)
-                    return
+                # Step 5 occurs only after the decision selects work; a skip never locks a ticket.
+                task_id = None
 
                 # Step 6
                 full_prompt = step6_assemble_context(identity, decision_ctx, hb.get("goal_id"))
@@ -579,17 +727,32 @@ def run_heartbeat(heartbeat_id: str, triggered_by: str = "manual", trigger_id: s
                     invoke_result["started_at"] = started_at
                     result = invoke_result
                 else:
-                    # Standard Claude CLI subprocess
-                    print(f"[heartbeat_runner] step7 invoking claude agent={hb['agent']} max_turns={hb['max_turns']} timeout={hb['timeout_seconds']}s", flush=True)
-                    invoke_result = step7_invoke_claude(
-                        agent=hb["agent"],
-                        prompt=full_prompt,
-                        max_turns=hb["max_turns"],
-                        timeout_seconds=hb["timeout_seconds"],
+                    decision_prompt = f"{full_prompt}\n\nReturn exactly one JSON line with action=work or action=skip. Do not perform work or side effects."
+                    decision_result = step7_invoke_runtime(
+                        agent=hb["agent"], prompt=decision_prompt, max_turns=hb["max_turns"],
+                        timeout_seconds=hb["timeout_seconds"], heartbeat_id=heartbeat_id,
+                        requested_profile=hb.get("hermes_profile"),
                     )
-                    invoke_result["agent"] = hb["agent"]
-                    invoke_result["started_at"] = started_at
-                    result = invoke_result
+                    decision_action, decision_data = parse_decision(decision_result.get("output", ""))
+                    if decision_result["status"] != "success" or decision_action == "skip":
+                        decision_result.update({"agent": hb["agent"], "started_at": started_at, "decision_action": decision_action, "decision_json": decision_data})
+                        result = decision_result
+                    else:
+                        selected_ticket_id = (decision_data or {}).get("ticket_id") or (inbox[0].get("id") if inbox else None)
+                        if selected_ticket_id:
+                            if selected_ticket_id not in {ticket["id"] for ticket in inbox}:
+                                raise ValueError("Heartbeat selected a ticket outside its inbox")
+                            if not step5_atomic_checkout(selected_ticket_id, run_id, hb.get("lock_timeout_seconds", 1800), conn):
+                                result = {"status": "fail", "error": "Ticket checkout failed", "agent": hb["agent"], "duration_ms": 0}
+                            else:
+                                task_id = selected_ticket_id
+                        if task_id or not inbox:
+                            result = step7_invoke_runtime(
+                                agent=hb["agent"], prompt=full_prompt, max_turns=hb["max_turns"],
+                                timeout_seconds=hb["timeout_seconds"], heartbeat_id=heartbeat_id,
+                                requested_profile=hb.get("hermes_profile"),
+                            )
+                            result.update({"agent": hb["agent"], "started_at": started_at, "decision_action": decision_action, "decision_json": decision_data})
                     print(f"[heartbeat_runner] step7 done status={result['status']} duration_ms={result.get('duration_ms')}", flush=True)
 
         except Exception as exc:

@@ -3,10 +3,15 @@
 Core runner for ADWs — executes Claude Code CLI with agents, visual output, logs and Telegram notification.
 """
 
+import fcntl
 import subprocess
 import os
 import sys
 import json
+import queue
+import signal
+import threading
+import time
 from datetime import datetime, date as date_type
 from pathlib import Path
 
@@ -98,59 +103,97 @@ def _parse_usage(json_result: dict) -> dict:
         "output_tokens": usage.get("output_tokens", 0),
         "cache_creation_tokens": usage.get("cache_creation_input_tokens", 0),
         "cache_read_tokens": usage.get("cache_read_input_tokens", 0),
-        "cost_usd": json_result.get("total_cost_usd", 0),
+        "cost_usd": (
+            json_result["total_cost_usd"]
+            if json_result.get("total_cost_usd") is not None
+            else usage.get("cost_usd", 0)
+        ),
     }
+
+
+def _metric_number(value, default=0.0):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _normalize_metric_entry(entry):
+    """Return a compatible metrics entry without changing its totals."""
+    entry = dict(entry) if isinstance(entry, dict) else {}
+    runs = max(0, int(_metric_number(entry.get("runs"))))
+    successes = max(0, int(_metric_number(entry.get("successes"))))
+    failures = max(0, int(_metric_number(entry.get("failures"))))
+    if successes + failures > runs:
+        runs = successes + failures
+    total_seconds = _metric_number(entry.get("total_duration", entry.get("total_seconds")))
+    if not total_seconds and runs:
+        total_seconds = _metric_number(entry.get("avg_seconds")) * runs
+
+    entry.update({
+        "runs": runs,
+        "successes": successes,
+        "failures": failures,
+        "total_seconds": total_seconds,
+        "total_duration": total_seconds,
+        "avg_seconds": total_seconds / runs if runs else 0,
+        "success_rate": successes / runs * 100 if runs else 0,
+        "total_cost_usd": _metric_number(entry.get("total_cost_usd")),
+        "total_input_tokens": int(_metric_number(entry.get("total_input_tokens"))),
+        "total_output_tokens": int(_metric_number(entry.get("total_output_tokens"))),
+        "total_cache_creation_tokens": int(_metric_number(entry.get("total_cache_creation_tokens"))),
+        "total_cache_read_tokens": int(_metric_number(entry.get("total_cache_read_tokens"))),
+    })
+    if not entry.get("last_agent") and entry.get("agent"):
+        entry["last_agent"] = entry["agent"]
+    return entry
 
 
 def _save_metrics(log_name, duration, returncode, agent, stdout, usage=None):
     """Save accumulated metrics per routine in metrics.json."""
     metrics_file = LOGS_DIR / "metrics.json"
-    try:
-        metrics = json.loads(metrics_file.read_text()) if metrics_file.exists() else {}
-    except (json.JSONDecodeError, OSError):
-        metrics = {}
+    lock_file = LOGS_DIR / "metrics.json.lock"
+    LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
-    key = log_name
-    if key not in metrics:
-        metrics[key] = {
-            "runs": 0, "successes": 0, "failures": 0,
-            "total_seconds": 0, "avg_seconds": 0,
-            "last_run": None, "agent": agent or "none",
-            "total_input_tokens": 0, "total_output_tokens": 0,
-            "total_cache_creation_tokens": 0, "total_cache_read_tokens": 0,
-            "total_cost_usd": 0, "avg_cost_usd": 0,
-        }
+    with open(lock_file, "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            try:
+                metrics = json.loads(metrics_file.read_text()) if metrics_file.exists() else {}
+            except (json.JSONDecodeError, OSError):
+                metrics = {}
 
-    m = metrics[key]
-    m["runs"] += 1
-    m["total_seconds"] = round(m["total_seconds"] + duration, 1)
-    m["avg_seconds"] = round(m["total_seconds"] / m["runs"], 1)
-    m["last_run"] = datetime.now().isoformat()
-    m["agent"] = agent or "none"
+            m = _normalize_metric_entry(metrics.get(log_name, {}))
+            metrics[log_name] = m
+            m["runs"] += 1
+            m["total_seconds"] += duration
+            m["total_duration"] = m["total_seconds"]
+            m["last_run"] = datetime.now().isoformat()
+            m["last_status"] = "success" if returncode == 0 else "failure"
+            m["last_agent"] = agent or "default"
+            m.setdefault("agent", m["last_agent"])
+            if returncode == 0:
+                m["successes"] += 1
+            else:
+                m["failures"] += 1
 
-    if returncode == 0:
-        m["successes"] += 1
-    else:
-        m["failures"] += 1
+            if usage:
+                m["total_cost_usd"] += _metric_number(usage.get("cost_usd"))
+                m["total_input_tokens"] += int(_metric_number(usage.get("input_tokens")))
+                m["total_output_tokens"] += int(_metric_number(usage.get("output_tokens")))
+                m["total_cache_creation_tokens"] += int(_metric_number(usage.get("cache_creation_tokens")))
+                m["total_cache_read_tokens"] += int(_metric_number(usage.get("cache_read_tokens")))
 
-    m["success_rate"] = round((m["successes"] / m["runs"]) * 100, 1)
-
-    if usage:
-        m["total_input_tokens"] = m.get("total_input_tokens", 0) + usage["input_tokens"]
-        m["total_output_tokens"] = m.get("total_output_tokens", 0) + usage["output_tokens"]
-        m["total_cache_creation_tokens"] = m.get("total_cache_creation_tokens", 0) + usage["cache_creation_tokens"]
-        m["total_cache_read_tokens"] = m.get("total_cache_read_tokens", 0) + usage["cache_read_tokens"]
-        m["total_cost_usd"] = round(m.get("total_cost_usd", 0) + usage["cost_usd"], 5)
-        m["avg_cost_usd"] = round(m["total_cost_usd"] / m["runs"], 5)
-        m["last_input_tokens"] = usage["input_tokens"]
-        m["last_output_tokens"] = usage["output_tokens"]
-        m["last_cost_usd"] = round(usage["cost_usd"], 5)
-
-    metrics_file.write_text(json.dumps(metrics, indent=2, ensure_ascii=False))
+            m.update(_normalize_metric_entry(m))
+            tmp_file = metrics_file.with_suffix(f".{os.getpid()}.tmp")
+            tmp_file.write_text(json.dumps(metrics, indent=2, ensure_ascii=False))
+            os.replace(tmp_file, metrics_file)
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
 
 
-def _log_to_file(log_name, prompt, stdout, stderr, returncode, duration, usage=None):
-    """Save structured log in JSONL + detailed file."""
+def _log_to_file(log_name, prompt, stdout, stderr, returncode, duration, usage=None, triggered_by=None):
+    """Save structured log in JSONL and a detailed local file."""
     log_file = LOGS_DIR / f"{datetime.now().strftime('%Y-%m-%d')}.jsonl"
     entry = {
         "timestamp": datetime.now().isoformat(),
@@ -160,6 +203,7 @@ def _log_to_file(log_name, prompt, stdout, stderr, returncode, duration, usage=N
         "duration_seconds": round(duration, 1),
         "stdout_lines": len(stdout.splitlines()),
         "stderr_lines": len(stderr.splitlines()),
+        "triggered_by": triggered_by or os.environ.get("EVONEXUS_TRIGGERED_BY") or "schedule",
     }
     if usage:
         entry["input_tokens"] = usage["input_tokens"]
@@ -176,19 +220,20 @@ def _log_to_file(log_name, prompt, stdout, stderr, returncode, duration, usage=N
         f.write(f"DURATION: {duration:.1f}s\n")
         f.write(f"RETURNCODE: {returncode}\n")
         f.write(f"PROMPT:\n{prompt}\n\n")
-        f.write(f"{'='*60}\nSTDOUT:\n{'='*60}\n{stdout}\n\n")
+        f.write(f"{'=' * 60}\nSTDOUT:\n{'=' * 60}\n{stdout}\n\n")
         if stderr:
-            f.write(f"{'='*60}\nSTDERR:\n{'='*60}\n{stderr}\n")
+            f.write(f"{'=' * 60}\nSTDERR:\n{'=' * 60}\n{stderr}\n")
 
 
-_ALLOWED_CLI_COMMANDS = frozenset({"claude", "openclaude"})
-
-
-def _spawn_cli(cli_command: str, prompt: str, agent: str | None, provider_env: dict) -> subprocess.Popen:
+def _spawn_cli(cli_command: str, prompt: str, agent: str | None, provider_env: dict,
+               profile: str | None = None) -> subprocess.Popen:
     """Spawn a CLI process using only hardcoded command strings.
 
     Uses a dictionary lookup so that the subprocess argument is always
     a static string, satisfying semgrep/opengrep subprocess injection rules.
+
+    ``profile`` (Hermes only) selects the Hermes profile per-invocation via the
+    adapter's ``--profile`` flag; ignored by the claude/openclaude branches.
     """
     base_args = ["--print", "--dangerously-skip-permissions", "--output-format", "json"]
     if agent:
@@ -202,13 +247,31 @@ def _spawn_cli(cli_command: str, prompt: str, agent: str | None, provider_env: d
         text=True,
         cwd=str(WORKSPACE),
         env=env,
+        # Keep every CLI invocation in an isolated process group. This lets the
+        # timeout path terminate the CLI plus any Hermes adapter descendants.
+        start_new_session=True,
     )
 
     # Hardcoded dispatch — each branch uses a literal string for the executable
-    if cli_command == "openclaude":
+    if cli_command == "hermes":
+        # Use the Hermes adapter wrapper for consistent JSON output
+        adapter_path = Path(__file__).parent / "hermes_adapter.py"
+        hermes_args = [
+            "--print",
+            "--output-format", "json",
+            "--dangerously-skip-permissions",
+        ]
+        if agent:
+            hermes_args.extend(["--agent", agent])
+        if profile:
+            hermes_args.extend(["--profile", profile])
+        hermes_args.append(prompt)
+        return subprocess.Popen([sys.executable, str(adapter_path)] + hermes_args, **popen_kwargs)  # noqa: S603
+    elif cli_command == "openclaude":
         return subprocess.Popen(["openclaude"] + base_args, **popen_kwargs)  # noqa: S603
     else:
         return subprocess.Popen(["claude"] + base_args, **popen_kwargs)  # noqa: S603
+_ALLOWED_CLI_COMMANDS = frozenset({"claude", "openclaude", "hermes"})
 _ALLOWED_ENV_VARS = frozenset({
     "CLAUDE_CODE_USE_OPENAI", "CLAUDE_CODE_USE_GEMINI", "CLAUDE_CODE_USE_BEDROCK",
     "CLAUDE_CODE_USE_VERTEX", "OPENAI_BASE_URL", "OPENAI_API_KEY", "OPENAI_MODEL",
@@ -216,7 +279,32 @@ _ALLOWED_ENV_VARS = frozenset({
     "CODEX_AUTH_JSON_PATH", "CODEX_API_KEY",
     "GEMINI_API_KEY", "GEMINI_MODEL", "AWS_REGION", "AWS_BEARER_TOKEN_BEDROCK",
     "ANTHROPIC_VERTEX_PROJECT_ID", "CLOUD_ML_REGION",
+    # Hermes support
+    "HERMES_MAX_ITERATIONS", "HERMES_MODEL",
+    "OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "DEEPSEEK_API_KEY",
 })
+
+
+def _kill_process_group(process: subprocess.Popen, grace: float = 1.0) -> None:
+    """Terminate a CLI process and every descendant in its process group."""
+    if process.poll() is not None:
+        return
+
+    try:
+        os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+    except ProcessLookupError:
+        return
+
+    try:
+        process.wait(timeout=grace)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+
+    try:
+        os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+    except ProcessLookupError:
+        pass
 
 
 def _get_provider_config() -> tuple[str, dict]:
@@ -258,9 +346,12 @@ def run_claude(
     timeout: int = 600,
     agent: str = None,
     daily_output_kind: str | None = None,
+    profile: str = None,
+    on_process=None,
+    triggered_by: str = None,
 ) -> dict:
     """
-    Execute AI CLI (claude or openclaude) with streaming output.
+    Execute AI CLI (claude, openclaude, or hermes) with streaming output.
 
     Uses the active provider from config/providers.json to determine
     which binary to run and which env vars to inject.
@@ -273,6 +364,11 @@ def run_claude(
         daily_output_kind: When set, files written to workspace/daily-logs/ by the
             subprocess are snapshotted and persisted to daily_outputs (PG mode).
             In SQLite mode this is a no-op — files stay on disk as before.
+        profile: Hermes profile slug (privilege routing). Only used when the
+            active provider is Hermes; ignored otherwise. If None, Hermes runs
+            under its global active profile (backward-compatible).
+        on_process: Optional callback invoked with the spawned subprocess.
+        triggered_by: Trigger provenance stored in the native/local run log.
     """
     cli_command, provider_env = _get_provider_config()
 
@@ -289,18 +385,96 @@ def run_claude(
     start_time = datetime.now()
 
     try:
-        process = _spawn_cli(cli_command, prompt, agent, provider_env)
+        process = _spawn_cli(cli_command, prompt, agent, provider_env, profile)
+        if on_process:
+            on_process(process)
 
         stdout_lines = []
         line_count = 0
 
-        for line in process.stdout:
-            stdout_lines.append(line)
-            line_count += 1
+        # Thread-safe line reader: drain stdout without blocking the main thread.
+        # The reader thread exits when the process closes stdout or when the
+        # deadline elapses — whichever comes first.
+        #
+        # Previously (buggy):
+        #   for line in process.stdout:      # blocks forever if CLI hangs
+        #       stdout_lines.append(line)     # without closing stdout
+        #   process.wait(timeout=timeout)    # only reached after EOF — timeout never fires
+        #
+        # Fix: reader thread feeds a Queue; main thread enforces deadline per-read.
+        # If no new line arrives within _LINE_TIMEOUT, the deadline is checked;
+        # if the overall deadline is past, we kill the process and return TimeoutExpired.
+        # _LINE_TIMEOUT must be strictly less than `timeout` so the deadline has a
+        # chance to fire before Python aborts the whole process.
 
-        process.wait(timeout=timeout)
+        _LINE_TIMEOUT = 2  # seconds between lines before checking overall deadline
+        _reader_queue: queue.Queue = queue.Queue()
+        _deadline = time.monotonic() + timeout
 
-        stderr = process.stderr.read() if process.stderr else ""
+        def _reader_thread(stream, tag):
+            try:
+                for raw_line in iter(stream.readline, ""):
+                    _reader_queue.put((tag, raw_line))
+            finally:
+                _reader_queue.put((f"{tag}_eof", None))
+
+        stdout_thread = threading.Thread(
+            target=_reader_thread, args=(process.stdout, "stdout"), daemon=True,
+        )
+        stderr_thread = threading.Thread(
+            target=_reader_thread, args=(process.stderr, "stderr"), daemon=True,
+        )
+        stdout_thread.start()
+        stderr_thread.start()
+
+        stderr_lines = []
+        stdout_done = False
+        stderr_done = False
+        deadline_fired = False
+        while not (stdout_done and stderr_done):
+            remaining = _deadline - time.monotonic()
+            if remaining <= 0:
+                deadline_fired = True
+                break
+            try:
+                tag, data = _reader_queue.get(timeout=min(_LINE_TIMEOUT, remaining))
+            except queue.Empty:
+                continue
+
+            if tag == "stdout_eof":
+                stdout_done = True
+            elif tag == "stderr_eof":
+                stderr_done = True
+            elif tag == "stdout":
+                stdout_lines.append(data)
+                line_count += 1
+            else:
+                stderr_lines.append(data)
+
+        if deadline_fired:
+            _kill_process_group(process)
+            stdout_thread.join(timeout=2)
+            stderr_thread.join(timeout=2)
+            duration = (datetime.now() - start_time).total_seconds()
+            stderr = "".join(stderr_lines)
+            stderr = f"Timeout after {timeout}s" + (f"\n{stderr}" if stderr else "")
+            console.print(f"\r  [error]✗[/error] {log_name} [warning](timeout {timeout}s)[/warning]")
+            _log_to_file(log_name, prompt, "", stderr, -1, duration, triggered_by=triggered_by)
+            return {"success": False, "stdout": "", "stderr": stderr, "returncode": -1, "duration": duration}
+
+        try:
+            process.wait(timeout=max(0, _deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            _kill_process_group(process)
+            duration = (datetime.now() - start_time).total_seconds()
+            stderr = f"Timeout after {timeout}s"
+            console.print(f"\r  [error]✗[/error] {log_name} [warning](timeout {timeout}s)[/warning]")
+            _log_to_file(log_name, prompt, "", stderr, -1, duration, triggered_by=triggered_by)
+            return {"success": False, "stdout": "", "stderr": stderr, "returncode": -1, "duration": duration}
+
+        stdout_thread.join(timeout=2)
+        stderr_thread.join(timeout=2)
+        stderr = "".join(stderr_lines)
         stdout = "".join(stdout_lines)
         duration = (datetime.now() - start_time).total_seconds()
 
@@ -315,8 +489,11 @@ def run_claude(
             pass
 
         full_prompt = f"[agent:{agent}] {prompt}" if agent else prompt
-        _log_to_file(log_name, full_prompt, result_text, stderr, process.returncode, duration, usage)
-        _save_metrics(log_name, duration, process.returncode, agent, result_text, usage)
+        _log_to_file(log_name, full_prompt, result_text, stderr, process.returncode, duration, usage, triggered_by)
+        try:
+            _save_metrics(log_name, duration, process.returncode, agent, result_text, usage)
+        except Exception as telemetry_error:
+            console.print(f"\r  [warning]⚠ Metrics error for {log_name}: {telemetry_error}[/warning]")
 
         if process.returncode == 0:
             cost_str = ""
@@ -343,23 +520,23 @@ def run_claude(
         }
 
     except subprocess.TimeoutExpired:
-        process.kill()
+        _kill_process_group(process)
         duration = (datetime.now() - start_time).total_seconds()
         console.print(f"\r  [error]✗[/error] {log_name} [warning](timeout {timeout}s)[/warning]")
-        _log_to_file(log_name, prompt, "", f"Timeout after {timeout}s", -1, duration)
+        _log_to_file(log_name, prompt, "", f"Timeout after {timeout}s", -1, duration, triggered_by=triggered_by)
         return {"success": False, "stdout": "", "stderr": f"Timeout after {timeout}s", "returncode": -1, "duration": duration}
 
     except KeyboardInterrupt:
-        process.kill()
+        _kill_process_group(process)
         duration = (datetime.now() - start_time).total_seconds()
         console.print(f"\n  [warning]⚠ Cancelled by user[/warning]")
-        _log_to_file(log_name, prompt, "", "Cancelled by user", -2, duration)
+        _log_to_file(log_name, prompt, "", "Cancelled by user", -2, duration, triggered_by=triggered_by)
         raise
 
     except Exception as e:
         duration = (datetime.now() - start_time).total_seconds()
         console.print(f"\r  [error]✗[/error] {log_name} [error]({e})[/error]")
-        _log_to_file(log_name, prompt, "", str(e), -3, duration)
+        _log_to_file(log_name, prompt, "", str(e), -3, duration, triggered_by=triggered_by)
         return {"success": False, "stdout": "", "stderr": str(e), "returncode": -3, "duration": duration}
 
 
@@ -371,6 +548,8 @@ def run_skill(
     agent: str = None,
     notify_telegram: bool | str = False,
     daily_output_kind: str | None = None,
+    profile: str = None,
+    on_process=None,
 ) -> dict:
     """Execute a skill via CLI, optionally with an agent.
 
@@ -400,10 +579,18 @@ def run_skill(
                 f"Nunca chame reply para progresso, confirmação intermediária ou teste.\n"
                 f"---"
             )
-    return run_claude(prompt, log_name or skill_name, timeout, agent=agent, daily_output_kind=daily_output_kind)
+    return run_claude(
+        prompt,
+        log_name or skill_name,
+        timeout,
+        agent=agent,
+        daily_output_kind=daily_output_kind,
+        profile=profile,
+        on_process=on_process,
+    )
 
 
-def run_script(func, log_name: str = "unnamed", timeout: int = 120) -> dict:
+def run_script(func, log_name: str = "unnamed", timeout: int = 120, triggered_by: str = None) -> dict:
     """
     Execute a pure Python function (no Claude CLI, no AI, no tokens).
     Same logging/metrics as run_claude but with cost=0.
@@ -436,8 +623,11 @@ def run_script(func, log_name: str = "unnamed", timeout: int = 120) -> dict:
         summary_text = result.get("summary", str(result)) if isinstance(result, dict) else str(result)
         returncode = 0 if ok else 1
 
-        _log_to_file(log_name, f"[systematic] {log_name}", summary_text, "", returncode, duration)
-        _save_metrics(log_name, duration, returncode, "system", summary_text)
+        _log_to_file(log_name, f"[systematic] {log_name}", summary_text, "", returncode, duration, triggered_by=triggered_by)
+        try:
+            _save_metrics(log_name, duration, returncode, "system", summary_text)
+        except Exception as telemetry_error:
+            console.print(f"\r  [warning]⚠ Metrics error for {log_name}: {telemetry_error}[/warning]")
 
         if ok:
             console.print(f"\r  [success]✓[/success] {log_name} [dim]({duration:.1f}s | {summary_text})[/dim]")
@@ -456,7 +646,7 @@ def run_script(func, log_name: str = "unnamed", timeout: int = 120) -> dict:
     except TimeoutError:
         duration = (datetime.now() - start_time).total_seconds()
         console.print(f"\r  [error]✗[/error] {log_name} [warning](timeout {timeout}s)[/warning]")
-        _log_to_file(log_name, f"[systematic] {log_name}", "", f"Timeout after {timeout}s", -1, duration)
+        _log_to_file(log_name, f"[systematic] {log_name}", "", f"Timeout after {timeout}s", -1, duration, triggered_by=triggered_by)
         return {"success": False, "stdout": "", "stderr": f"Timeout after {timeout}s", "returncode": -1, "duration": duration}
 
     except KeyboardInterrupt:
@@ -467,8 +657,11 @@ def run_script(func, log_name: str = "unnamed", timeout: int = 120) -> dict:
     except Exception as e:
         duration = (datetime.now() - start_time).total_seconds()
         console.print(f"\r  [error]✗[/error] {log_name} [error]({e})[/error]")
-        _log_to_file(log_name, f"[systematic] {log_name}", "", str(e), -3, duration)
-        _save_metrics(log_name, duration, -3, "system", str(e))
+        _log_to_file(log_name, f"[systematic] {log_name}", "", str(e), -3, duration, triggered_by=triggered_by)
+        try:
+            _save_metrics(log_name, duration, -3, "system", str(e))
+        except Exception as telemetry_error:
+            console.print(f"\r  [warning]⚠ Metrics error for {log_name}: {telemetry_error}[/warning]")
         return {"success": False, "stdout": "", "stderr": str(e), "returncode": -3, "duration": duration}
 
 

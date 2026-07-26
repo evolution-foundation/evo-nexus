@@ -169,7 +169,6 @@ def _mark_done_via_orm(engine: sa.Engine, task_ids: list[int]) -> None:
     """Mark tasks done via SQLAlchemy ORM (Flask-SQLAlchemy session)."""
     import flask
     import models as _models
-    importlib.reload(_models)
 
     app = flask.Flask(__name__)
     app.config["TESTING"] = True
@@ -190,7 +189,6 @@ def _mark_done_via_bulk_orm(engine: sa.Engine, task_ids: list[int], goal_id: int
     """Mark tasks done via ORM Query.update (bulk, single SQL statement)."""
     import flask
     import models as _models
-    importlib.reload(_models)
 
     app = flask.Flask(__name__)
     app.config["TESTING"] = True

@@ -13,7 +13,6 @@ Coverage:
 
 from __future__ import annotations
 
-import importlib
 import sys
 from pathlib import Path
 
@@ -35,7 +34,6 @@ sys.path.insert(0, str(BACKEND_DIR))
 def app(tmp_path):
     import flask
     import models as _models
-    importlib.reload(_models)
 
     _app = flask.Flask(__name__)
     _app.config["TESTING"] = True
@@ -122,7 +120,6 @@ class TestListenerRegistration:
     def test_register_all_is_idempotent(self, app):
         """Calling register_all() twice does not raise and does not double-count."""
         import db.listeners as _listeners
-        importlib.reload(_listeners)
 
         # Register twice
         _listeners.register_all()
@@ -145,7 +142,6 @@ class TestListenerCounter:
     def test_done_transition_increments_counter(self, app):
         """Counter goes from 0 to 1 when a task is set to done."""
         import db.listeners as _listeners
-        importlib.reload(_listeners)
         _listeners.register_all()
         _listeners.reset_orm_count()
 
@@ -160,7 +156,6 @@ class TestListenerCounter:
     def test_non_done_transition_does_not_increment(self, app):
         """Changing status to 'review' does not increment the counter."""
         import db.listeners as _listeners
-        importlib.reload(_listeners)
         _listeners.register_all()
         _listeners.reset_orm_count()
 
@@ -175,7 +170,6 @@ class TestListenerCounter:
     def test_multiple_tasks_multiple_increments(self, app):
         """Two tasks set to done → counter is 2."""
         import db.listeners as _listeners
-        importlib.reload(_listeners)
         _listeners.register_all()
         _listeners.reset_orm_count()
 
@@ -205,7 +199,6 @@ class TestListenerCounter:
     def test_reset_orm_count_zeroes_counter(self, app):
         """reset_orm_count() brings counter back to 0."""
         import db.listeners as _listeners
-        importlib.reload(_listeners)
         _listeners.register_all()
         _listeners.reset_orm_count()
 

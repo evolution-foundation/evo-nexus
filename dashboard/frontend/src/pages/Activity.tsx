@@ -6,7 +6,7 @@ import { useTranslation } from 'react-i18next'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-type ItemType = 'routine' | 'heartbeat' | 'trigger'
+type ItemType = 'routine' | 'heartbeat' | 'trigger' | 'runtime'
 type RunStatus = 'success' | 'error' | 'running' | 'fail' | 'timeout' | 'killed' | 'completed' | 'pending' | string
 
 interface ActivityItem {
@@ -24,6 +24,11 @@ interface ActivityItem {
   cost_usd?: number | null
   prompt_preview?: string | null
   error?: string | null
+  provider?: string | null
+  profile?: string | null
+  agent?: string | null
+  origin_type?: string | null
+  correlation_id?: string | null
   heartbeat_id?: string
   run_id?: string
   // Trigger-specific
@@ -145,6 +150,11 @@ function RowIcon({ type }: { type: ItemType }) {
       <Zap size={16} className="text-amber-400" />
     </div>
   )
+  if (type === 'runtime') return (
+    <div className="flex items-center justify-center w-9 h-9 rounded-xl bg-sky-500/8 border border-sky-500/15 shrink-0">
+      <Loader2 size={16} className="text-sky-400" />
+    </div>
+  )
   return (
     <div className="flex items-center justify-center w-9 h-9 rounded-xl bg-[#21262d] border border-[#21262d] shrink-0">
       <Clock size={16} className="text-[#667085]" />
@@ -246,7 +256,7 @@ function ActivityDrawer({ item, onClose }: DrawerProps) {
               { label: 'Started', value: item.started_at ? formatTime(item.started_at) : '--' },
               { label: 'Finished', value: item.ended_at ? formatTime(item.ended_at) : norm === 'running' ? 'Still running' : '--' },
               { label: 'Duration', value: formatDuration(item.duration_ms, item.duration_seconds) },
-              { label: 'Triggered by', value: item.triggered_by ?? 'schedule' },
+              { label: 'Triggered by', value: item.triggered_by ?? '--' },
             ].map(({ label, value }) => (
               <div key={label} className="bg-[#161b22] border border-[#21262d] rounded-xl p-3">
                 <p className="text-[10px] uppercase tracking-wider text-[#667085] mb-1">{label}</p>
@@ -315,11 +325,11 @@ function ActivityDrawer({ item, onClose }: DrawerProps) {
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 
-type TypeFilter = 'routines' | 'heartbeats' | 'triggers'
+type TypeFilter = 'routines' | 'heartbeats' | 'triggers' | 'runtime'
 type StatusFilter = 'all' | 'success' | 'error' | 'running'
 type PeriodFilter = 'today' | '7d' | '30d' | 'all'
 
-const TYPE_FILTERS: TypeFilter[] = ['routines', 'heartbeats', 'triggers']
+const TYPE_FILTERS: TypeFilter[] = ['routines', 'heartbeats', 'triggers', 'runtime']
 const PERIOD_TABS: { key: PeriodFilter; label: string }[] = [
   { key: 'today', label: 'Today' },
   { key: '7d', label: '7d' },
@@ -331,7 +341,7 @@ export default function ActivityPage() {
   const { t } = useTranslation()
   const [items, setItems] = useState<ActivityItem[]>([])
   const [loading, setLoading] = useState(true)
-  const [typeFilters, setTypeFilters] = useState<Set<TypeFilter>>(new Set(['routines', 'heartbeats', 'triggers']))
+  const [typeFilters, setTypeFilters] = useState<Set<TypeFilter>>(new Set(['routines', 'heartbeats', 'triggers', 'runtime']))
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
   const [period, setPeriod] = useState<PeriodFilter>('today')
   const [search, setSearch] = useState('')
@@ -369,14 +379,14 @@ export default function ActivityPage() {
           const ts = log.timestamp || log.started_at || ''
           const durMs = log.duration_ms ?? (log.duration_seconds != null ? log.duration_seconds * 1000 : null)
           results.push({
-            id: `routine-${name}-${ts || Date.now()}`,
+            id: log.id || `routine-${name}-${ts || 'unknown'}`,
             type: 'routine',
             name,
             status,
             started_at: ts,
             ended_at: log.ended_at || log.completed_at || null,
             duration_ms: durMs,
-            triggered_by: log.triggered_by || 'schedule',
+            triggered_by: log.triggered_by || null,
             error: log.error || log.stderr || (rc != null && rc !== 0 ? `Exit code ${rc}` : null),
             routine_name: name,
             cost_usd: log.cost_usd ?? null,
@@ -424,7 +434,34 @@ export default function ActivityPage() {
       } catch { /* no heartbeats */ }
     }
 
-    // 3. Triggers — list all triggers, get executions from each detail
+    // 3. Runtime runs — provider provenance and normalized lifecycle
+    if (typeFilters.has('runtime')) {
+      try {
+        const data = await api.get('/runtime-runs')
+        for (const run of data.runs || []) {
+          results.push({
+            id: `runtime-${run.id}`,
+            type: 'runtime',
+            name: run.origin_id || run.workflow_slug || run.task_id || 'Runtime run',
+            status: run.status,
+            started_at: run.started_at || run.queued_at || '',
+            ended_at: run.completed_at || null,
+            duration_ms: null,
+            triggered_by: run.origin_type || null,
+            error: run.error,
+            result_summary: run.result_summary,
+            run_id: run.id,
+            provider: run.runtime_provider,
+            profile: run.resolved_profile,
+            agent: run.agent_slug,
+            origin_type: run.origin_type,
+            correlation_id: run.correlation_id,
+          })
+        }
+      } catch { /* runtime history may be unavailable */ }
+    }
+
+    // 4. Triggers — list all triggers, get executions from each detail
     if (typeFilters.has('triggers')) {
       try {
         const trigData = await api.get('/triggers?per_page=50')
@@ -501,7 +538,11 @@ export default function ActivityPage() {
       if (norm !== statusFilter) return false
     }
     // Search
-    if (search && !item.name.toLowerCase().includes(search.toLowerCase())) return false
+    const searchText = [item.name, item.provider, item.profile, item.agent, item.origin_type, item.correlation_id]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase()
+    if (search && !searchText.includes(search.toLowerCase())) return false
     return true
   })
 
@@ -541,7 +582,7 @@ export default function ActivityPage() {
             {t('nav.activity')}
           </h1>
           <p className="text-[#667085] text-sm mt-1">
-            Execution log across routines, heartbeats and triggers
+            Execution log across routines, heartbeats, triggers and runtime runs
           </p>
         </div>
 
@@ -565,6 +606,7 @@ export default function ActivityPage() {
                     {type === 'routines' && <Clock size={12} />}
                     {type === 'heartbeats' && <Activity size={12} />}
                     {type === 'triggers' && <Zap size={12} />}
+                    {type === 'runtime' && <Loader2 size={12} />}
                     <span className="capitalize">{type}</span>
                   </button>
                 )

@@ -40,7 +40,6 @@ def app(workspace, monkeypatch):
     import models as _models
     import routes.health as _health
 
-    importlib.reload(_models)
     importlib.reload(_health)
     monkeypatch.setattr(_health, "WORKSPACE", workspace)
 
@@ -147,6 +146,8 @@ def test_deep_health_includes_providers_for_admin(client, app):
     assert payload["checks"]["secret_key"]["status"] == "ok"
     assert payload["checks"]["providers"]["status"] == "ok"
     assert payload["checks"]["providers"]["active"] == "anthropic"
+    assert "capabilities" in payload["checks"]
+    assert "runtime_revision" in payload["checks"]
     # Per-check detail must not leak absolute filesystem paths.
     for check in payload["checks"].values():
         assert "path" not in check

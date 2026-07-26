@@ -355,7 +355,14 @@ def sqlite_env(tmp_path):
                 status TEXT NOT NULL DEFAULT 'running',
                 prompt_preview TEXT,
                 error TEXT,
-                triggered_by TEXT
+                triggered_by TEXT,
+                decision_action TEXT,
+                decision_json TEXT,
+                provider TEXT,
+                resolved_profile TEXT,
+                stdout_tail TEXT,
+                stderr_tail TEXT,
+                runtime_run_id TEXT
             )
         """))
         conn.execute(text("""

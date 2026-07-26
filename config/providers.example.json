@@ -8,6 +8,22 @@
       "env_vars": {},
       "requires_logout": false
     },
+    "hermes": {
+      "name": "Hermes Agent",
+      "description": "Hermes Agent — agente AI multi-provedor (OpenRouter, Anthropic, OpenAI, DeepSeek, etc.)",
+      "cli_command": "hermes",
+      "env_vars": {
+        "HERMES_MODEL": "",
+        "HERMES_MAX_ITERATIONS": "",
+        "OPENROUTER_API_KEY": "",
+        "ANTHROPIC_API_KEY": "",
+        "DEEPSEEK_API_KEY": ""
+      },
+      "default_provider": "openrouter",
+      "default_model": "anthropic/claude-sonnet-4",
+      "requires_logout": false,
+      "setup_hint": "Configure o provider e model via env vars ou hermes config"
+    },
     "openrouter": {
       "name": "OpenRouter",
       "description": "200+ modelos via OpenRouter (Claude, GPT, Gemini, Llama, etc.)",
@@ -24,8 +40,22 @@
     },
     "omnirouter": {
       "name": "OMNIROUTER",
-      "description": "OpenAI-compatible custom provider (URL, API Key e Model).",
+      "description": "Provedor custom — qualquer API OpenAI-compatible (URL, API Key e Model). Funciona via OpenClaude ou Hermes.",
       "cli_command": "openclaude",
+      "cli_options": ["openclaude", "hermes"],
+      "cli_env_presets": {
+        "openclaude": {
+          "CLAUDE_CODE_USE_OPENAI": "1",
+          "OPENAI_BASE_URL": "",
+          "OPENAI_API_KEY": "",
+          "OPENAI_MODEL": ""
+        },
+        "hermes": {
+          "HERMES_MODEL": "",
+          "OPENAI_BASE_URL": "",
+          "OPENAI_API_KEY": ""
+        }
+      },
       "env_vars": {
         "CLAUDE_CODE_USE_OPENAI": "1",
         "OPENAI_BASE_URL": "",

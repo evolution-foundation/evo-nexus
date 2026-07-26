@@ -162,35 +162,52 @@ def _parse_llm_output(raw_output: str) -> dict | None:
     return None
 
 
-def _invoke_llm_scan(staged_path: Path, candidates: list[Path]) -> LLMResult:
-    """Run Claude subprocess for semantic prompt-injection scan.
+def _select_llm_cli() -> str | None:
+    """Return first available AI CLI, preserving Claude/OpenClaude fallback order."""
+    for cli in ("claude", "openclaude", "hermes"):
+        if shutil.which(cli):
+            return cli
+    return None
 
-    Pattern copied from heartbeat_runner.py:217-290:
-      - shutil.which("claude"), subprocess.Popen with --print --max-turns N
-        --dangerously-skip-permissions --output-format json <prompt>
-      - cwd=WORKSPACE, start_new_session=True
-      - SIGKILL on TimeoutExpired
-    """
-    if not candidates:
-        return LLMResult(verdict="APPROVE", degraded=False)
 
-    claude_bin = shutil.which("claude")
-    if not claude_bin:
-        return LLMResult(
-            verdict="APPROVE",
-            degraded=True,
-            degraded_reason="claude binary not found in PATH",
-        )
+def _build_llm_cmd(cli_bin: str, prompt: str) -> tuple[list[str], dict[str, str]]:
+    """Build subprocess command for Claude/OpenClaude/Hermes semantic scans."""
+    env = os.environ.copy()
+    if cli_bin == "hermes":
+        env["HERMES_MAX_ITERATIONS"] = str(_LLM_MAX_TURNS)
+        env["TERM"] = "dumb"
+        return ["hermes", "chat", "-Q", "-q", prompt], env
 
-    prompt = _build_llm_prompt(staged_path, candidates)
-    cmd = [
-        claude_bin,
+    return [
+        cli_bin,
         "--print",
         "--max-turns", str(_LLM_MAX_TURNS),
         "--dangerously-skip-permissions",
         "--output-format", "json",
         prompt,
-    ]
+    ], env
+
+
+def _invoke_llm_scan(staged_path: Path, candidates: list[Path]) -> LLMResult:
+    """Run available AI CLI for semantic prompt-injection scan.
+
+    Preserves existing Claude behavior and falls back through openclaude/hermes
+    when Claude Code is not installed. Hermes uses `hermes chat -Q -q` and
+    HERMES_MAX_ITERATIONS because it does not implement Claude's compatibility flags.
+    """
+    if not candidates:
+        return LLMResult(verdict="APPROVE", degraded=False)
+
+    cli_bin = _select_llm_cli()
+    if not cli_bin:
+        return LLMResult(
+            verdict="APPROVE",
+            degraded=True,
+            degraded_reason="No CLI binary found in PATH (tried: claude, openclaude, hermes)",
+        )
+
+    prompt = _build_llm_prompt(staged_path, candidates)
+    cmd, env = _build_llm_cmd(cli_bin, prompt)
 
     start = time.time()
     proc = None
@@ -201,6 +218,7 @@ def _invoke_llm_scan(staged_path: Path, candidates: list[Path]) -> LLMResult:
             stderr=subprocess.PIPE,
             text=True,
             cwd=str(WORKSPACE),
+            env=env,
             start_new_session=True,
         )
         try:

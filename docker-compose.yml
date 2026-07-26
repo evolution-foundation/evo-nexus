@@ -24,6 +24,13 @@ services:
       - ./.claude/templates:/workspace/.claude/templates:ro
       - ./memory:/workspace/memory:ro
       - ./ADWs/logs:/workspace/ADWs/logs
+      - hermes-data:/root/.hermes
+      - tailscale-state:/var/lib/tailscale
+    cap_add:
+      - NET_ADMIN
+    sysctls:
+      - net.ipv4.ip_forward=1
+      - net.ipv6.conf.all.forwarding=1
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/api/version"]
@@ -82,6 +89,7 @@ services:
 
 volumes:
   claude-auth:
+  hermes-data:
   daily-logs:
   projects:
   community:
@@ -92,3 +100,4 @@ volumes:
   memory:
   adw-logs:
   agent-memory:
+  tailscale-state:

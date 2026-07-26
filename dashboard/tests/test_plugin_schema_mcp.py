@@ -92,6 +92,7 @@ class TestPluginMcpServerEnv:
 
 class TestPluginManifestMcpServers:
     _BASE = {
+        "schema_version": "2.0",
         "id": "pm-essentials",
         "name": "PM Essentials",
         "version": "1.0.0",

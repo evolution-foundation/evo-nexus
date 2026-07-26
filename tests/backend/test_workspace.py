@@ -1,6 +1,7 @@
 """Tests for dashboard/backend/routes/workspace.py — Step 1 verification."""
 
 import json
+import importlib
 import os
 import sys
 import tempfile
@@ -267,11 +268,14 @@ class TestAuditAppend:
     def test_happy_path_writes_jsonl(self, app, tmp_path, monkeypatch):
         """Successful mutation writes a line to the JSONL file."""
         import routes.workspace as wm
-
-        log_file = tmp_path / "workspace-mutations.jsonl"
-        log_dir = tmp_path
+        workspace_audit = importlib.import_module("workspace_audit")
 
         monkeypatch.setattr(wm, "REPO_ROOT", tmp_path)
+        monkeypatch.setattr(
+            workspace_audit,
+            "AUDIT_LOG_FILE",
+            tmp_path / "ADWs" / "logs" / "workspace-mutations.jsonl",
+        )
 
         mock_user = MagicMock()
         mock_user.is_authenticated = True
@@ -297,7 +301,8 @@ class TestAuditAppend:
         assert entry["op"] == "write"
         assert entry["path"] == "workspace/test.md"
         assert entry["result"] == "ok"
-        assert entry["user"] == "testadmin"
+        assert entry["user_id"] == 1
+        assert entry["role"] == "admin"
 
     def test_fail_safe_no_propagation(self, app, monkeypatch):
         """Error writing audit log never propagates."""

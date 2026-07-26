@@ -233,6 +233,8 @@ class ScheduledTask(db.Model):
     type = db.Column(db.String(20), nullable=False)  # skill, prompt, script
     payload = db.Column(db.Text, nullable=False)
     agent = db.Column(db.String(50), nullable=True)
+    hermes_profile = db.Column(db.String(64), nullable=True)  # optional Hermes profile override
+    ticket_id = db.Column(db.String(36), db.ForeignKey("tickets.id"), nullable=True, index=True)
     scheduled_at = db.Column(db.DateTime, nullable=False)
     status = db.Column(db.String(20), nullable=False, default="pending")  # pending, running, completed, failed, cancelled
     created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
@@ -241,6 +243,12 @@ class ScheduledTask(db.Model):
     result_summary = db.Column(db.Text, nullable=True)
     error = db.Column(db.Text, nullable=True)
     created_by = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
+    attempt = db.Column(db.Integer, nullable=False, default=0)
+    provider = db.Column(db.String(64), nullable=True)
+    resolved_profile = db.Column(db.String(64), nullable=True)
+    workflow_policy = db.Column(db.String(100), nullable=True)
+    fallback_reason = db.Column(db.Text, nullable=True)
+    runtime_run_id = db.Column(db.String(36), nullable=True, index=True)
 
     def to_dict(self):
         return {
@@ -250,6 +258,8 @@ class ScheduledTask(db.Model):
             "type": self.type,
             "payload": self.payload,
             "agent": self.agent,
+            "hermes_profile": self.hermes_profile,
+            "ticket_id": self.ticket_id,
             "scheduled_at": self.scheduled_at.strftime("%Y-%m-%dT%H:%M:%S.%fZ") if self.scheduled_at else None,
             "status": self.status,
             "created_at": self.created_at.strftime("%Y-%m-%dT%H:%M:%S.%fZ") if self.created_at else None,
@@ -258,7 +268,77 @@ class ScheduledTask(db.Model):
             "result_summary": self.result_summary,
             "error": self.error,
             "created_by": self.created_by,
+            "attempt": self.attempt,
+            "provider": self.provider,
+            "resolved_profile": self.resolved_profile,
+            "workflow_policy": self.workflow_policy,
+            "fallback_reason": self.fallback_reason,
+            "runtime_run_id": self.runtime_run_id,
         }
+
+
+class RuntimeRun(db.Model):
+    __tablename__ = "runtime_runs"
+
+    id = db.Column(db.String(36), primary_key=True)
+    task_id = db.Column(db.Integer, db.ForeignKey("scheduled_tasks.id"), nullable=True, index=True)
+    origin_type = db.Column(db.String(32), nullable=False, default="scheduled_task", index=True)
+    origin_id = db.Column(db.String(128), index=True)
+    ticket_id = db.Column(db.String(36), db.ForeignKey("tickets.id"), index=True)
+    goal_id = db.Column(db.Integer, db.ForeignKey("goals.id"), index=True)
+    agent_slug = db.Column(db.String(100), index=True)
+    status = db.Column(db.String(32), nullable=False, default="queued", index=True)
+    attempt = db.Column(db.Integer, nullable=False, default=1)
+    requested_profile = db.Column(db.String(64))
+    resolved_profile = db.Column(db.String(64))
+    runtime_provider = db.Column(db.String(64))
+    workflow_slug = db.Column(db.String(100))
+    workflow_hash = db.Column(db.String(64))
+    correlation_id = db.Column(db.String(128), nullable=False, index=True)
+    queued_at = db.Column(db.DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
+    started_at = db.Column(db.DateTime)
+    completed_at = db.Column(db.DateTime)
+    result_summary = db.Column(db.Text)
+    error = db.Column(db.Text)
+    exit_code = db.Column(db.Integer)
+
+    def to_dict(self):
+        return {
+            "id": self.id, "task_id": self.task_id, "origin_type": self.origin_type,
+            "origin_id": self.origin_id, "ticket_id": self.ticket_id, "goal_id": self.goal_id,
+            "agent_slug": self.agent_slug, "status": self.status, "attempt": self.attempt,
+            "requested_profile": self.requested_profile, "resolved_profile": self.resolved_profile,
+            "runtime_provider": self.runtime_provider, "workflow_slug": self.workflow_slug,
+            "workflow_hash": self.workflow_hash, "correlation_id": self.correlation_id,
+            "queued_at": self.queued_at.isoformat() if self.queued_at else None,
+            "started_at": self.started_at.isoformat() if self.started_at else None,
+            "completed_at": self.completed_at.isoformat() if self.completed_at else None,
+            "result_summary": self.result_summary, "error": self.error, "exit_code": self.exit_code,
+        }
+
+
+class RuntimeRunApproval(db.Model):
+    __tablename__ = "runtime_run_approvals"
+
+    id = db.Column(db.String(36), primary_key=True)
+    run_id = db.Column(db.String(36), db.ForeignKey("runtime_runs.id"), nullable=False, index=True)
+    action_hash = db.Column(db.String(64), nullable=False)
+    status = db.Column(db.String(20), nullable=False, default="pending")
+    decided_by = db.Column(db.String(80))
+    decided_at = db.Column(db.DateTime)
+    created_at = db.Column(db.DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
+
+
+class RuntimeRunEvidence(db.Model):
+    __tablename__ = "runtime_run_evidence"
+
+    id = db.Column(db.String(36), primary_key=True)
+    run_id = db.Column(db.String(36), db.ForeignKey("runtime_runs.id"), nullable=False, index=True)
+    reference = db.Column(db.String(1000), nullable=False)
+    mime_type = db.Column(db.String(100))
+    checksum = db.Column(db.String(64))
+    size_bytes = db.Column(db.Integer)
+    created_at = db.Column(db.DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
 
 
 class Trigger(db.Model):
@@ -498,6 +578,7 @@ class Heartbeat(db.Model):
     goal_id = db.Column(db.String(100), nullable=True)  # FK stub for Feature 1.2
     required_secrets = db.Column(db.Text, nullable=True, default="[]")  # JSON array
     decision_prompt = db.Column(db.Text, nullable=False)
+    handler = db.Column(db.Text, nullable=True)
     source_plugin = db.Column(db.Text, nullable=True)  # Wave 1.1: plugin slug if contributed by a plugin
     created_at = db.Column(db.String(30), default=lambda: datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"))
     updated_at = db.Column(db.String(30), default=lambda: datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"), onupdate=lambda: datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"))
@@ -541,6 +622,7 @@ class Heartbeat(db.Model):
             "goal_id": self.goal_id,
             "required_secrets": self.required_secrets_list,
             "decision_prompt": self.decision_prompt,
+            "handler": self.handler,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "last_run": last_run.to_dict() if last_run else None,
@@ -565,6 +647,16 @@ class HeartbeatRun(db.Model):
     prompt_preview = db.Column(db.Text, nullable=True)
     error = db.Column(db.Text, nullable=True)
     triggered_by = db.Column(db.String(50), nullable=True)  # interval, manual, new_task, mention, approval_decision
+    decision_action = db.Column(db.Text, nullable=True)
+    decision_json = db.Column(db.Text, nullable=True)
+    provider = db.Column(db.String(64), nullable=True)
+    requested_profile = db.Column(db.String(64), nullable=True)
+    resolved_profile = db.Column(db.String(64), nullable=True)
+    exit_code = db.Column(db.Integer, nullable=True)
+    fallback_from = db.Column(db.String(64), nullable=True)
+    stdout_tail = db.Column(db.Text, nullable=True)
+    stderr_tail = db.Column(db.Text, nullable=True)
+    runtime_run_id = db.Column(db.String(36), nullable=True)
 
     def to_dict(self):
         return {
@@ -581,6 +673,16 @@ class HeartbeatRun(db.Model):
             "prompt_preview": self.prompt_preview,
             "error": self.error,
             "triggered_by": self.triggered_by,
+            "decision_action": self.decision_action,
+            "decision_json": self.decision_json,
+            "provider": self.provider,
+            "requested_profile": self.requested_profile,
+            "resolved_profile": self.resolved_profile,
+            "exit_code": self.exit_code,
+            "fallback_from": self.fallback_from,
+            "stdout_tail": self.stdout_tail,
+            "stderr_tail": self.stderr_tail,
+            "runtime_run_id": self.runtime_run_id,
         }
 
 
@@ -766,7 +868,13 @@ class GoalTask(db.Model):
 # --------------- Tickets models (Feature 1.3) ---------------
 
 TICKET_STATUSES = ("open", "in_progress", "blocked", "review", "resolved", "closed", "archived")
+TICKET_STATUS_ALIASES = {"waiting": "blocked"}
 TICKET_PRIORITIES = ("urgent", "high", "medium", "low")
+
+
+def normalize_ticket_status(status: str) -> str:
+    return TICKET_STATUS_ALIASES.get(status, status)
+
 PRIORITY_RANK = {"urgent": 4, "high": 3, "medium": 2, "low": 1}
 
 
@@ -774,7 +882,7 @@ class Ticket(db.Model):
     __tablename__ = "tickets"
     __table_args__ = (
         db.CheckConstraint(
-            "status IN ('open','in_progress','blocked','review','resolved','closed')",
+            "status IN ('open','in_progress','blocked','review','resolved','closed','archived')",
             name="ck_ticket_status",
         ),
         db.CheckConstraint(
@@ -905,6 +1013,53 @@ class TicketActivity(db.Model):
             "payload": self.payload_dict,
             "created_at": self.created_at,
         }
+
+
+class EventOutbox(db.Model):
+    __tablename__ = "event_outbox"
+
+    id = db.Column(db.String(36), primary_key=True)
+    event_type = db.Column(db.String(100), nullable=False)
+    subject = db.Column(db.String(200), nullable=False)
+    correlation_id = db.Column(db.String(128), nullable=False)
+    payload_json = db.Column(db.Text, nullable=False)
+    status = db.Column(db.String(20), nullable=False, default="pending")
+    attempts = db.Column(db.Integer, nullable=False, default=0)
+    created_at = db.Column(db.DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
+
+
+class EventInbox(db.Model):
+    __tablename__ = "event_inbox"
+    __table_args__ = (db.UniqueConstraint("source", "external_event_id", name="uq_event_inbox_source_id"),)
+
+    id = db.Column(db.Integer, primary_key=True)
+    source = db.Column(db.String(100), nullable=False)
+    external_event_id = db.Column(db.String(255), nullable=False)
+    created_at = db.Column(db.DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
+
+
+class ControlApiIdempotency(db.Model):
+    __tablename__ = "control_api_idempotency"
+    __table_args__ = (db.UniqueConstraint("operation", "key", name="uq_control_api_idempotency"),)
+
+    id = db.Column(db.Integer, primary_key=True)
+    operation = db.Column(db.String(100), nullable=False)
+    key = db.Column(db.String(255), nullable=False)
+    request_hash = db.Column(db.String(64), nullable=False)
+    response_status = db.Column(db.Integer, nullable=False)
+    response_json = db.Column(db.Text, nullable=False)
+    created_at = db.Column(db.String(30), nullable=False)
+
+
+class ControlApiAuditLog(db.Model):
+    __tablename__ = "control_api_audit_log"
+
+    id = db.Column(db.Integer, primary_key=True)
+    operation = db.Column(db.String(100), nullable=False)
+    resource = db.Column(db.String(200), nullable=False)
+    outcome = db.Column(db.String(30), nullable=False)
+    correlation_id = db.Column(db.String(128), nullable=False)
+    created_at = db.Column(db.String(30), nullable=False)
 
 
 # --------------- End Tickets models ---------------

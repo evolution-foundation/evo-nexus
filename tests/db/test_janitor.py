@@ -47,7 +47,6 @@ def app(tmp_path, request):
     import os
     import flask
     import models as _models
-    importlib.reload(_models)
 
     db_url = os.environ.get("DATABASE_URL", "") or f"sqlite:///{tmp_path}/janitor_test.db"
 

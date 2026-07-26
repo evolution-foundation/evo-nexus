@@ -1,8 +1,8 @@
 """Providers endpoint — manage AI provider configurations (Anthropic, OpenRouter, OpenAI, Gemini, etc.).
 
-EvoNexus supports multiple AI providers via OpenClaude. The active provider
-determines which CLI binary (claude vs openclaude) and which env vars are
-injected when spawning sessions.
+EvoNexus supports multiple AI providers via OpenClaude or Hermes. The active
+provider determines which CLI binary (claude, openclaude, or hermes) and which
+env vars are injected when spawning sessions.
 """
 
 import base64
@@ -34,7 +34,7 @@ OPENAI_TOKEN_URL = "https://auth.openai.com/oauth/token"
 CODEX_AUTH_FILE = Path.home() / ".codex" / "auth.json"
 
 # Allowlisted CLI commands — only these binaries can be spawned
-ALLOWED_CLI_COMMANDS = frozenset({"claude", "openclaude"})
+ALLOWED_CLI_COMMANDS = frozenset({"claude", "openclaude", "hermes"})
 
 # Allowlisted env var names — only these can be injected into subprocess
 ALLOWED_ENV_VARS = frozenset({
@@ -55,11 +55,61 @@ ALLOWED_ENV_VARS = frozenset({
     "AWS_BEARER_TOKEN_BEDROCK",
     "ANTHROPIC_VERTEX_PROJECT_ID",
     "CLOUD_ML_REGION",
+    # Hermes support
+    "HERMES_MAX_ITERATIONS",
+    "HERMES_MODEL",
+    "OPENROUTER_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "DEEPSEEK_API_KEY",
 })
 
 
+_STRUCTURAL_KEYS = frozenset({
+    "cli_options", "cli_env_presets", "description", "setup_hint",
+    "mode_overrides", "name", "requires_logout",
+})
+
+
+def _merge_from_example(config: dict) -> bool:
+    """Backfill structural fields from providers.example.json.
+
+    Adds new providers entirely and fills missing structural keys on
+    existing providers. Never overwrites user-populated values like
+    env_vars, cli_command, default_base_url, or default_model.
+    Returns True if config was modified.
+    """
+    example_path = PROVIDERS_CONFIG.parent / "providers.example.json"
+    if not example_path.is_file():
+        return False
+    try:
+        example = json.loads(example_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return False
+
+    changed = False
+    ex_provs = example.get("providers", {})
+    live_provs = config.setdefault("providers", {})
+
+    for key, ex_entry in ex_provs.items():
+        if key not in live_provs:
+            live_provs[key] = ex_entry
+            changed = True
+            continue
+        live = live_provs[key]
+        for field in _STRUCTURAL_KEYS:
+            if field not in live and field in ex_entry:
+                live[field] = ex_entry[field]
+                changed = True
+    return changed
+
+
 def _read_config() -> dict:
-    """Read providers.json. If missing, copy from providers.example.json."""
+    """Read providers.json. If missing, copy from providers.example.json.
+
+    On every read, backfill structural fields from the example so that
+    new provider features (cli_options, cli_env_presets, etc.) propagate
+    to existing installations without losing user config.
+    """
     try:
         if not PROVIDERS_CONFIG.is_file():
             example = PROVIDERS_CONFIG.parent / "providers.example.json"
@@ -67,10 +117,22 @@ def _read_config() -> dict:
                 import shutil as _shutil
                 _shutil.copy2(example, PROVIDERS_CONFIG)
         if PROVIDERS_CONFIG.is_file():
-            return json.loads(PROVIDERS_CONFIG.read_text(encoding="utf-8"))
+            config = json.loads(PROVIDERS_CONFIG.read_text(encoding="utf-8"))
+            if _merge_from_example(config):
+                _write_config(config)
+            return config
     except (json.JSONDecodeError, OSError):
         pass
     return {"active_provider": "anthropic", "providers": {}}
+
+
+def _read_runtime_config() -> dict:
+    """Read provider config and overlay non-secret CLI metadata in PG mode."""
+    if get_dialect() != "postgresql":
+        return _read_config()
+    config = _pstore.list_providers()
+    _merge_from_example(config)
+    return config
 
 
 def _write_config(config: dict):
@@ -82,11 +144,46 @@ def _write_config(config: dict):
     )
 
 
+_CLI_SEARCH_DIRS = (
+    str(Path.home() / ".hermes" / "bin"),
+    str(Path.home() / ".local" / "bin"),
+    str(Path.home() / ".npm-global" / "bin"),
+    "/usr/local/bin",
+    "/usr/bin",
+    "/bin",
+)
+
+
 def _mask_secret(value: str) -> str:
     """Mask an API key for safe display: sk-or-v1-abc...xyz → sk-or-****xyz."""
     if not value or len(value) < 8:
         return "****" if value else ""
     return value[:6] + "****" + value[-4:]
+
+
+def _build_cli_env(env: dict | None = None) -> dict:
+    """Ensure CLI checks inherit common user-local bin directories."""
+    merged = dict(env or os.environ)
+    current_path = merged.get("PATH", "")
+    path_parts = [p for p in current_path.split(os.pathsep) if p]
+    for candidate in _CLI_SEARCH_DIRS:
+        if candidate not in path_parts:
+            path_parts.append(candidate)
+    merged["PATH"] = os.pathsep.join(path_parts)
+    return merged
+
+
+def _resolve_cli_path(command: str, env: dict | None = None) -> str | None:
+    """Resolve a CLI path using an augmented PATH plus common fallbacks."""
+    cli_env = _build_cli_env(env)
+    resolved = shutil.which(command, path=cli_env.get("PATH"))
+    if resolved:
+        return resolved
+    for directory in _CLI_SEARCH_DIRS:
+        candidate = Path(directory) / command
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return None
 
 
 def _run_cli_version(command: str, env: dict | None = None) -> dict:
@@ -95,22 +192,24 @@ def _run_cli_version(command: str, env: dict | None = None) -> dict:
     Each branch uses a literal string for the executable so that
     semgrep/opengrep does not flag it as subprocess injection.
     """
-    run_kwargs = dict(capture_output=True, text=True, timeout=10)
-    if env is not None:
-        run_kwargs["env"] = env
+    cli_env = _build_cli_env(env)
+    resolved = _resolve_cli_path(command, cli_env)
+    run_kwargs = dict(capture_output=True, text=True, timeout=10, env=cli_env)
 
     try:
-        if command == "openclaude":
-            result = subprocess.run(["openclaude", "--version"], **run_kwargs)  # noqa: S603, S607
-        elif command == "claude":
-            result = subprocess.run(["claude", "--version"], **run_kwargs)  # noqa: S603, S607
+        if resolved and command == "hermes":
+            result = subprocess.run([resolved, "--version"], **run_kwargs)  # noqa: S603
+        elif resolved and command == "openclaude":
+            result = subprocess.run([resolved, "--version"], **run_kwargs)  # noqa: S603
+        elif resolved and command == "claude":
+            result = subprocess.run([resolved, "--version"], **run_kwargs)  # noqa: S603
         else:
             return {"installed": False, "version": None, "path": None}
 
         version = result.stdout.strip() or result.stderr.strip()
-        return {"installed": True, "version": version, "path": shutil.which(command)}
+        return {"installed": True, "version": version, "path": resolved}
     except (subprocess.TimeoutExpired, OSError):
-        return {"installed": False, "version": None, "path": shutil.which(command)}
+        return {"installed": False, "version": None, "path": resolved}
 
 
 def _check_cli(command: str) -> dict:
@@ -178,20 +277,26 @@ def _save_codex_auth(tokens: dict):
 @login_required
 def list_providers():
     """List all providers with status info."""
-    config = _pstore.list_providers() if get_dialect() == "postgresql" else _read_config()
+    config = _read_runtime_config()
     active = config.get("active_provider", "anthropic")
     providers = config.get("providers", {})
 
-    # Check CLI installation status for both binaries
+    # Check CLI installation status for all binaries
     claude_status = _check_cli("claude")
     openclaude_status = _check_cli("openclaude")
+    hermes_status = _check_cli("hermes")
 
     result = []
     for key, prov in providers.items():
         cli = prov.get("cli_command", "claude")
         if cli not in ALLOWED_CLI_COMMANDS:
             continue
-        cli_status = claude_status if cli == "claude" else openclaude_status
+        if cli == "hermes":
+            cli_status = hermes_status
+        elif cli == "openclaude":
+            cli_status = openclaude_status
+        else:
+            cli_status = claude_status
 
         # Mask env var values for API response
         env_vars = prov.get("env_vars", {})
@@ -209,7 +314,7 @@ def list_providers():
                          "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX")
         ) if env_vars else True
 
-        result.append({
+        entry = {
             "id": key,
             "name": prov.get("name", key),
             "description": prov.get("description", ""),
@@ -225,13 +330,22 @@ def list_providers():
             "default_model": prov.get("default_model"),
             "default_base_url": prov.get("default_base_url"),
             "default_region": prov.get("default_region"),
-        })
+        }
+
+        # CLI selector support (e.g. omnirouter can use openclaude or hermes)
+        cli_options = prov.get("cli_options")
+        if cli_options:
+            entry["cli_options"] = [c for c in cli_options if c in ALLOWED_CLI_COMMANDS]
+            entry["cli_env_presets"] = prov.get("cli_env_presets", {})
+
+        result.append(entry)
 
     return jsonify({
         "providers": result,
         "active_provider": active,
         "claude_installed": claude_status["installed"],
         "openclaude_installed": openclaude_status["installed"],
+        "hermes_installed": hermes_status["installed"],
     })
 
 
@@ -239,7 +353,7 @@ def list_providers():
 @login_required
 def get_active_provider():
     """Get the active provider."""
-    config = _pstore.list_providers() if get_dialect() == "postgresql" else _read_config()
+    config = _read_runtime_config()
     active = config.get("active_provider", "anthropic")
     provider = config.get("providers", {}).get(active, {})
     return jsonify({
@@ -280,7 +394,7 @@ def set_active_provider():
 @login_required
 def get_provider_config(provider_id):
     """Get a provider's config (env vars masked)."""
-    config = _pstore.list_providers() if get_dialect() == "postgresql" else _read_config()
+    config = _read_runtime_config()
     provider = config.get("providers", {}).get(provider_id)
     if not provider:
         return jsonify({"error": f"Unknown provider: {provider_id}"}), 400
@@ -304,16 +418,32 @@ def get_provider_config(provider_id):
 @bp.route("/api/providers/<provider_id>/config", methods=["POST"])
 @login_required
 def update_provider_config(provider_id):
-    """Update a provider's env vars."""
+    """Update a provider's env vars (and optionally cli_command)."""
     data = request.get_json(silent=True) or {}
     new_env_vars = data.get("env_vars", {})
 
     # Build sanitised dict: allowlisted, not masked, no shell metacharacters.
-    config = _pstore.list_providers() if get_dialect() == "postgresql" else _read_config()
+    config = _read_runtime_config()
     provider = config.get("providers", {}).get(provider_id)
     if not provider:
         return jsonify({"error": f"Unknown provider: {provider_id}"}), 400
 
+    # Allow switching cli_command if provider has cli_options.
+    new_cli = data.get("cli_command")
+    cli_options = provider.get("cli_options", [])
+    cli_changed = bool(
+        new_cli and cli_options and new_cli in cli_options and new_cli in ALLOWED_CLI_COMMANDS
+    )
+    if cli_changed:
+        assert isinstance(new_cli, str)
+        provider["cli_command"] = new_cli
+        # When switching CLI, replace env_vars with the preset for that CLI.
+        presets = provider.get("cli_env_presets", {})
+        if new_cli in presets:
+            provider["env_vars"] = dict(presets[new_cli])
+            provider["requires_logout"] = new_cli != "hermes"
+
+    # Merge: only update allowlisted vars that are provided and not masked.
     existing = provider.get("env_vars", {})
     safe_updates: dict = {}
     for key, value in new_env_vars.items():
@@ -329,6 +459,13 @@ def update_provider_config(provider_id):
 
     if get_dialect() == "postgresql":
         try:
+            if cli_changed:
+                _pstore.update_provider_cli(
+                    provider_id,
+                    str(new_cli),
+                    existing,
+                    bool(provider.get("requires_logout", new_cli != "hermes")),
+                )
             _pstore.update_provider_config(provider_id, safe_updates)
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
@@ -354,18 +491,25 @@ def test_provider(provider_id):
     if cli not in ALLOWED_CLI_COMMANDS:
         return jsonify({"success": False, "error": f"Unsupported CLI: {cli}"}), 400
 
-    if not shutil.which(cli):
+    resolved_cli = _resolve_cli_path(cli)
+    if not resolved_cli:
+        if cli == "hermes":
+            hint = "Install Hermes and ensure 'hermes' is on PATH"
+        elif cli == "openclaude":
+            hint = "npm install -g @gitlawb/openclaude"
+        else:
+            hint = "npm install -g @anthropic-ai/claude-code"
         return jsonify({
             "success": False,
             "error": f"'{cli}' not found in PATH",
-            "hint": f"npm install -g {'@gitlawb/openclaude' if cli == 'openclaude' else '@anthropic-ai/claude-code'}",
+            "hint": hint,
         })
 
     # Build env with sanitized provider vars
     env_vars = _sanitize_env_vars(
         {k: v for k, v in provider.get("env_vars", {}).items() if v}
     )
-    test_env = {**os.environ, **env_vars}
+    test_env = _build_cli_env({**os.environ, **env_vars})
 
     result = _run_cli_version(cli, env=test_env)
     return jsonify({
@@ -441,7 +585,7 @@ def openai_auth_complete():
 
     _save_codex_auth(resp.json())
 
-    config = _pstore.list_providers() if get_dialect() == "postgresql" else _read_config()
+    config = _read_runtime_config()
     providers = config.get("providers", {})
     new_active = "codex_auth" if "codex_auth" in providers else "openai"
     if get_dialect() == "postgresql":
@@ -517,7 +661,7 @@ def openai_device_poll():
 
     _save_codex_auth(token_resp.json())
 
-    config = _pstore.list_providers() if get_dialect() == "postgresql" else _read_config()
+    config = _read_runtime_config()
     providers = config.get("providers", {})
     new_active = "codex_auth" if "codex_auth" in providers else "openai"
     if get_dialect() == "postgresql":

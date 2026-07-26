@@ -196,6 +196,7 @@ const translations = {
       updateAvailable: 'Actualización disponible: v{{version}}',
       plugins: 'Plugins',
       mcpServers: 'MCP Servers',
+      hermesUI: 'Hermes UI',
     },
 
     login: {

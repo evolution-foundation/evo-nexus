@@ -35,6 +35,10 @@ RUN npm install -g @anthropic-ai/claude-code
 # so Swarm and VPS behavior stay aligned.
 RUN npm install -g @gitlawb/openclaude@latest
 
+# Install Hermes Agent CLI (multi-provider AI agent)
+# PyPI package — avoids heavy install script that needs build tools + Python 3.11
+RUN uv tool install hermes-agent
+
 # GitHub CLI
 RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
         | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \

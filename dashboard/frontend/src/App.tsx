@@ -8,7 +8,10 @@ import { loadWorkspaceTimezone } from './lib/format'
 import PluginPageHost from './pages/PluginPageHost'
 import { NotificationProvider } from './context/NotificationContext'
 import { PluginNavigationProvider } from './context/PluginNavigationContext'
+import { FloatingChatProvider } from './context/FloatingChatContext'
+import FloatingChatFab from './components/FloatingChatFab'
 import Sidebar from './components/Sidebar'
+import HermesFrameHost from './components/HermesFrameHost'
 import { FullPageLoader, SectionBoundary, SectionLoader } from './components/PageStates'
 import { lazyDefault, lazyNamed } from './lib/lazyImport'
 
@@ -100,6 +103,7 @@ function DashboardRouteFrame({
 // Lazy-loaded onboarding + settings pages
 const OnboardingRouter = lazy(() => import('./pages/onboarding/OnboardingRouter'))
 const BrainRepo = lazy(() => import('./pages/settings/BrainRepo'))
+const TailscaleCard = lazy(() => import('./pages/settings/TailscaleCard'))
 
 // Extended user type with onboarding fields (backend may include these)
 interface OnboardingUser {
@@ -128,6 +132,7 @@ function AppContent() {
   const isAgentDetail = /^\/agents\/[^/]+$/.test(location.pathname)
   const isTicketDetail = /^\/tickets\/[^/]+$/.test(location.pathname)
   const isWorkspace = location.pathname === '/workspace' || location.pathname.startsWith('/workspace/')
+  const isHermes = location.pathname === '/hermes'
   const { user, loading, needsSetup, hasPermission } = useAuth()
   const extUser = user as (typeof user & OnboardingUser) | null
 
@@ -217,17 +222,22 @@ function AppContent() {
   return (
     <PluginNavigationProvider>
     <NotificationProvider>
+      <FloatingChatProvider>
       <div className="flex min-h-screen bg-[#0C111D]">
         <Sidebar />
 
         {/* Pages - responsive margin */}
         <main
           className={
-            isAgentDetail || isWorkspace || isTicketDetail
+            isAgentDetail || isWorkspace || isTicketDetail || isHermes
               ? 'flex-1 ml-0 lg:ml-60 pt-14 lg:pt-0 h-screen overflow-hidden'
               : 'flex-1 ml-0 lg:ml-60 p-4 lg:p-8 pt-16 lg:pt-8 overflow-auto'
           }
         >
+          {/* Persistent Hermes iframe host — mounted outside <Routes> so it
+              survives navigation (no bundle reload on tab reopen). Hidden via
+              display:none when not on /hermes. Lazy: iframe created on first open. */}
+          {hasPermission('config', 'view') && <HermesFrameHost visible={isHermes} />}
           <DashboardRouteFrame locationKey={routeKey}>
             <Routes>
               {/* Onboarding & Settings routes (lazy — keep their own suspense so they
@@ -240,6 +250,11 @@ function AppContent() {
               <Route path="/settings/brain-repo" element={
                 <Suspense fallback={<div className="flex items-center justify-center py-16"><div className="text-[#5a6b7f] text-sm">Loading...</div></div>}>
                   <BrainRepo />
+                </Suspense>
+              } />
+              <Route path="/settings/tailscale" element={
+                <Suspense fallback={<div className="flex items-center justify-center py-16"><div className="text-[#5a6b7f] text-sm">Loading...</div></div>}>
+                  <TailscaleCard />
                 </Suspense>
               } />
 
@@ -266,6 +281,9 @@ function AppContent() {
               {hasPermission('config', 'view') && <Route path="/backups" element={<Backups />} />}
               <Route path="/config" element={<Navigate to="/settings" replace />} />
               <Route path="/providers" element={<Providers />} />
+              {/* /hermes content is rendered by the persistent HermesFrameHost above,
+                  not here — this route is a no-op placeholder so navigation matches. */}
+              {hasPermission('config', 'view') && <Route path="/hermes" element={null} />}
               {hasPermission('users', 'view') && <Route path="/users" element={<Users />} />}
               {hasPermission('audit', 'view') && <Route path="/audit" element={<Audit />} />}
               {hasPermission('users', 'manage') && <Route path="/roles" element={<Roles />} />}
@@ -304,7 +322,13 @@ function AppContent() {
             </Routes>
           </DashboardRouteFrame>
         </main>
+
+        {/* Floating chat widget — hidden on fullscreen pages */}
+        {!isAgentDetail && !isWorkspace && !isHermes && (
+          <FloatingChatFab />
+        )}
       </div>
+      </FloatingChatProvider>
     </NotificationProvider>
     </PluginNavigationProvider>
   )

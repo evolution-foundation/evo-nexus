@@ -24,7 +24,7 @@ MEMORY_WARN_BYTES = 64 * 1024   # 64 KB
 MEMORY_TRUNCATE_BYTES = 32 * 1024  # 32 KB per section
 from models import (
     Heartbeat, Ticket, TicketActivity, TicketComment,
-    PRIORITY_RANK, TICKET_PRIORITIES, TICKET_STATUSES,
+    PRIORITY_RANK, TICKET_PRIORITIES, TICKET_STATUSES, normalize_ticket_status,
     db, has_permission, audit,
 )
 
@@ -56,6 +56,8 @@ def _log_activity(ticket_id: str, actor: str, action: str, payload: dict | None 
         created_at=_now(),
     )
     db.session.add(act)
+    from event_bus import publish
+    publish(f"ticket.{action}", f"ticket:{ticket_id}", str(uuid.uuid4()), {"actor": actor})
 
 
 def _parse_mentions(body: str) -> list[str]:
@@ -255,7 +257,7 @@ def create_ticket():
     if priority not in TICKET_PRIORITIES:
         return jsonify({"error": f"priority must be one of {TICKET_PRIORITIES}"}), 400
 
-    status = data.get("status", "open")
+    status = normalize_ticket_status(data.get("status", "open"))
     if status not in TICKET_STATUSES:
         return jsonify({"error": f"status must be one of {TICKET_STATUSES}"}), 400
 
@@ -305,9 +307,9 @@ def update_ticket(ticket_id: str):
     changes: dict = {}
 
     if "status" in data:
-        new_status = data["status"]
+        new_status = normalize_ticket_status(data["status"])
         if new_status not in TICKET_STATUSES:
-            return jsonify({"error": f"invalid status: {new_status}"}), 400
+            return jsonify({"error": f"invalid status: {data['status']}"}), 400
         old_status = ticket.status
         ticket.status = new_status
         changes["status"] = {"from": old_status, "to": new_status}

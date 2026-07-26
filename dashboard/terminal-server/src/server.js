@@ -341,6 +341,41 @@ class TerminalServer {
       });
     });
 
+    // List all sessions across every agent (for the floating chat session picker)
+    this.app.get('/api/sessions', (req, res) => {
+      const includeArchived = req.query.archived === 'true';
+      const sessions = [];
+      for (const [id, s] of this.claudeSessions.entries()) {
+        if (!includeArchived && s.archived) continue;
+        let preview = '';
+        let lastMessageTs = 0;
+        if (Array.isArray(s.chatHistory) && s.chatHistory.length > 0) {
+          const lastMsg = s.chatHistory[s.chatHistory.length - 1];
+          lastMessageTs = lastMsg.ts || 0;
+          for (let i = s.chatHistory.length - 1; i >= 0; i--) {
+            if (s.chatHistory[i].role === 'user' && s.chatHistory[i].text) {
+              preview = s.chatHistory[i].text.slice(0, 80);
+              break;
+            }
+          }
+        }
+        sessions.push({
+          id,
+          name: s.name,
+          created: s.created,
+          active: s.active,
+          agentName: s.agentName || null,
+          ticketId: s.ticketId || null,
+          archived: s.archived || false,
+          lastActivity: lastMessageTs || (s.lastActivity ? new Date(s.lastActivity).getTime() : 0),
+          preview,
+          messageCount: Array.isArray(s.chatHistory) ? s.chatHistory.length : 0,
+        });
+      }
+      sessions.sort((a, b) => (b.lastActivity || 0) - (a.lastActivity || 0));
+      res.json({ sessions });
+    });
+
     // List all sessions for a given agent
     this.app.get('/api/sessions/by-agent/:agentName', (req, res) => {
       const { agentName } = req.params;
@@ -705,6 +740,7 @@ class TerminalServer {
                 workingDir: chatSession.workingDir,
                 prompt: data.prompt,
                 files: data.files,
+                history: chatSession.chatHistory.slice(0, -1),
                 sdkSessionId: chatSession.sdkSessionId || undefined,
                 systemPromptExtras: chatSession.systemPromptExtras || undefined,
                 onMessage: (msg) => {

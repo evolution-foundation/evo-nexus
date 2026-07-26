@@ -3,7 +3,7 @@ FROM node:22-slim AS base
 # System deps
 RUN apt-get update && apt-get install -y \
     python3 python3-pip python3-venv \
-    curl git jq screen \
+    curl git jq screen unzip \
     && rm -rf /var/lib/apt/lists/*
 
 # Install uv
@@ -25,6 +25,10 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | d
 
 # Install todoist CLI
 RUN npm install -g todoist-ts-cli
+
+
+# Install Tailscale CLI (for VPN integration)
+RUN curl -fsSL https://tailscale.com/install.sh | sh
 
 WORKDIR /workspace
 
@@ -51,6 +55,7 @@ VOLUME ["/workspace/workspace/daily-logs", \
         "/workspace/workspace/strategy", \
         "/workspace/memory", \
         "/workspace/ADWs/logs", \
-        "/workspace/.claude/agent-memory"]
+        "/workspace/.claude/agent-memory", \
+        "/var/lib/tailscale"]
 
 ENTRYPOINT ["uv", "run", "python"]

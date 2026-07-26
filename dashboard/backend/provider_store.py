@@ -120,6 +120,32 @@ def _update_provider_env_vars_in_db(slug: str, env_vars: dict) -> None:
         )
 
 
+def update_provider_cli(
+    slug: str,
+    cli_command: str,
+    env_vars: dict,
+    requires_logout: bool,
+) -> None:
+    """Persist a validated CLI switch and its complete environment preset."""
+    if get_dialect() != "postgresql":
+        raise RuntimeError("update_provider_cli is only used in PostgreSQL mode")
+    if _get_provider_row(slug) is None:
+        raise ValueError(f"Unknown provider slug: {slug!r}")
+    with get_engine().begin() as conn:
+        conn.execute(
+            text(
+                "UPDATE llm_providers SET cli_command = :cli, env_vars = :env, "
+                "requires_logout = :logout, updated_at = NOW() WHERE slug = :slug"
+            ),
+            {
+                "cli": cli_command,
+                "env": json.dumps(env_vars),
+                "logout": requires_logout,
+                "slug": slug,
+            },
+        )
+
+
 def _get_provider_row(slug: str) -> Optional[dict]:
     """Fetch a single provider row by slug. Returns None if not found."""
     with get_engine().connect() as conn:

@@ -4,7 +4,7 @@
 # The upstream Dockerfile.dashboard is Python-only (Flask + React). That
 # is enough for local dev but the embedded terminal — a core feature —
 # needs the Node terminal-server running inside the container, plus
-# the `claude` and `openclaude` binaries that sessions spawn.
+# the `claude`, `openclaude`, and `hermes` binaries that sessions spawn.
 #
 # Three stages:
 #   Stage 1 (frontend-build):   compiles React with Vite (node:22-alpine)
@@ -20,11 +20,14 @@
 
 # ---- Stage 1: Frontend build ---------------------------------------------
 FROM node:22-alpine AS frontend-build
-WORKDIR /frontend
-COPY dashboard/frontend/package.json dashboard/frontend/package-lock.json* ./
-RUN npm install --legacy-peer-deps
-COPY dashboard/frontend/ ./
-RUN npm run build
+WORKDIR /dashboard
+COPY dashboard/package.json dashboard/package-lock.json ./
+COPY dashboard/frontend/package.json frontend/package.json
+COPY dashboard/packages/ui/package.json packages/ui/package.json
+RUN npm ci
+COPY dashboard/frontend/ frontend/
+COPY dashboard/packages/ui/ packages/ui/
+RUN npm run build --workspace frontend
 
 # ---- Stage 2: Terminal-server native deps --------------------------------
 # node-pty uses node-gyp to compile a C++ addon at install time. That
@@ -34,8 +37,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         python3 make g++ \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /terminal
-COPY dashboard/terminal-server/package.json dashboard/terminal-server/package-lock.json* ./
-RUN npm install --omit=dev --no-audit --no-fund
+COPY dashboard/terminal-server/package.json dashboard/terminal-server/package-lock.json ./
+RUN npm ci --omit=dev --no-audit --no-fund
 
 # ---- Stage 3: Python + Node runtime --------------------------------------
 FROM python:3.12-slim AS runtime
@@ -44,7 +47,7 @@ FROM python:3.12-slim AS runtime
 # Node.js 22 for terminal-server binary. We use NodeSource so the final image
 # is clean (no build toolchain).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        curl ca-certificates gnupg openssl git \
+        curl ca-certificates gnupg openssl git jq \
     && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && apt-get clean \
@@ -54,12 +57,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 ENV PATH="/root/.local/bin:${PATH}"
 
-# Both CLIs — the Providers page in the UI switches between them at runtime.
+# Tailscale CLI (for VPN integration)
+RUN curl -fsSL https://tailscale.com/install.sh | sh
+
+# All CLIs — the Providers page in the UI switches between them at runtime.
 # @gitlawb/openclaude@latest is pinned to the npm dist-tag which as of the
 # current fix is ≥0.3.0 (first version with the Codex shortcut endpoint).
 RUN npm install -g \
         @anthropic-ai/claude-code \
         @gitlawb/openclaude@latest
+
+# Install Hermes Agent CLI (multi-provider AI agent)
+# PyPI package with [web] extra for `hermes ui` server (fastapi + uvicorn)
+RUN uv tool install "hermes-agent[web]"
 
 # Timezone
 ENV TZ=America/Sao_Paulo
@@ -86,7 +96,7 @@ COPY .env.example     ./
 COPY --from=terminal-build /terminal/node_modules dashboard/terminal-server/node_modules
 
 # Built frontend from stage 1
-COPY --from=frontend-build /frontend/dist dashboard/frontend/dist
+COPY --from=frontend-build /dashboard/frontend/dist dashboard/frontend/dist
 
 # SQLite data dir (matches upstream Dockerfile.dashboard)
 RUN mkdir -p dashboard/data

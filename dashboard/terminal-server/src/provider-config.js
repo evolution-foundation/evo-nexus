@@ -4,7 +4,7 @@ const path = require('path');
 const WORKSPACE_ROOT = path.resolve(__dirname, '..', '..', '..');
 const PROVIDERS_PATH = path.join(WORKSPACE_ROOT, 'config', 'providers.json');
 
-const ALLOWED_CLI = new Set(['claude', 'openclaude']);
+const ALLOWED_CLI = new Set(['claude', 'openclaude', 'hermes']);
 const ALLOWED_ENV_VARS = new Set([
   'ANTHROPIC_API_KEY',
   'CLAUDE_CODE_USE_OPENAI',
@@ -22,6 +22,11 @@ const ALLOWED_ENV_VARS = new Set([
   'AWS_BEARER_TOKEN_BEDROCK',
   'ANTHROPIC_VERTEX_PROJECT_ID',
   'CLOUD_ML_REGION',
+  // Hermes support
+  'HERMES_MAX_ITERATIONS',
+  'HERMES_MODEL',
+  'OPENROUTER_API_KEY',
+  'DEEPSEEK_API_KEY',
 ]);
 
 function _normalizeModel(model) {
@@ -57,6 +62,7 @@ function resolveProviderModel(providerConfig) {
 function getProviderMode(providerConfig) {
   const active = providerConfig?.active || 'anthropic';
   if (active === 'anthropic') return 'anthropic';
+  if (providerConfig?.cli_command === 'hermes') return 'code';
   const model = resolveProviderModel(providerConfig);
   if (isCodeModel(model)) return 'code';
   return 'chat';

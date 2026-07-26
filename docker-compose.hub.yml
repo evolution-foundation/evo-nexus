@@ -21,7 +21,7 @@ services:
   # Dashboard — Flask + React + terminal embutido + Claude CLI
   # Abra http://localhost:8080 após o boot.
   dashboard:
-    image: evoapicloud/evo-nexus-dashboard:latest
+    image: ${EVONEXUS_IMAGE_REGISTRY:-evoapicloud}/evo-nexus-dashboard:${EVONEXUS_IMAGE_TAG:?set EVONEXUS_IMAGE_TAG to an immutable sha-* tag}
     container_name: evonexus-dashboard
     ports:
       - "8080:8080"     # Dashboard (UI + API)
@@ -38,6 +38,7 @@ services:
       - evonexus_config:/workspace/config
       - evonexus_workspace:/workspace/workspace
       - evonexus_dashboard_data:/workspace/dashboard/data
+      - evonexus_tailscale_state:/var/lib/tailscale
       - evonexus_memory:/workspace/memory
       - evonexus_adw_logs:/workspace/ADWs/logs
       - evonexus_agent_memory:/workspace/.claude/agent-memory
@@ -54,7 +55,7 @@ services:
   # Espera ANTHROPIC_API_KEY aparecer no .env (configurado pela UI) antes
   # de iniciar — não fica em crash-loop enquanto você configura.
   telegram:
-    image: evoapicloud/evo-nexus-runtime:latest
+    image: ${EVONEXUS_IMAGE_REGISTRY:-evoapicloud}/evo-nexus-runtime:${EVONEXUS_IMAGE_TAG:?set EVONEXUS_IMAGE_TAG to an immutable sha-* tag}
     container_name: evonexus-telegram
     command: ["claude", "--channels", "plugin:telegram@claude-plugins-official", "--dangerously-skip-permissions"]
     environment:
@@ -76,7 +77,7 @@ services:
   # Scheduler — executa rotinas automáticas (daily, weekly, monthly).
   # Opcional: remova este serviço se não for usar rotinas automatizadas.
   scheduler:
-    image: evoapicloud/evo-nexus-runtime:latest
+    image: ${EVONEXUS_IMAGE_REGISTRY:-evoapicloud}/evo-nexus-runtime:${EVONEXUS_IMAGE_TAG:?set EVONEXUS_IMAGE_TAG to an immutable sha-* tag}
     container_name: evonexus-scheduler
     command: ["uv", "run", "python", "scheduler.py"]
     environment:
@@ -101,6 +102,7 @@ volumes:
   evonexus_config:
   evonexus_workspace:
   evonexus_dashboard_data:
+  evonexus_tailscale_state:
   evonexus_memory:
   evonexus_adw_logs:
   evonexus_agent_memory:

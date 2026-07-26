@@ -5,12 +5,14 @@
 
 # ---- Stage 1: Frontend build ----------------------------------------
 FROM node:22-alpine AS frontend-build
-WORKDIR /frontend
-COPY dashboard/frontend/package.json dashboard/frontend/package-lock.json* ./
-# --legacy-peer-deps resolve o conflito de peer dependencies
-RUN npm install --legacy-peer-deps
-COPY dashboard/frontend/ ./
-RUN npm run build
+WORKDIR /dashboard
+COPY dashboard/package.json dashboard/package-lock.json ./
+COPY dashboard/frontend/package.json frontend/package.json
+COPY dashboard/packages/ui/package.json packages/ui/package.json
+RUN npm ci
+COPY dashboard/frontend/ frontend/
+COPY dashboard/packages/ui/ packages/ui/
+RUN npm run build --workspace frontend
 
 # ---- Stage 2: Terminal-server native deps ---------------------------
 FROM node:22-slim AS terminal-build
@@ -18,8 +20,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         python3 make g++ \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /terminal
-COPY dashboard/terminal-server/package.json dashboard/terminal-server/package-lock.json* ./
-RUN npm install --omit=dev --no-audit --no-fund
+COPY dashboard/terminal-server/package.json dashboard/terminal-server/package-lock.json ./
+RUN npm ci --omit=dev --no-audit --no-fund
 
 # ---- Stage 3: Runtime -----------------------------------------------
 FROM python:3.12-slim AS runtime
@@ -39,6 +41,9 @@ RUN npm install -g \
 # uv
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 ENV PATH="/root/.local/bin:${PATH}"
+
+# Tailscale CLI (for VPN integration)
+RUN curl -fsSL https://tailscale.com/install.sh | sh
 
 ENV TZ=America/Sao_Paulo
 RUN ln -snf /usr/share/zoneinfo/${TZ} /etc/localtime && echo "${TZ}" > /etc/timezone
@@ -61,7 +66,7 @@ COPY .env.example     ./
 
 # Arquivos compilados dos stages anteriores
 COPY --from=terminal-build /terminal/node_modules dashboard/terminal-server/node_modules
-COPY --from=frontend-build /frontend/dist dashboard/frontend/dist
+COPY --from=frontend-build /dashboard/frontend/dist dashboard/frontend/dist
 
 RUN mkdir -p dashboard/data ADWs/logs
 

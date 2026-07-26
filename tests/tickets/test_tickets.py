@@ -30,17 +30,18 @@ sys.path.insert(0, str(BACKEND_DIR))
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
-def app():
+def app(tmp_path):
     import flask
     from flask_login import LoginManager
     import models as _models
-    importlib.reload(_models)
 
     _app = flask.Flask(__name__)
     _app.config["TESTING"] = True
     _app.config["SECRET_KEY"] = "test-tickets"
-    _app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///:memory:"
+    db_path = tmp_path / "tickets.db"
+    _app.config["SQLALCHEMY_DATABASE_URI"] = f"sqlite:///{db_path}"
     _app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+    _app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {"connect_args": {"timeout": 5}}
 
     _models.db.init_app(_app)
 
@@ -478,10 +479,13 @@ class TestModelsRegression:
         assert hasattr(models, "TicketActivity")
 
     def test_ticket_statuses_constant(self):
-        from models import TICKET_STATUSES
+        from models import TICKET_STATUSES, normalize_ticket_status
         assert "open" in TICKET_STATUSES
-        assert "closed" in TICKET_STATUSES
-        assert len(TICKET_STATUSES) == 6
+        assert "blocked" in TICKET_STATUSES
+        assert "review" in TICKET_STATUSES
+        assert "archived" in TICKET_STATUSES
+        assert "waiting" not in TICKET_STATUSES
+        assert normalize_ticket_status("waiting") == "blocked"
 
     def test_ticket_priorities_constant(self):
         from models import TICKET_PRIORITIES

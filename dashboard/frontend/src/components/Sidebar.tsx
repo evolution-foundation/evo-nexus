@@ -83,6 +83,7 @@ const navGroups: NavGroup[] = [
       { to: '/settings', labelKey: 'settings', icon: Settings, resource: 'config' },
       { to: '/systems', labelKey: 'systems', icon: Monitor, resource: 'systems' },
       { to: '/providers', labelKey: 'providers', icon: Cpu, resource: 'config' },
+      { to: '/hermes', labelKey: 'hermesUI', icon: Brain, resource: 'config' },
       { to: '/integrations', labelKey: 'integrations', icon: Plug, resource: 'integrations' },
       { to: '/mcp-servers', labelKey: 'mcpServers', icon: Terminal, resource: 'config' },
       { to: '/scheduler', labelKey: 'scheduler', icon: Calendar, resource: 'scheduler' },

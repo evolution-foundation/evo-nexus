@@ -13,6 +13,7 @@ interface Task {
   type: string
   payload: string
   agent: string | null
+  hermes_profile: string | null
   scheduled_at: string
   status: string
   created_at: string
@@ -58,7 +59,37 @@ const AGENT_LABELS: Record<string, string> = {
 // Use shared formatDateTime from lib/format.ts — respects workspace.timezone setting.
 const formatDate = formatDateTime
 
-const emptyForm = { name: '', description: '', type: 'skill', payload: '', agent: '', scheduled_at: '' }
+const emptyForm = { name: '', description: '', type: 'skill', payload: '', agent: '', hermes_profile: '', scheduled_at: '' }
+
+interface HermesProfile {
+  slug: string
+  provider: string | null
+  model: string | null
+}
+
+interface RuntimeRun {
+  id: string
+  task_id: number
+  status: string
+  attempt: number
+  resolved_profile: string | null
+  runtime_provider: string | null
+  workflow_slug: string | null
+  queued_at: string | null
+  started_at: string | null
+  completed_at: string | null
+  error: string | null
+}
+
+const RUN_STATUS_STYLES: Record<string, string> = {
+  queued: 'text-yellow-400',
+  running: 'text-blue-400',
+  awaiting_approval: 'text-orange-400',
+  cancel_requested: 'text-orange-400',
+  succeeded: 'text-[#00FFA7]',
+  failed: 'text-red-400',
+  cancelled: 'text-[#667085]',
+}
 
 export default function Tasks() {
   const { t } = useTranslation()
@@ -73,6 +104,26 @@ export default function Tasks() {
   const [form, setForm] = useState(emptyForm)
   const [saving, setSaving] = useState(false)
   const [viewTask, setViewTask] = useState<Task | null>(null)
+  const [profiles, setProfiles] = useState<HermesProfile[]>([])
+  const [resolvedProfile, setResolvedProfile] = useState<{ profile: string; reason: string } | null>(null)
+  const [runs, setRuns] = useState<RuntimeRun[]>([])
+
+  useEffect(() => {
+    api.get('/hermes/profiles')
+      .then((data) => setProfiles(data.profiles || []))
+      .catch(() => setProfiles([]))
+  }, [])
+
+  // Live preview of the Hermes profile that will run this task.
+  useEffect(() => {
+    if (!showModal) return
+    const params = new URLSearchParams()
+    if (form.type) params.set('task_type', form.type)
+    if (form.hermes_profile) params.set('override', form.hermes_profile)
+    api.get(`/hermes/profiles/resolve?${params.toString()}`)
+      .then((data) => setResolvedProfile({ profile: data.profile, reason: data.reason }))
+      .catch(() => setResolvedProfile(null))
+  }, [showModal, form.type, form.hermes_profile])
 
   const fetchTasks = () => {
     const params = filter ? `?status=${filter}` : ''
@@ -85,7 +136,9 @@ export default function Tasks() {
       .finally(() => setLoading(false))
   }
 
-  useEffect(() => { fetchTasks() }, [filter])
+  const fetchRuns = () => api.get('/runtime-runs').then((data) => setRuns(data.runs || [])).catch(() => setRuns([]))
+
+  useEffect(() => { fetchTasks(); fetchRuns() }, [filter])
 
   const openCreate = () => {
     setEditingTask(null)
@@ -101,6 +154,7 @@ export default function Tasks() {
       type: task.type,
       payload: task.payload,
       agent: task.agent || '',
+      hermes_profile: task.hermes_profile || '',
       scheduled_at: task.scheduled_at ? task.scheduled_at.slice(0, 16) : '',
     })
     setShowModal(true)
@@ -113,6 +167,7 @@ export default function Tasks() {
         ...form,
         scheduled_at: form.scheduled_at ? new Date(form.scheduled_at).toISOString() : '',
         agent: form.agent || null,
+        hermes_profile: form.hermes_profile || null,
         description: form.description || null,
       }
       if (editingTask) {
@@ -400,6 +455,31 @@ export default function Tasks() {
                 </div>
               </div>
 
+              {profiles.length > 0 && (
+                <div>
+                  <label className="block text-xs font-medium text-[#667085] mb-1.5">Perfil Hermes (override)</label>
+                  <select
+                    value={form.hermes_profile}
+                    onChange={(e) => setForm({ ...form, hermes_profile: e.target.value })}
+                    className="w-full px-3 py-2 bg-[#0d1117] border border-[#21262d] rounded-lg text-sm text-[#e6edf3] focus:border-[#00FFA7]/50 focus:outline-none"
+                  >
+                    <option value="">Automático (por tipo de tarefa)</option>
+                    {profiles.map((p) => (
+                      <option key={p.slug} value={p.slug}>
+                        {p.slug}{p.provider ? ` — ${p.provider}` : ''}
+                      </option>
+                    ))}
+                  </select>
+                  {resolvedProfile && (
+                    <p className="mt-1.5 text-xs text-[#667085]">
+                      Vai rodar como{' '}
+                      <span className="text-[#00FFA7] font-medium">{resolvedProfile.profile}</span>
+                      <span className="text-[#667085]"> ({resolvedProfile.reason})</span>
+                    </p>
+                  )}
+                </div>
+              )}
+
               <div>
                 <label className="block text-xs font-medium text-[#667085] mb-1.5">
                   {form.type === 'skill' ? 'Skill name + args' : form.type === 'prompt' ? 'Prompt text' : 'Script path (relative to ADWs/routines/)'} *
@@ -471,6 +551,15 @@ export default function Tasks() {
                 <label className="block text-xs font-medium text-[#667085] mb-1">Payload</label>
                 <pre className="text-xs text-[#e6edf3] bg-[#0d1117] border border-[#21262d] rounded-lg p-3 whitespace-pre-wrap font-mono">{viewTask.payload}</pre>
               </div>
+
+              {runs.filter((run) => run.task_id === viewTask.id).map((run) => (
+                <div key={run.id} className="border border-[#21262d] rounded-lg p-3">
+                  <label className="block text-xs font-medium text-[#8b949e] mb-1">Runtime run #{run.attempt}</label>
+                  <p className={`text-sm font-medium ${RUN_STATUS_STYLES[run.status] || 'text-[#e6edf3]'}`}>{run.status}</p>
+                  <p className="text-xs text-[#8b949e] mt-1">{run.resolved_profile || 'default profile'} · {run.runtime_provider || 'active provider'}{run.workflow_slug ? ` · ${run.workflow_slug}` : ''}</p>
+                  {run.error && <pre className="text-xs text-red-300 mt-2 whitespace-pre-wrap">{run.error}</pre>}
+                </div>
+              ))}
 
               {viewTask.result_summary && (
                 <div>

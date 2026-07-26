@@ -2,20 +2,20 @@ name: Build & Publish Docker Images (Swarm)
 
 # Builds evo-nexus-runtime and evo-nexus-dashboard images using the
 # Swarm-specific Dockerfiles (Dockerfile.swarm and Dockerfile.swarm.dashboard)
-# and pushes them to Docker Hub under the `evoapicloud` namespace. The
-# upstream Dockerfile and Dockerfile.dashboard are intentionally NOT used
-# here: they are for local `docker compose up`, while these variants carry
-# the Swarm-specific bootstrap (entrypoint.sh, start-dashboard.sh, terminal-
-# server native build, both CLIs on PATH).
+# and pushes them to Docker Hub. Uses native arm64 runners instead of QEMU
+# emulation to avoid 6h+ build times on the dashboard image.
+#
+# Strategy: build each platform natively in parallel, then merge into
+# a single multi-arch manifest via docker buildx imagetools.
 #
 # Triggers:
-#   * push to main            -> builds + publishes :latest
-#   * push of a version tag   -> builds + publishes :vX.Y.Z and :latest
+#   * push to main            -> builds + publishes immutable :sha-<revision>
+#   * push of a version tag   -> builds + publishes :vX.Y.Z and :sha-<revision>
 #   * manual dispatch         -> builds without pushing (dry-run)
 #
 # Required repository secrets:
-#   * DOCKERHUB_USERNAME  — Docker Hub account with push rights to evoapicloud
-#   * DOCKERHUB_TOKEN     — access token (Settings → Security → New Access Token)
+#   * DOCKERHUB_USERNAME — Docker Hub account name
+#   * DOCKERHUB_TOKEN — Docker Hub access token with write access
 on:
   push:
     branches: [main]
@@ -28,28 +28,36 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
 
 jobs:
-  build-and-push:
-    name: Build & push ${{ matrix.image }}
-    runs-on: ubuntu-latest
+  build:
+    name: Build ${{ matrix.image }} (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
+      packages: write
     strategy:
       fail-fast: false
       matrix:
         include:
           - image: evo-nexus-runtime
             dockerfile: Dockerfile.swarm
+            platform: linux/amd64
+            runner: ubuntu-latest
+          - image: evo-nexus-runtime
+            dockerfile: Dockerfile.swarm
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
           - image: evo-nexus-dashboard
             dockerfile: Dockerfile.swarm.dashboard
+            platform: linux/amd64
+            runner: ubuntu-latest
+          - image: evo-nexus-dashboard
+            dockerfile: Dockerfile.swarm.dashboard
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Set up QEMU (for arm64 emulation on amd64 runners)
-        uses: docker/setup-qemu-action@v3
-        with:
-          platforms: arm64
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -67,11 +75,6 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/${{ matrix.image }}
-          # Boa prática: publicar :latest junto com a tag versionada sempre
-          # que um release (tag v*) for empurrado. Push para a branch main
-          # sem tag também atualiza :latest.
-          flavor: |
-            latest=${{ github.ref_type == 'tag' || github.ref == 'refs/heads/main' }}
           tags: |
             type=ref,event=branch
             type=ref,event=tag
@@ -79,14 +82,85 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=sha,prefix=sha-,format=short
 
-      - name: Build and push
+      - name: Build and push by digest
+        id: build
         uses: docker/build-push-action@v5
         with:
           context: .
           file: ${{ matrix.dockerfile }}
-          platforms: linux/amd64,linux/arm64
+          platforms: ${{ matrix.platform }}
           push: ${{ github.event_name != 'workflow_dispatch' }}
-          tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=${{ matrix.image }}
-          cache-to: type=gha,scope=${{ matrix.image }},mode=max
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.NAMESPACE }}/${{ matrix.image }},push-by-digest=true,name-canonical=true,push=${{ github.event_name != 'workflow_dispatch' }}
+          cache-from: type=gha,scope=${{ matrix.image }}-${{ matrix.platform }}
+          cache-to: type=gha,scope=${{ matrix.image }}-${{ matrix.platform }},mode=max
+
+      - name: Export digest
+        if: github.event_name != 'workflow_dispatch'
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        if: github.event_name != 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.image }}-${{ matrix.platform == 'linux/amd64' && 'amd64' || 'arm64' }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    name: Merge manifests (${{ matrix.image }})
+    runs-on: ubuntu-latest
+    if: github.event_name != 'workflow_dispatch'
+    needs: build
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        image:
+          - evo-nexus-runtime
+          - evo-nexus-dashboard
+
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digests-${{ matrix.image }}-*
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Extract metadata (tags, labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/${{ matrix.image }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=tag
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix=sha-,format=short
+
+      - name: Create manifest list and push
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ env.REGISTRY }}/${{ env.NAMESPACE }}/${{ matrix.image }}@sha256:%s ' *)
+
+      - name: Inspect image
+        run: |
+          docker buildx imagetools inspect ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/${{ matrix.image }}:${{ steps.meta.outputs.version }}

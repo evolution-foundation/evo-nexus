@@ -16,6 +16,7 @@ dependencies = [
     "pyyaml>=6.0",
     "pydantic>=2.0",
     "flask-sock>=0.7",
+    "websocket-client>=1.7",
     "boto3>=1.35",
     "pywinpty>=3.0.3; sys_platform == 'win32'",
     "cryptography>=42",

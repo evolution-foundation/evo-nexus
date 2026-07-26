@@ -77,6 +77,55 @@ def _get_tables(conn: sa.Connection) -> set[str]:
     return set(insp.get_table_names())
 
 
+def _assert_heartbeat_runtime_columns(conn: sa.Connection) -> None:
+    inspector = sa.inspect(conn)
+    heartbeat_columns = {
+        column["name"] for column in inspector.get_columns("heartbeats")
+    }
+    assert "handler" in heartbeat_columns
+    heartbeat_run_columns = {
+        column["name"] for column in inspector.get_columns("heartbeat_runs")
+    }
+    assert {
+        "decision_action",
+        "decision_json",
+        "provider",
+        "requested_profile",
+        "resolved_profile",
+        "exit_code",
+        "fallback_from",
+        "stdout_tail",
+        "stderr_tail",
+        "runtime_run_id",
+    } <= heartbeat_run_columns
+
+    runtime_foreign_keys = {
+        (foreign_key["constrained_columns"][0], foreign_key["referred_table"])
+        for foreign_key in inspector.get_foreign_keys("runtime_runs")
+    }
+    assert {
+        ("task_id", "scheduled_tasks"),
+        ("ticket_id", "tickets"),
+        ("goal_id", "goals"),
+    } <= runtime_foreign_keys
+
+
+def _assert_archived_ticket_status(conn: sa.Connection) -> None:
+    ticket_id = "00000000-0000-0000-0000-000000000012"
+    now = "2026-01-01T00:00:00.000000Z"
+    conn.execute(
+        text(
+            "INSERT INTO tickets "
+            "(id, title, status, priority, priority_rank, created_by, "
+            "message_count, last_summary_at_message, created_at, updated_at) "
+            "VALUES (:id, 'Archived migration check', 'archived', 'medium', 2, "
+            "'migration-test', 0, 0, :now, :now)"
+        ),
+        {"id": ticket_id, "now": now},
+    )
+    conn.execute(text("DELETE FROM tickets WHERE id = :id"), {"id": ticket_id})
+
+
 def _get_views(conn: sa.Connection) -> set[str]:
     dialect = conn.dialect.name
     if dialect == "sqlite":
@@ -151,6 +200,8 @@ def test_sqlite_fresh_upgrade_head(tmp_path):
         tables = _get_tables(conn)
         missing = _REQUIRED_TABLES - tables
         assert not missing, f"Missing tables: {missing}"
+        _assert_heartbeat_runtime_columns(conn)
+        _assert_archived_ticket_status(conn)
 
         views = _get_views(conn)
         assert _REQUIRED_VIEWS <= views, f"Missing views: {_REQUIRED_VIEWS - views}"
@@ -159,7 +210,7 @@ def test_sqlite_fresh_upgrade_head(tmp_path):
         assert _REQUIRED_TRIGGERS <= triggers, f"Missing triggers: {_REQUIRED_TRIGGERS - triggers}"
 
         ver = conn.execute(text("SELECT version_num FROM alembic_version")).fetchone()
-        assert ver[0] == "0010", f"Expected version 0010, got {ver[0]}"
+        assert ver[0] == "0012", f"Expected version 0012, got {ver[0]}"
 
 
 @pytest.mark.sqlite
@@ -188,6 +239,38 @@ def test_sqlite_downgrade_base(tmp_path):
         if "alembic_version" in tables:
             ver = conn.execute(text("SELECT version_num FROM alembic_version")).fetchone()
             assert ver is None, f"Expected no alembic version after downgrade base, got {ver}"
+
+
+@pytest.mark.sqlite
+def test_sqlite_downgrade_0012_restores_ticket_status_constraint(tmp_path):
+    db_file = tmp_path / "test_downgrade_0012.db"
+    db_url = f"sqlite:///{db_file}"
+    up = _alembic_upgrade(db_url)
+    assert up.returncode == 0, f"upgrade failed:\n{up.stderr}"
+
+    engine = sa.create_engine(db_url)
+    ticket_id = "00000000-0000-0000-0000-000000000012"
+    now = "2026-01-01T00:00:00.000000Z"
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO tickets "
+                "(id, title, status, priority, priority_rank, created_by, "
+                "message_count, last_summary_at_message, created_at, updated_at) "
+                "VALUES (:id, 'Archived downgrade check', 'archived', 'medium', 2, "
+                "'migration-test', 0, 0, :now, :now)"
+            ),
+            {"id": ticket_id, "now": now},
+        )
+
+    down = _alembic_downgrade(db_url, "0011")
+    assert down.returncode == 0, f"downgrade failed:\n{down.stderr}"
+
+    with engine.connect() as conn:
+        status = conn.execute(
+            text("SELECT status FROM tickets WHERE id = :id"), {"id": ticket_id}
+        ).scalar_one()
+        assert status == "closed"
 
 
 @pytest.mark.sqlite
@@ -302,6 +385,8 @@ def test_postgres_fresh_upgrade_head():
         tables = _get_tables(conn)
         missing = _REQUIRED_TABLES - tables
         assert not missing, f"Missing tables: {missing}"
+        _assert_heartbeat_runtime_columns(conn)
+        _assert_archived_ticket_status(conn)
 
         views = _get_views(conn)
         assert _REQUIRED_VIEWS <= views, f"Missing views: {_REQUIRED_VIEWS - views}"
@@ -310,7 +395,7 @@ def test_postgres_fresh_upgrade_head():
         assert _REQUIRED_TRIGGERS <= triggers, f"Missing triggers: {_REQUIRED_TRIGGERS - triggers}"
 
         ver = conn.execute(text("SELECT version_num FROM alembic_version")).fetchone()
-        assert ver[0] == "0010", f"Expected version 0010, got {ver[0]}"
+        assert ver[0] == "0012", f"Expected version 0012, got {ver[0]}"
 
         # 0007 tables must exist on Postgres (migration is PG-only).
         pg_tables_0007 = {"runtime_configs", "llm_providers", "routine_definitions"}
@@ -443,3 +528,38 @@ def test_postgres_view_goal_progress():
         conn.execute(text("DELETE FROM projects WHERE id = :pid"), {"pid": project_id})
         conn.execute(text("DELETE FROM missions WHERE id = :mid"), {"mid": mission_id})
         conn.commit()
+
+
+@pytest.mark.postgres
+def test_postgres_downgrade_0012_restores_ticket_status_constraint():
+    db_url = os.environ.get("DATABASE_URL", "")
+    assert db_url, "DATABASE_URL must be set for postgres tests"
+
+    url_norm = db_url
+    if url_norm.startswith("postgresql://") and "+psycopg2" not in url_norm:
+        url_norm = url_norm.replace("postgresql://", "postgresql+psycopg2://", 1)
+
+    engine = sa.create_engine(url_norm)
+    ticket_id = "00000000-0000-0000-0000-000000000012"
+    now = "2026-01-01T00:00:00.000000Z"
+    with engine.begin() as conn:
+        conn.execute(text("DELETE FROM tickets WHERE id = :id"), {"id": ticket_id})
+        conn.execute(
+            text(
+                "INSERT INTO tickets "
+                "(id, title, status, priority, priority_rank, created_by, "
+                "message_count, last_summary_at_message, created_at, updated_at) "
+                "VALUES (:id, 'Archived downgrade check', 'archived', 'medium', 2, "
+                "'migration-test', 0, 0, :now, :now)"
+            ),
+            {"id": ticket_id, "now": now},
+        )
+
+    down = _alembic_downgrade(db_url, "0011")
+    assert down.returncode == 0, f"downgrade failed:\n{down.stderr}"
+
+    with engine.connect() as conn:
+        status = conn.execute(
+            text("SELECT status FROM tickets WHERE id = :id"), {"id": ticket_id}
+        ).scalar_one()
+        assert status == "closed"

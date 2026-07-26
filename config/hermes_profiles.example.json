@@ -1,0 +1,16 @@
+{
+  "routing": {
+    "infra": "developer",
+    "build": "developer",
+    "dev": "developer",
+    "skill": "developer",
+    "script": "developer",
+    "planning": "orchestrator",
+    "orchestration": "orchestrator",
+    "research": "researcher",
+    "review": "reviewer",
+    "qa": "reviewer"
+  },
+  "fallback_profile": "default-mac",
+  "profiles_dir": "~/.hermes/profiles"
+}

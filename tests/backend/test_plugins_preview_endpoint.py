@@ -243,7 +243,7 @@ class TestPreviewEndpoint:
         call_count = {"n": 0}
         original = GOOD_PREVIEW.copy()
 
-        def counting_compute(slug, source_url):
+        def counting_compute(slug, source_url, auth_token=None):
             call_count["n"] += 1
             return original
 
@@ -267,7 +267,7 @@ class TestPreviewEndpoint:
 
         call_count = {"n": 0}
 
-        def counting_compute(slug, source_url):
+        def counting_compute(slug, source_url, auth_token=None):
             call_count["n"] += 1
             return GOOD_PREVIEW.copy()
 

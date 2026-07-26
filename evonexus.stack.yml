@@ -23,17 +23,26 @@ version: "3.7"
 services:
 
   evonexus_dashboard:
-    image: evoapicloud/evo-nexus-dashboard:latest
+    image: ${EVONEXUS_IMAGE_REGISTRY:-evoapicloud}/evo-nexus-dashboard:${EVONEXUS_IMAGE_TAG:?set EVONEXUS_IMAGE_TAG to an immutable sha-* tag}
+
+    healthcheck:
+      test: ["CMD-SHELL", "command -v claude && command -v hermes && curl -fsS http://localhost:${EVONEXUS_PORT:-8080}/api/version"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
 
     volumes:
       - evonexus_config:/workspace/config
       - evonexus_workspace:/workspace/workspace
       - evonexus_dashboard_data:/workspace/dashboard/data
+      - evonexus_tailscale_state:/var/lib/tailscale
       - evonexus_memory:/workspace/memory
       - evonexus_adw_logs:/workspace/ADWs/logs
       - evonexus_agent_memory:/workspace/.claude/agent-memory
       - evonexus_claude_auth:/root/.claude
       - evonexus_codex_auth:/root/.codex
+      - evonexus_hermes_auth:/root/.hermes
 
     networks:
       - traefik-public
@@ -84,7 +93,7 @@ services:
         - traefik.http.services.evonexus_terminal.loadbalancer.passHostHeader=true
 
   evonexus_telegram:
-    image: evoapicloud/evo-nexus-runtime:latest
+    image: ${EVONEXUS_IMAGE_REGISTRY:-evoapicloud}/evo-nexus-runtime:${EVONEXUS_IMAGE_TAG:?set EVONEXUS_IMAGE_TAG to an immutable sha-* tag}
     command:
       - "claude"
       - "--channels"
@@ -99,6 +108,7 @@ services:
       - evonexus_agent_memory:/workspace/.claude/agent-memory
       - evonexus_claude_auth:/root/.claude
       - evonexus_codex_auth:/root/.codex
+      - evonexus_hermes_auth:/root/.hermes
 
     networks:
       - traefik-public
@@ -123,8 +133,14 @@ services:
           memory: 1024M
 
   evonexus_scheduler:
-    image: evoapicloud/evo-nexus-runtime:latest
+    image: ${EVONEXUS_IMAGE_REGISTRY:-evoapicloud}/evo-nexus-runtime:${EVONEXUS_IMAGE_TAG:?set EVONEXUS_IMAGE_TAG to an immutable sha-* tag}
     command: ["uv", "run", "python", "scheduler.py"]
+    healthcheck:
+      test: ["CMD-SHELL", "command -v claude && command -v hermes"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
 
     volumes:
       - evonexus_config:/workspace/config
@@ -132,14 +148,15 @@ services:
       - evonexus_memory:/workspace/memory
       - evonexus_adw_logs:/workspace/ADWs/logs
       - evonexus_agent_memory:/workspace/.claude/agent-memory
+      - evonexus_claude_auth:/root/.claude
       - evonexus_codex_auth:/root/.codex
+      - evonexus_hermes_auth:/root/.hermes
 
     networks:
       - traefik-public
 
     environment:
       - TZ=America/Sao_Paulo
-      - REQUIRE_ANTHROPIC_KEY=1
 
     deploy:
       placement:
@@ -154,11 +171,13 @@ volumes:
   evonexus_config:
   evonexus_workspace:
   evonexus_dashboard_data:
+  evonexus_tailscale_state:
   evonexus_memory:
   evonexus_adw_logs:
   evonexus_agent_memory:
   evonexus_claude_auth:
   evonexus_codex_auth:
+  evonexus_hermes_auth:
 
 networks:
   traefik-public:

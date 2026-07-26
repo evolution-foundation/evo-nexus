@@ -11,11 +11,12 @@ interface Provider {
   has_config: boolean; env_vars: ProviderEnvVars; requires_logout: boolean
   setup_hint: string | null; default_model: string | null
   default_base_url: string | null; default_region: string | null
+  cli_options?: string[]; cli_env_presets?: Record<string, ProviderEnvVars>
 }
 
 interface ProvidersResponse {
   providers: Provider[]; active_provider: string
-  claude_installed: boolean; openclaude_installed: boolean
+  claude_installed: boolean; openclaude_installed: boolean; hermes_installed: boolean
 }
 
 const ENV_VAR_LABELS: Record<string, string> = {
@@ -185,6 +186,7 @@ export default function Providers() {
   const [testResults, setTestResults] = useState<Record<string, { success: boolean; message: string }>>({})
   const [claudeInstalled, setClaudeInstalled] = useState(false)
   const [openclaudeInstalled, setOpenclaudeInstalled] = useState(false)
+  const [hermesInstalled, setHermesInstalled] = useState(false)
   const [codexAuth, setCodexAuth] = useState<{ authenticated: boolean; method?: string } | null>(null)
   const [authModal, setAuthModal] = useState(false)
   const [authMode, setAuthMode] = useState<'browser' | 'device'>('browser')
@@ -195,6 +197,7 @@ export default function Providers() {
   const [deviceCode, setDeviceCode] = useState<{ user_code: string; verification_url: string; interval: number; expires_in: number } | null>(null)
   const [devicePolling, setDevicePolling] = useState(false)
   const [toggling, setToggling] = useState<string | null>(null)
+  const [selectedCli, setSelectedCli] = useState<string | null>(null)
 
   // Dynamic model discovery — populated when Configure modal opens for
   // openai/codex_auth. Shape: { [providerId]: { loading, models[], error? } }
@@ -214,6 +217,7 @@ export default function Providers() {
       setActiveProvider(data.active_provider || 'none')
       setClaudeInstalled(data.claude_installed)
       setOpenclaudeInstalled(data.openclaude_installed)
+      setHermesInstalled(data.hermes_installed)
     }).catch(() => setProviders([])).finally(() => setLoading(false))
   }
 
@@ -236,6 +240,7 @@ export default function Providers() {
 
   const openConfig = (prov: Provider) => {
     setConfigOpen(prov.id)
+    setSelectedCli(prov.cli_options ? prov.cli_command : null)
     const vars: ProviderEnvVars = {}
     for (const [k, v] of Object.entries(prov.env_vars)) {
       if (isFlag(k)) continue
@@ -327,7 +332,9 @@ export default function Providers() {
         const mk = Object.keys(finalVars).find(k => k.includes('MODEL'))
         if (mk && !finalVars[mk]) finalVars[mk] = prov.default_model
       }
-      await api.post(`/providers/${configOpen}/config`, { env_vars: finalVars })
+      const payload: any = { env_vars: finalVars }
+      if (selectedCli) payload.cli_command = selectedCli
+      await api.post(`/providers/${configOpen}/config`, payload)
       await api.post('/providers/active', { provider_id: configOpen })
       setConfigOpen(null)
       load()
@@ -376,6 +383,10 @@ export default function Providers() {
               <span className={`w-1.5 h-1.5 rounded-full ${openclaudeInstalled ? 'bg-[#00FFA7]' : 'bg-[#5a6b7f]'}`} />
               openclaude {openclaudeInstalled ? '' : '(missing)'}
             </span>
+            <span className="flex items-center gap-1.5">
+              <span className={`w-1.5 h-1.5 rounded-full ${hermesInstalled ? 'bg-[#00FFA7]' : 'bg-[#5a6b7f]'}`} />
+              hermes {hermesInstalled ? '' : '(missing)'}
+            </span>
           </div>
           <div className="ml-auto flex items-center gap-4 text-[11px] tracking-wide uppercase text-[#5a6b7f]">
             <span>{providers.length} available</span>
@@ -396,7 +407,7 @@ export default function Providers() {
         <div className="space-y-2">
           {providers.map((prov) => {
             const color = PROVIDER_COLORS[prov.id] || '#5a6b7f'
-            const isInstalled = prov.cli_command === 'claude' ? claudeInstalled : openclaudeInstalled
+            const isInstalled = prov.cli_command === 'claude' ? claudeInstalled : prov.cli_command === 'hermes' ? hermesInstalled : openclaudeInstalled
             const isActive = prov.is_active && activeProvider === prov.id
 
             return (
@@ -413,9 +424,23 @@ export default function Providers() {
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
                       <h3 className="text-sm font-semibold text-white truncate">{prov.name}</h3>
-                      <code className="text-[9px] px-1.5 py-0.5 rounded bg-[#152030] text-[#5a6b7f] border border-[#1e2a3a] shrink-0">
-                        {prov.cli_command}
-                      </code>
+                      {prov.cli_options && prov.cli_options.length > 1 ? (
+                        <div className="flex gap-1 shrink-0">
+                          {prov.cli_options.map((cli) => (
+                            <code key={cli} className={`text-[9px] px-1.5 py-0.5 rounded border shrink-0 ${
+                              cli === prov.cli_command
+                                ? 'bg-[#00FFA7]/10 text-[#00FFA7] border-[#00FFA7]/30'
+                                : 'bg-[#152030] text-[#3d4f65] border-[#1e2a3a]'
+                            }`}>
+                              {cli}
+                            </code>
+                          ))}
+                        </div>
+                      ) : (
+                        <code className="text-[9px] px-1.5 py-0.5 rounded bg-[#152030] text-[#5a6b7f] border border-[#1e2a3a] shrink-0">
+                          {prov.cli_command}
+                        </code>
+                      )}
                       {!isInstalled && (
                         <span className="text-[9px] px-1.5 py-0.5 rounded bg-[#1a0a0a] text-[#f87171] border border-[#3a1515] shrink-0">
                           not installed
@@ -494,7 +519,7 @@ export default function Providers() {
       {configOpen && (() => {
         const prov = providers.find(p => p.id === configOpen)
         if (!prov) return null
-        const editableVars = Object.entries(prov.env_vars).filter(([k]) => !isFlag(k))
+        const editableVars = Object.entries(editVars).filter(([k]) => !isFlag(k))
 
         return (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
@@ -510,6 +535,38 @@ export default function Providers() {
               </div>
 
               <div className="px-6 py-5 space-y-4">
+                {/* CLI selector — shown when provider supports multiple CLIs */}
+                {prov.cli_options && prov.cli_options.length > 1 && (
+                  <div>
+                    <label className={lbl}>Runtime CLI</label>
+                    <div className="flex gap-2">
+                      {prov.cli_options.map((cli) => (
+                        <button
+                          key={cli}
+                          type="button"
+                          onClick={() => {
+                            setSelectedCli(cli)
+                            const preset = prov.cli_env_presets?.[cli] || {}
+                            const vars: ProviderEnvVars = {}
+                            for (const [k, v] of Object.entries(preset)) {
+                              if (isFlag(k)) continue
+                              vars[k] = v
+                            }
+                            setEditVars(vars)
+                          }}
+                          className={`flex-1 px-3 py-2 rounded-lg text-xs font-medium border transition-colors ${
+                            selectedCli === cli
+                              ? 'bg-[#00FFA7]/10 border-[#00FFA7]/40 text-[#00FFA7]'
+                              : 'bg-[#0f1520] border-[#1e2a3a] text-[#5a6b7f] hover:border-[#2e3a4a] hover:text-[#8a9aae]'
+                          }`}
+                        >
+                          {cli}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
                 {editableVars.length === 0 ? (
                   <p className="text-sm text-[#5a6b7f]">No configuration needed. Uses native Claude Code authentication.</p>
                 ) : (

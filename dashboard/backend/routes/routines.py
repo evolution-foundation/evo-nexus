@@ -13,6 +13,37 @@ LOGS_DIR = WORKSPACE / "ADWs" / "logs"
 ROTINAS_DIR = WORKSPACE / "ADWs" / "routines"
 
 
+def _metric_number(value, default=0.0):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def normalize_metrics_entry(entry: dict) -> dict:
+    """Expose derived fields for legacy and current metrics schemas."""
+    entry = dict(entry) if isinstance(entry, dict) else {}
+    runs = max(0, int(_metric_number(entry.get("runs"))))
+    successes = max(0, int(_metric_number(entry.get("successes"))))
+    total_seconds = _metric_number(entry.get("total_duration", entry.get("total_seconds")))
+    if not total_seconds and runs:
+        total_seconds = _metric_number(entry.get("avg_seconds")) * runs
+    entry.update({
+        "runs": runs,
+        "successes": successes,
+        "total_seconds": total_seconds,
+        "total_duration": total_seconds,
+        "avg_seconds": total_seconds / runs if runs else 0,
+        "success_rate": successes / runs * 100 if runs else 0,
+        "total_cost_usd": _metric_number(entry.get("total_cost_usd")),
+        "total_input_tokens": int(_metric_number(entry.get("total_input_tokens"))),
+        "total_output_tokens": int(_metric_number(entry.get("total_output_tokens"))),
+    })
+    if not entry.get("agent") and entry.get("last_agent"):
+        entry["agent"] = entry["last_agent"]
+    return entry
+
+
 @bp.route("/api/routines")
 def get_routines():
     content = safe_read(METRICS_PATH)
@@ -21,7 +52,11 @@ def get_routines():
         try:
             parsed = json.loads(content)
             if isinstance(parsed, dict):
-                data = parsed
+                data = {
+                    name: normalize_metrics_entry(entry)
+                    for name, entry in parsed.items()
+                    if isinstance(entry, dict)
+                }
         except json.JSONDecodeError:
             data = {}
 
@@ -61,8 +96,8 @@ def get_routines():
     for key, val in data.items():
         if isinstance(val, dict):
             totals["total_runs"] += val.get("runs", 0)
-            totals["total_cost"] += val.get("cost", 0.0)
-            totals["total_tokens"] += val.get("tokens", 0)
+            totals["total_cost"] += val.get("total_cost_usd", 0.0)
+            totals["total_tokens"] += val.get("total_input_tokens", 0) + val.get("total_output_tokens", 0)
 
     return jsonify({"metrics": data, "totals": totals})
 
@@ -70,28 +105,20 @@ def get_routines():
 @bp.route("/api/routines/logs")
 def get_routine_logs():
     target = request.args.get("date", date.today().isoformat())
-    # Look for JSONL files matching the date
     entries = []
     if LOGS_DIR.is_dir():
-        for f in LOGS_DIR.iterdir():
-            if f.suffix == ".jsonl" and target in f.name:
-                text = safe_read(f)
-                if text:
-                    for line in text.strip().splitlines():
-                        try:
-                            entries.append(json.loads(line))
-                        except json.JSONDecodeError:
-                            continue
-        # Also check a generic log file
-        generic = LOGS_DIR / f"{target}.jsonl"
-        if generic.is_file():
-            text = safe_read(generic)
-            if text:
-                for line in text.strip().splitlines():
-                    try:
-                        entries.append(json.loads(line))
-                    except json.JSONDecodeError:
-                        continue
+        for log_file in sorted(LOGS_DIR.glob(f"*{target}*.jsonl")):
+            text = safe_read(log_file)
+            if not text:
+                continue
+            for line_number, line in enumerate(text.splitlines(), start=1):
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(entry, dict):
+                    entry["id"] = f"routine-log-{log_file.name}-{line_number}"
+                    entries.append(entry)
     return jsonify(entries)
 
 

@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef } from 'react'
+import { useEffect, useState, useCallback, useRef, lazy, Suspense } from 'react'
 import {
   Plus,
   Trash2,
@@ -33,12 +33,15 @@ import {
   Lock,
   Unlock,
   Puzzle,
+  Network,
   type LucideIcon,
 } from 'lucide-react'
 import { api } from '../lib/api'
 import IntegrationDrawer from '../components/IntegrationDrawer'
 import { getIntegrationMeta } from '../lib/integrationMeta'
 import { useTranslation } from 'react-i18next'
+
+const TailscaleCard = lazy(() => import('./settings/TailscaleCard'))
 
 interface EnvVarSpec {
   name: string
@@ -118,7 +121,7 @@ interface DatabaseFlavor {
   error?: string
 }
 
-type TabKey = 'integrations' | 'social' | 'databases'
+type TabKey = 'integrations' | 'social' | 'databases' | 'network'
 
 // Category styling for integration types
 const TYPE_META: Record<string, { icon: LucideIcon; color: string; colorMuted: string; glowColor: string }> = {
@@ -1130,6 +1133,7 @@ export default function Integrations() {
           { key: 'integrations' as TabKey, label: 'Integrations', icon: Plug },
           { key: 'social' as TabKey,       label: 'Social',       icon: Globe },
           { key: 'databases' as TabKey,    label: 'Databases',    icon: Database },
+          { key: 'network' as TabKey,      label: 'Network',      icon: Network },
         ]).map(({ key, label, icon: TabIcon }) => {
           const active = activeTab === key
           return (
@@ -1170,7 +1174,7 @@ export default function Integrations() {
             <StatCard label="Social Accounts" value={totalSocialAccounts} icon={Globe} />
             <StatCard label="Platforms Available" value={platforms.length} icon={Plug} />
           </>
-        ) : (
+        ) : activeTab === 'network' ? null : (
           <>
             <StatCard label="Total Databases" value={totalDbConnections} icon={Database} />
             <StatCard label="SQL (Postgres, MySQL)" value={sqlDbCount} icon={Plug} />
@@ -1560,6 +1564,14 @@ export default function Integrations() {
               flavors={dbFlavors}
               onReload={loadData}
             />
+          )}
+
+          {activeTab === 'network' && (
+            <div className="py-4">
+              <Suspense fallback={<div className="flex items-center justify-center py-12"><div className="text-[#5a6b7f] text-sm">Loading...</div></div>}>
+                <TailscaleCard />
+              </Suspense>
+            </div>
           )}
         </>
       )}

@@ -12,6 +12,25 @@ class ClaudeBridge {
     this.sessions = new Map();
   }
 
+  buildCliPath(basePath = '') {
+    const home = process.env.HOME || '/';
+    const extraPaths = [
+      path.join(home, '.hermes', 'bin'),
+      path.join(home, '.local', 'bin'),
+      path.join(home, '.npm-global', 'bin'),
+      '/usr/local/bin',
+      '/usr/bin',
+      '/bin',
+    ];
+    const pathParts = (basePath || '').split(':').filter(Boolean);
+    for (const candidate of extraPaths) {
+      if (!pathParts.includes(candidate)) {
+        pathParts.push(candidate);
+      }
+    }
+    return pathParts.join(':');
+  }
+
   /**
    * Load active provider config from config/providers.json.
    * Returns the CLI command to use and env vars to inject.
@@ -23,15 +42,30 @@ class ClaudeBridge {
 
   findClaudeCommand(cliCommand = 'claude') {
     const { execSync } = require('child_process');
+    const resolvedPath = this.buildCliPath(process.env.PATH || '');
 
     // Use shell-based `which` to resolve with full PATH (incl. nvm, fnm, etc.)
     // Hardcoded dispatch to satisfy semgrep — each branch is a literal string
     try {
       let resolved;
       if (cliCommand === 'openclaude') {
-        resolved = execSync('which openclaude', { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'] }).trim();
+        resolved = execSync('which openclaude', {
+          encoding: 'utf8',
+          stdio: ['pipe', 'pipe', 'ignore'],
+          env: { ...process.env, PATH: resolvedPath }
+        }).trim();
+      } else if (cliCommand === 'hermes') {
+        resolved = execSync('which hermes', {
+          encoding: 'utf8',
+          stdio: ['pipe', 'pipe', 'ignore'],
+          env: { ...process.env, PATH: resolvedPath }
+        }).trim();
       } else {
-        resolved = execSync('which claude', { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'] }).trim();
+        resolved = execSync('which claude', {
+          encoding: 'utf8',
+          stdio: ['pipe', 'pipe', 'ignore'],
+          env: { ...process.env, PATH: resolvedPath }
+        }).trim();
       }
       if (resolved) {
         console.log(`[provider] Found ${cliCommand} at: ${resolved}`);
@@ -43,18 +77,31 @@ class ClaudeBridge {
 
     // Fallback: check common hardcoded paths
     const home = process.env.HOME || '/';
-    const paths = cliCommand === 'openclaude'
-      ? [
-          path.join(home, '.local', 'bin', 'openclaude'),
-          '/usr/local/bin/openclaude',
-          '/usr/bin/openclaude',
-        ]
-      : [
-          path.join(home, '.claude', 'local', 'claude'),
-          path.join(home, '.local', 'bin', 'claude'),
-          '/usr/local/bin/claude',
-          '/usr/bin/claude',
-        ];
+    let paths;
+    if (cliCommand === 'openclaude') {
+      paths = [
+        path.join(home, '.local', 'bin', 'openclaude'),
+        path.join(home, '.npm-global', 'bin', 'openclaude'),
+        '/usr/local/bin/openclaude',
+        '/usr/bin/openclaude',
+      ];
+    } else if (cliCommand === 'hermes') {
+      paths = [
+        path.join(home, '.hermes', 'bin', 'hermes'),
+        path.join(home, '.local', 'bin', 'hermes'),
+        path.join(home, '.npm-global', 'bin', 'hermes'),
+        '/usr/local/bin/hermes',
+        '/usr/bin/hermes',
+      ];
+    } else {
+      paths = [
+        path.join(home, '.claude', 'local', 'claude'),
+        path.join(home, '.local', 'bin', 'claude'),
+        path.join(home, '.npm-global', 'bin', 'claude'),
+        '/usr/local/bin/claude',
+        '/usr/bin/claude',
+      ];
+    }
 
     for (const p of paths) {
       try {
@@ -137,17 +184,32 @@ class ClaudeBridge {
       // Claude/OpenClaude block this flag for root users.
       // The trust prompt is auto-accepted via PTY detection below instead.
       const isRoot = process.getuid && process.getuid() === 0;
-      const args = (dangerouslySkipPermissions && !isRoot) ? ['--dangerously-skip-permissions'] : [];
-      if (agent) {
+      let args = (dangerouslySkipPermissions && !isRoot) ? ['--dangerously-skip-permissions'] : [];
+      if (providerConfig.cli_command === 'hermes') {
+        // Hermes agents use profiles: each EvoNexus agent maps to a Hermes
+        // profile with SOUL.md containing the full agent instructions.
+        // Profiles are synced from .claude/agents/*.md on container startup
+        // (see start-dashboard.sh).
+        if (agent) {
+          args = ['-p', agent, 'chat'];
+        } else {
+          args = ['chat'];
+        }
+      } else if (agent) {
         args.push('--agent', agent);
       }
+
+      // Hermes handles agent persona via profiles (see above).
+      // For non-Anthropic CLI providers (openclaude), use --system-prompt to
+      // force agent persona. Hermes does not need this override.
+      const initialAgentSlash = null;
 
       // For non-Anthropic providers, use --system-prompt to force agent persona.
       // --append-system-prompt is too weak — GPT models ignore appended instructions.
       // --system-prompt REPLACES the default system prompt, ensuring the agent persona
       // takes priority over CLAUDE.md and other context that mentions "Claude".
       const active = providerConfig.active || 'anthropic';
-      if (active !== 'anthropic' && agent) {
+      if (active !== 'anthropic' && providerConfig.cli_command !== 'hermes' && agent) {
         // Read the agent definition file to build a strong system prompt
         const agentFile = path.join(workingDir, '.claude', 'agents', `${agent}.md`);
         let agentPrompt = '';
@@ -186,6 +248,7 @@ class ClaudeBridge {
       for (const key of SYSTEM_VARS) {
         if (process.env[key]) cleanEnv[key] = process.env[key];
       }
+      cleanEnv.PATH = this.buildCliPath(cleanEnv.PATH || process.env.PATH || '');
 
       // Ensure OPENAI_MODEL is set when using an OpenAI-based provider.
       // OpenClaude's Codex mode requires 'codexplan' or 'codexspark' aliases
@@ -226,7 +289,8 @@ class ClaudeBridge {
         workingDir,
         created: new Date(),
         active: true,
-        killTimeout: null
+        killTimeout: null,
+        cli: providerConfig.cli_command,
       };
 
       this.sessions.set(sessionId, session);
@@ -260,7 +324,11 @@ class ClaudeBridge {
           dataBuffer = dataBuffer.slice(-5000);
         }
         
-        onOutput(data);
+        // Strip OSC 11 (set background color) sequences — xterm.js
+        // doesn't handle them and renders raw escape text.
+        // eslint-disable-next-line no-control-regex
+        const cleaned = data.replace(/\x1b\]11;[^\x1b\x07]*(?:\x1b\\|\x07)/g, '');
+        if (cleaned) onOutput(cleaned);
       });
 
       claudeProcess.onExit((exitCode, signal) => {

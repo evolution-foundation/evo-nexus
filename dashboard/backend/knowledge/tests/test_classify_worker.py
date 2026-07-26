@@ -230,7 +230,7 @@ class TestGetConnections:
         result = _get_connections(db_path)
         assert result == []
 
-    def test_returns_ready_connections(self, tmp_path):
+    def test_returns_ready_connections(self, tmp_path, monkeypatch):
         _add_backend()
         import sqlite3
         from knowledge.classify_worker import _get_connections
@@ -250,6 +250,10 @@ class TestGetConnections:
         conn.commit()
         conn.close()
 
-        result = _get_connections(db_path)
+        from sqlalchemy import create_engine  # type: ignore[import-not-found]
+
+        engine = create_engine(f"sqlite:///{db_path}")
+        monkeypatch.setattr("db.engine.get_engine", lambda: engine)
+        result = _get_connections()
         assert len(result) == 2
         assert any(r["id"] == "conn1" for r in result)

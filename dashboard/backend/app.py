@@ -333,6 +333,10 @@ def auth_middleware():
     if path.startswith("/ws/"):
         return None
 
+    # Control API has its own service-token authentication and scopes.
+    if path.startswith("/api/control/v1/"):
+        return None
+
     # Public API paths (exact match or prefix match for docs/webhooks/shares)
     if (
         path in PUBLIC_PATHS
@@ -372,6 +376,7 @@ from routes.scheduler import bp as scheduler_bp
 from routes.services import bp as services_bp
 from routes.auth_routes import bp as auth_bp
 from routes.systems import bp as systems_bp
+from routes.tailscale import bp as tailscale_bp
 from routes.docs import bp as docs_bp
 from routes.mempalace import bp as mempalace_bp
 from routes.tasks import bp as tasks_bp
@@ -379,6 +384,10 @@ from routes.triggers import bp as triggers_bp
 from routes.terminal_proxy import bp as terminal_proxy_bp, register_websocket_proxy as _register_terminal_ws
 from routes.backups import bp as backups_bp
 from routes.providers import bp as providers_bp
+from routes.hermes_profiles_routes import bp as hermes_profiles_bp
+from routes.control_api import bp as control_api_bp
+from routes.runtime_runs import bp as runtime_runs_bp
+from routes.hermes_proxy import bp as hermes_proxy_bp, register_websocket_proxy as _register_hermes_ws
 from routes.settings import bp as settings_bp
 from routes.shares import bp as shares_bp
 from routes.heartbeats import bp as heartbeats_bp
@@ -428,11 +437,13 @@ app.register_blueprint(scheduler_bp)
 app.register_blueprint(services_bp)
 app.register_blueprint(auth_bp)
 app.register_blueprint(systems_bp)
+app.register_blueprint(tailscale_bp)
 app.register_blueprint(docs_bp)
 app.register_blueprint(mempalace_bp)
 app.register_blueprint(tasks_bp)
 app.register_blueprint(triggers_bp)
 app.register_blueprint(terminal_proxy_bp)
+app.register_blueprint(hermes_proxy_bp)
 
 # Mount the terminal-server WebSocket proxy on the same Sock instance the
 # rest of the app uses. Done after the blueprint is registered so route
@@ -442,8 +453,19 @@ app.register_blueprint(terminal_proxy_bp)
 # due to CORS preflight + private-network-access policies.
 try:
     from flask_sock import Sock as _Sock
+    # Serialize all writes on each simple_websocket connection so the bridge
+    # pump thread, the bridge main thread (close), and simple-websocket's
+    # internal _thread (Pong/Close) cannot interleave frame bytes — the cause
+    # of the browser-side "WebSocket: Invalid frame header" on the
+    # Hermes/terminal proxies. Must run before the Sock instance is created.
+    from ws_send_lock import install as _install_ws_send_lock
+    _install_ws_send_lock()
     _terminal_sock = _Sock(app)
     _register_terminal_ws(_terminal_sock)
+    # Reuse the same Sock instance for the Hermes chat WebSocket bridge.
+    # Without this the Hermes UI chat terminal's pty/ws/events sockets have
+    # nothing to upgrade against and close with code 1006.
+    _register_hermes_ws(_terminal_sock)
 except Exception as _exc:
     import logging as _logging
     _logging.getLogger(__name__).warning(
@@ -453,6 +475,9 @@ except Exception as _exc:
     )
 app.register_blueprint(backups_bp)
 app.register_blueprint(providers_bp)
+app.register_blueprint(hermes_profiles_bp)
+app.register_blueprint(control_api_bp)
+app.register_blueprint(runtime_runs_bp)
 app.register_blueprint(settings_bp)
 app.register_blueprint(shares_bp)
 app.register_blueprint(heartbeats_bp)
@@ -624,17 +649,14 @@ if __name__ == "__main__":
 
         try:
             now = _dt.now(_tz.utc)
-            pending = ScheduledTask.query.filter(
-                ScheduledTask.status == "pending",
-                ScheduledTask.scheduled_at <= now,
-            ).all()
-
-            for task in pending:
+            from routes.tasks import claim_due_tasks
+            for task_id in claim_due_tasks(now):
+                task = ScheduledTask.query.get(task_id)
                 log_path = WORKSPACE / "ADWs" / "logs" / "scheduler.log"
                 with open(log_path, "a") as log:  # noqa: pg-native-logs — scheduler runtime log; per-routine outputs go through routine_run_store
                     log.write(f"  [{_dt.now().strftime('%H:%M')}] Running scheduled task #{task.id}: {task.name}\n")
 
-                t = threading.Thread(target=_execute_task_with_context, args=(task.id,), daemon=True)
+                t = threading.Thread(target=_execute_task_with_context, args=(task_id,), daemon=True)
                 t.start()
         except Exception:
             pass
@@ -642,21 +664,29 @@ if __name__ == "__main__":
     def _execute_task_with_context(task_id):
         with app.app_context():
             from routes.tasks import _execute_task
-            _execute_task(task_id)
+            _execute_task(task_id, already_claimed=True)
 
     def _poll_scheduled_tasks():
         """Lightweight thread that only polls ScheduledTask — no routine scheduling."""
         import time as _time
         while True:
             with app.app_context():
+                try:
+                    from routes.tasks import recover_interrupted_work
+                    recovered = recover_interrupted_work()
+                    if any(recovered.values()):
+                        app.logger.warning("Recovered interrupted work: %s", recovered)
+                except Exception:
+                    app.logger.exception("Failed to recover interrupted work")
                 _run_pending_tasks()
             _time.sleep(30)
-
-    task_thread = threading.Thread(target=_poll_scheduled_tasks, daemon=True, name="task-poller")
-    task_thread.start()
 
     # Dev mode: EVONEXUS_DEV=1 enables Flask's auto-reloader so edits to
     # dashboard/backend/*.py take effect without a manual restart. Disabled by
     # default — production runs with a fixed process managed by systemd/docker.
     dev_mode = os.getenv("EVONEXUS_DEV") == "1"
+    if not dev_mode or os.environ.get("WERKZEUG_RUN_MAIN") == "true":
+        task_thread = threading.Thread(target=_poll_scheduled_tasks, daemon=True, name="task-poller")
+        task_thread.start()
+
     app.run(host="0.0.0.0", port=port, debug=dev_mode, use_reloader=dev_mode)

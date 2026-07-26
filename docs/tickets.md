@@ -13,7 +13,7 @@ Use a session for throwaway Q&A. Use a ticket for anything you want to resume, h
 | `id` | UUID, generated on creation |
 | `title` | One-line summary |
 | `description` | Full context, markdown |
-| `status` | `open` / `in_progress` / `waiting` / `resolved` / `closed` |
+| `status` | `open` / `in_progress` / `blocked` / `review` / `resolved` / `closed` / `archived` (`waiting` é alias legado de `blocked`) |
 | `priority` | `urgent` / `high` / `medium` / `low` |
 | `assignee_agent` | Agent slug (optional — blank means "any agent") |
 | `project_id` | Optional link to a project |
@@ -28,13 +28,15 @@ Comments and activity together form the ticket **timeline** — the full history
 ## Workflow States
 
 ```
-open  →  in_progress  →  waiting  →  resolved  →  closed
+open  →  in_progress  →  blocked/review  →  resolved  →  closed  →  archived
                  ↑____________________|
 ```
 
 - **open** — nobody has picked it up
 - **in_progress** — an agent has checked it out and is working
-- **waiting** — blocked on external input (customer reply, human decision)
+- **blocked** — bloqueado por entrada externa; `waiting` recebido por APIs legadas normaliza para este estado.
+- **review** — aguarda revisão.
+- **archived** — fechado e removido da fila operacional, mas preservado para auditoria.
 - **resolved** — work is done, pending final confirmation
 - **closed** — terminal; this is what a soft-delete becomes
 

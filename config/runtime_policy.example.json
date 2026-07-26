@@ -1,0 +1,8 @@
+{
+  "workflows": {
+    "orch-fix-defect": {"mode": "off", "cohort_percent": 0, "fallback": "claude"},
+    "orch-add-feature": {"mode": "off", "cohort_percent": 0, "fallback": "claude"},
+    "orch-refine-code": {"mode": "off", "cohort_percent": 0, "fallback": "claude"},
+    "orch-review": {"mode": "off", "cohort_percent": 0, "fallback": "claude"}
+  }
+}

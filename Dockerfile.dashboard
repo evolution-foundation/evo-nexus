@@ -7,11 +7,14 @@
 # --- Stage 1: Frontend build ---
 FROM node:22-alpine AS frontend-build
 
-WORKDIR /frontend
-COPY dashboard/frontend/package.json dashboard/frontend/package-lock.json* ./
-RUN npm install
-COPY dashboard/frontend/ ./
-RUN npm run build
+WORKDIR /dashboard
+COPY dashboard/package.json dashboard/package-lock.json ./
+COPY dashboard/frontend/package.json frontend/package.json
+COPY dashboard/packages/ui/package.json packages/ui/package.json
+RUN npm ci
+COPY dashboard/frontend/ frontend/
+COPY dashboard/packages/ui/ packages/ui/
+RUN npm run build --workspace frontend
 
 # --- Stage 2: Python backend ---
 FROM python:3.12-slim AS runtime
@@ -37,6 +40,7 @@ RUN uv venv .venv && uv sync --no-dev
 
 # Copy backend code
 COPY dashboard/backend/ dashboard/backend/
+COPY dashboard/alembic/ dashboard/alembic/
 COPY social-auth/ social-auth/
 COPY scheduler.py ./
 
@@ -49,7 +53,7 @@ COPY .claude/ .claude/
 COPY docs/ docs/
 
 # Copy built frontend from stage 1
-COPY --from=frontend-build /frontend/dist dashboard/frontend/dist
+COPY --from=frontend-build /dashboard/frontend/dist dashboard/frontend/dist
 
 # Copy pyproject.toml again (needed by app.py for version reading)
 # Already copied above, but ensure it's at workspace root
@@ -61,5 +65,5 @@ RUN mkdir -p dashboard/data
 ENV EVONEXUS_PORT=8080
 EXPOSE 8080
 
-# Run Flask app via uv
-CMD ["uv", "run", "python", "dashboard/backend/app.py"]
+# Apply schema changes before serving requests, then run Flask.
+CMD ["sh", "-c", "cd /workspace/dashboard/alembic && uv run python -m alembic upgrade head && cd /workspace && exec uv run python dashboard/backend/app.py"]

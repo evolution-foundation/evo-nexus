@@ -45,6 +45,7 @@ ADWs/routines/custom/
 
 # ── Provider config (user-specific, has API keys) ─
 config/providers.json
+config/hermes_profiles.json
 
 # ── Runtime data & logs ───────────────────
 backups/
@@ -90,6 +91,7 @@ config/routines.yaml
 config/triggers.yaml
 config/heartbeats.yaml
 config/smart-router.json
+config/runtime_policy.json
 
 # ── Claude Code session data ─────────────
 .claude/projects/

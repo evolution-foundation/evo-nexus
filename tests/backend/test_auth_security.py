@@ -21,7 +21,6 @@ def app():
     from flask_login import LoginManager
     import models as _models
 
-    importlib.reload(_models)
 
     _app = flask.Flask(__name__)
     _app.config["TESTING"] = True
