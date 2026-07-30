@@ -35,7 +35,9 @@ State transitions (DB-visible):
 
 from __future__ import annotations
 
+import fnmatch
 import logging
+import os
 import shutil
 import threading
 from datetime import datetime, timezone
@@ -196,10 +198,71 @@ _EXCLUDE_DIR_NAMES = {
 # (videos, training data dumps, DB exports).
 _MAX_FILE_BYTES = 10 * 1024 * 1024
 
+# Credential caches written by int-* skills INSIDE watched paths (OAuth token
+# stores, session files). These must never even be COPIED into the brain repo —
+# relying on the secrets_scanner to unlink them post-copy is defense in depth,
+# not the first line, and it only works when the scanner's content patterns
+# match (observed: one skill's OAuth cache was flagged and stripped every
+# cycle, while another skill's token store — same family, no matching
+# pattern — was committed to the remote).
+#
+# Deliberately NOT part of _is_policy_excluded: policy-excluded paths are
+# protected from the deletion-reconciliation pass ("never a mirror candidate,
+# so don't delete from dst"), but for credential caches deletion from dst is
+# exactly what we want — by being skipped at copy time yet NOT policy-excluded,
+# any stale copy already in the brain repo gets purged by _reconcile_deletions.
+#
+# Basenames only, kept narrow: broad globs like `token*.json` would swallow
+# legitimate content (e.g. design `tokens.json`).
+_CREDENTIAL_CACHE_BASENAME_PATTERNS = (
+    ".token_cache*",   # OAuth token caches written by integration skills
+    ".gsc-token*",     # OAuth token stores written by integration skills
+    ".credentials*",   # generic credential stores
+)
+
+
+def _is_credential_cache(name: str) -> bool:
+    """True if `name` (a basename) is a skill credential cache — never mirrored,
+    and actively purged from the brain repo if a stale copy exists there."""
+    return any(fnmatch.fnmatch(name, pat) for pat in _CREDENTIAL_CACHE_BASENAME_PATTERNS)
+
+
+def _is_policy_excluded(rel: str, is_dir: bool, size_getter=None) -> bool:
+    """True if `rel` (workspace-relative POSIX path) is never mirrored by policy.
+
+    Shared by the copytree ignore callback (deciding what NOT to copy) and by
+    the post-copy reconciliation pass (deciding what's safe to delete from the
+    brain repo). A path that's policy-excluded must never be deleted from the
+    destination just because it wasn't copied this round — it may simply be
+    outside the mirror's mandate (e.g. an oversized file, a nested .git), not
+    something the source actually removed.
+    """
+    name = rel.rsplit("/", 1)[-1]
+    if name == ".gitignore":
+        return True
+    for excl in _EXCLUDE_RELATIVE_PATHS:
+        if rel == excl or rel.startswith(excl + "/"):
+            return True
+    parts = rel.split("/")
+    # Excluded dir names anywhere in the ancestry (not just the leaf) — a
+    # directory itself matching _EXCLUDE_DIR_NAMES, or any path nested under one.
+    excluded_ancestor = parts if is_dir else parts[:-1]
+    if any(p in _EXCLUDE_DIR_NAMES for p in excluded_ancestor):
+        return True
+    if not is_dir and size_getter is not None:
+        try:
+            if size_getter() > _MAX_FILE_BYTES:
+                return True
+        except OSError:
+            pass
+    return False
+
 
 def build_ignore_callback(
     workspace: Path,
     cancel_check: "callable | None" = None,
+    record_kept: "set[str] | None" = None,
+    cancel_state: "dict | None" = None,
 ):
     """Return a shutil.copytree ignore callback wired to the exclusion rules.
 
@@ -208,11 +271,25 @@ def build_ignore_callback(
     every subsequent directory — effectively short-circuiting copytree from
     inside its own walk. That's the only cooperative cancel mechanism we have
     against shutil.copytree, which doesn't expose a per-entry hook.
+
+    When ``record_kept`` is provided, every name NOT ignored (i.e. actually
+    copied/recursed into) has its workspace-relative POSIX path added to it.
+    The mirror's deletion-reconciliation pass uses this to know exactly what
+    was copied this round.
+
+    When ``cancel_state`` is provided, it's the caller-owned dict holding the
+    ``"flag"`` the closure flips on cancel. The caller NEEDS to see that flag:
+    a cancel short-circuits the walk, so ``record_kept`` ends up PARTIAL, and
+    reconciling deletions against a partial "copied" set would read every
+    not-yet-visited file as "vanished from source" and erase it from the
+    backup. Without this the cancel is invisible from outside — copytree
+    returns normally either way.
     """
     workspace_root = workspace.resolve()
     # Mutable flag the closure shares so once a cancel fires we keep returning
     # "ignore all names" for every remaining directory without asking again.
-    cancelled = {"flag": False}
+    cancelled = cancel_state if cancel_state is not None else {"flag": False}
+    cancelled.setdefault("flag", False)
 
     def _ignore(src_dir: str, names: list[str]) -> list[str]:
         # Cancel check first so the user doesn't wait for the filter loop to
@@ -230,29 +307,208 @@ def build_ignore_callback(
 
         ignored: list[str] = []
         src_dir_path = Path(src_dir)
+        # Resolve the DIRECTORY (handles a symlinked workspace root) but never
+        # the leaf: resolving a symlinked file rewrites rel to the TARGET's path,
+        # so the link's own path never lands in `copied` and the reconciliation
+        # pass then reads it as "vanished from source" and deletes it from the
+        # backup. Caught in production on a symlinked pointer file inside a
+        # watched path: the mirror staged a delete for a file that exists on
+        # disk in every location.
+        try:
+            rel_dir = src_dir_path.resolve().relative_to(workspace_root)
+        except Exception:
+            return list(names)
         for n in names:
-            full = src_dir_path / n
-            try:
-                rel = full.resolve().relative_to(workspace_root).as_posix()
-            except Exception:
+            # Credential caches: skipped at copy time but NOT policy-excluded,
+            # so _reconcile_deletions purges any stale copy from the brain repo
+            # (see _CREDENTIAL_CACHE_BASENAME_PATTERNS for why).
+            if _is_credential_cache(n):
+                ignored.append(n)
                 continue
-            for excl in _EXCLUDE_RELATIVE_PATHS:
-                if rel == excl or rel.startswith(excl + "/"):
-                    ignored.append(n)
-                    break
-            else:
-                if full.is_dir() and n in _EXCLUDE_DIR_NAMES:
-                    ignored.append(n)
-                    continue
-                try:
-                    if full.is_file() and full.stat().st_size > _MAX_FILE_BYTES:
-                        ignored.append(n)
-                        continue
-                except OSError:
-                    pass
+            full = src_dir_path / n
+            rel = (rel_dir / n).as_posix()
+            is_dir = full.is_dir()
+            if _is_policy_excluded(
+                rel, is_dir,
+                size_getter=(lambda f=full: f.stat().st_size) if not is_dir else None,
+            ):
+                ignored.append(n)
+                continue
+            if record_kept is not None:
+                record_kept.add(rel)
         return ignored
 
     return _ignore
+
+
+# Mass-deletion circuit breaker. A reconcile pass that would erase most of a
+# watch path's backup is refused: at that scale the likeliest cause is the
+# SOURCE being unavailable (unmounted volume, half-finished checkout, a mount
+# that silently resolved to an empty dir), not someone deleting everything on
+# purpose. Both thresholds must be exceeded, so ordinary cleanups still
+# propagate — deleting the single file in a small directory is 100% of it, and
+# must not be mistaken for a catastrophe.
+#
+# This replaces an earlier guard that skipped a watch path whose source
+# directory was entirely absent. That guard was half a protection: it caught
+# the "path vanished" shape but not the "path is there and empty" shape, which
+# is what an unmounted volume usually looks like — and it left anything already
+# in the backup orphaned forever, since no later pass would ever reconsider it.
+_MASS_DELETION_MIN_FILES = 50
+_MASS_DELETION_MAX_FRACTION = 0.5
+
+
+def _is_mass_deletion(doomed: int, backup_files: int) -> bool:
+    """True if deleting `doomed` of `backup_files` is too big to do unattended."""
+    if doomed < _MASS_DELETION_MIN_FILES:
+        return False
+    if backup_files <= 0:
+        return False
+    return (doomed / backup_files) >= _MASS_DELETION_MAX_FRACTION
+
+
+def _source_may_still_exist(src_file: Path) -> bool:
+    """True unless we can POSITIVELY establish the source file is gone.
+
+    Deliberately biased: any uncertainty answers True, because the caller uses
+    this to authorise deleting backup content. A false "gone" destroys data; a
+    false "present" merely leaves a stale file for the next round.
+
+    ``Path.exists()`` is wrong here twice over. It follows symlinks, so a
+    BROKEN symlink — a file that plainly exists on disk — reports False and
+    would be erased from the backup (the mirror already lost a live symlink
+    to this class of mistake once, on a symlinked pointer file). And
+    it swallows OSError, reporting False for "unreachable" as readily as for
+    "absent". So we use ``lstat`` and treat ONLY FileNotFoundError as proof
+    of deletion; every other OSError means we cannot tell.
+
+    A directory at mode 0000 defeats even that — the lstat fails with EACCES
+    for every child. Hence the second question: is the parent directory there
+    but unreadable? Then we cannot tell either, and must not delete.
+    """
+    try:
+        src_file.lstat()
+        return True
+    except FileNotFoundError:
+        pass
+    except OSError:
+        return True
+
+    parent = src_file.parent
+    try:
+        if parent.is_dir() and not os.access(parent, os.R_OK | os.X_OK):
+            return True
+    except OSError:
+        return True
+    return False
+
+
+def _reconcile_deletions(
+    workspace: Path, brain_dir: Path, watch: str, copied: set[str],
+) -> int:
+    """Remove files from dst that vanished from src, honouring exclusions.
+
+    Runs after copytree for a single watched dir. A dst file is deleted only
+    if (a) it's under this watch path, (b) it was NOT copied this round, and
+    (c) it's not policy-excluded (_is_policy_excluded) — an excluded path was
+    never a candidate for mirroring in the first place, so its absence from
+    `copied` says nothing about whether the source still has it.
+
+    Condition (c) used to be the load-bearing one for oversized files: a file
+    mirrored back when it was small, then grown past the cap, is skipped by
+    ``_ignore`` now and would look "deleted". That case is subsumed by (b) —
+    the file is still on disk, so ``_source_may_still_exist`` keeps it — and
+    the size probe that implemented it was removed, because ``Path.is_file()``
+    raises rather than swallowing EACCES and took the whole mirror down on an
+    unreadable path.
+
+    Directories left empty by file removal are pruned in a second, bottom-up
+    pass (git doesn't track empty dirs anyway).
+    """
+    dst_root = brain_dir / watch
+    if not dst_root.is_dir():
+        return 0
+
+    # Two passes: decide everything first, THEN unlink. The mass-deletion
+    # circuit breaker below can only weigh a batch it can see whole, and a
+    # breaker that trips halfway through the unlinking has already destroyed
+    # half of what it exists to protect.
+    doomed: list[Path] = []
+    backup_files = 0
+    for path in dst_root.rglob("*"):
+        if not path.is_file():
+            continue
+        backup_files += 1
+        try:
+            rel = path.relative_to(brain_dir).as_posix()
+        except ValueError:
+            continue
+        if rel in copied:
+            continue
+        src_file = workspace / rel
+        # `copied` is only a PROXY for "still present at source" — it is built
+        # by the ignore callback, which never runs for a subtree whose
+        # directory couldn't be scanned. shutil._copytree appends that failure
+        # to its error list and moves on (CPython 3.11 shutil.py, the
+        # `except OSError` inside the entry loop), so the walk "completes"
+        # with a silent hole: every file under an unreadable directory is
+        # missing from `copied` while still existing on disk.
+        #
+        # So before deleting, ask the SOURCE directly. Absence from `copied`
+        # alone must never authorise erasing backup content — the only case
+        # where a still-present source file is deliberately purged from the
+        # backup is a credential cache, which is skipped at copy time
+        # precisely so this pass removes any stale copy.
+        if _source_may_still_exist(src_file) and not _is_credential_cache(path.name):
+            continue
+        # Reached only when the source is confirmed GONE (or is a credential
+        # cache we purge on purpose), so the size-based exclusion can't apply
+        # and no size probe is needed. That matters: `Path.is_file()` does NOT
+        # swallow EACCES (pathlib's _ignore_error covers ENOENT/ENOTDIR/EBADF/
+        # ELOOP only), so probing an unreadable path here raised
+        # PermissionError straight out of the mirror.
+        if _is_policy_excluded(rel, False):
+            continue
+        doomed.append(path)
+
+    if _is_mass_deletion(len(doomed), backup_files):
+        log.error(
+            "job_runner mirror: REFUSING to reconcile %s — %d of %d backed-up "
+            "file(s) (%.0f%%) look deleted at source. A whole watch path going "
+            "missing at once is far more often an unmounted volume, a failed "
+            "mount or an interrupted checkout than a real deletion, and the "
+            "backup is the only copy. Nothing was removed. If the removal is "
+            "genuine, purge it deliberately from the brain repo.",
+            watch, len(doomed), backup_files,
+            (100.0 * len(doomed) / backup_files) if backup_files else 0.0,
+        )
+        return 0
+
+    removed = 0
+    for path in doomed:
+        try:
+            path.unlink()
+            removed += 1
+        except OSError as exc:
+            log.warning("job_runner mirror: reconcile unlink %s failed: %s", path, exc)
+
+    # Second pass: prune directories left empty by the removals above.
+    # Deepest-first so parents become eligible after their children are gone.
+    for path in sorted(dst_root.rglob("*"), key=lambda p: len(p.parts), reverse=True):
+        if not path.is_dir():
+            continue
+        try:
+            rel = path.relative_to(brain_dir).as_posix()
+        except ValueError:
+            continue
+        if _is_policy_excluded(rel, True):
+            continue
+        try:
+            path.rmdir()  # only succeeds if empty — safe no-op otherwise
+        except OSError:
+            pass
+
+    return removed
 
 
 def _mirror_workspace(
@@ -267,6 +523,15 @@ def _mirror_workspace(
     cancel checkpoints between directories and aggressive exclusions so the
     mirror doesn't try to copy ``workspace/projects/`` (gigabytes of cloned
     git repos).
+
+    ``shutil.copytree(..., dirs_exist_ok=True)`` only ever adds/overwrites —
+    it never removes a dst file whose source counterpart was deleted, so a
+    plain copytree-based mirror only grows over time. After each watch dir's
+    copytree, ``_reconcile_deletions`` removes dst files that vanished from
+    src, while never touching anything ``_is_policy_excluded`` (oversized
+    files, nested .git/node_modules/etc., .gitignore) — those were never
+    mirrored in the first place, so their absence from this round's "copied"
+    set says nothing about whether the source still has them.
     """
     files_copied = 0
     secrets_removed = 0
@@ -280,20 +545,90 @@ def _mirror_workspace(
             cfg = BrainRepoConfig.query.filter_by(user_id=user_id).first()
             return cfg is not None and bool(cfg.cancel_requested)
 
-    _ignore = build_ignore_callback(workspace, cancel_check=_cancel_probe)
+    files_deleted = 0
 
     for watch in _WATCH_PATHS:
         _check_cancel(flask_app, user_id)
         src = workspace / watch
-        if not src.is_dir():
-            continue
         dst = brain_dir / watch
+        if not src.is_dir():
+            # Source watch path is gone (unmounted disk, typo, accidental rm).
+            # Mirroring that as "delete the whole backup for this path" would
+            # turn a transient/local mistake into permanent backup loss — so we
+            # deliberately do NOT touch dst here, only warn.
+            #
+            # The cost is accepted knowingly: content already mirrored under a
+            # watch path this install stops using stays in the backup forever,
+            # because no later pass reconsiders it. Reconciling here under the
+            # mass-deletion breaker was tried and REJECTED — the breaker needs a
+            # file count to judge, and a small watch path (one or two files) is
+            # under any sane threshold, so a momentarily unavailable mount would
+            # silently take its backup with it. There is no local signal that
+            # separates "this path is unused" from "this path is unavailable
+            # right now", and for a backup the ambiguous answer must be "keep".
+            # Purging such residue is a deliberate, operator-driven action.
+            if dst.is_dir():
+                log.warning(
+                    "job_runner mirror: source watch path %s is missing but "
+                    "brain repo still has content at %s — leaving it untouched",
+                    src, dst,
+                )
+            continue
+        copied_this_watch: set[str] = set()
+        cancel_state: dict = {"flag": False}
+        _ignore = build_ignore_callback(
+            workspace, cancel_check=_cancel_probe, record_kept=copied_this_watch,
+            cancel_state=cancel_state,
+        )
+        # Reconciliation is only sound when the walk visited the WHOLE tree —
+        # otherwise `copied_this_watch` is partial and every unvisited file
+        # looks "deleted at source". Tracked separately from the copy result
+        # because the two failure shapes differ (see below).
+        walk_complete = False
         try:
             shutil.copytree(src, dst, dirs_exist_ok=True, ignore=_ignore)
+            walk_complete = True
+        except shutil.Error as exc:
+            # copytree accumulates PER-FILE errors and raises once at the end,
+            # so the top-level walk DID finish and reconciliation can run.
+            # Note the walk finishing is NOT the same as `copied_this_watch`
+            # being complete: a subdirectory that fails to scan is recorded as
+            # an error and skipped, leaving its whole subtree out of `copied`
+            # (see _reconcile_deletions). Soundness here rests on asking the
+            # SOURCE whether each file is gone, not on `copied`.
+            #
+            # Keeping reconciliation inside this except's try meant ONE
+            # unreadable file anywhere under a watch path silently disabled
+            # deletion propagation for that ENTIRE path. Measured in a
+            # containerized deployment: a couple dozen files at mode 0600
+            # owned by root, unreadable by the container's unprivileged uid,
+            # kept already-deleted files alive in the backup indefinitely
+            # while the log showed only a warning.
+            walk_complete = True
+            log.warning(
+                "job_runner mirror: %d file(s) failed to copy under %s "
+                "(walk completed — reconciliation still runs): %s",
+                len(exc.args[0]) if exc.args and isinstance(exc.args[0], list) else 1,
+                src, exc,
+            )
+        except Exception as exc:
+            # Walk aborted early (unreadable root, disk error, …) — `copied`
+            # is untrustworthy, so skip reconciliation rather than risk
+            # deleting live backup content.
+            log.warning("job_runner mirror: copy %s failed: %s", src, exc)
+
+        if walk_complete:
             for _ in dst.rglob("*"):
                 files_copied += 1
-        except Exception as exc:
-            log.warning("job_runner mirror: copy %s failed: %s", src, exc)
+            if cancel_state["flag"]:
+                log.warning(
+                    "job_runner mirror: cancel fired mid-walk under %s — skipping "
+                    "deletion reconciliation (copied set is partial)", src,
+                )
+            else:
+                files_deleted += _reconcile_deletions(
+                    workspace, brain_dir, watch, copied_this_watch,
+                )
 
     # Secrets scan — drop any offending file before commit.
     _check_cancel(flask_app, user_id)
@@ -311,6 +646,9 @@ def _mirror_workspace(
                 log.warning("job_runner mirror: unlink %s failed: %s", path_str, exc)
     except ImportError:
         log.warning("job_runner mirror: secrets_scanner unavailable")
+
+    if files_deleted:
+        log.info("job_runner mirror: reconciled %d deletion(s) from source", files_deleted)
 
     return files_copied, secrets_removed
 
