@@ -175,6 +175,16 @@ def _load_routines_from_yaml(schedule, config_path: Path, is_plugin: bool = Fals
         # Determine slug for make-id derivation (only used for plugin routines)
         plugin_slug = config_path.parent.name if is_plugin else ""
 
+        # Sections outside this set are silently dropped: routines declared
+        # there never run and the operator gets no feedback at all.
+        _known_sections = {"daily", "weekly", "monthly"}
+        _unknown = [k for k in config if k not in _known_sections]
+        if _unknown:
+            print(f"  WARN: unread section(s) in {config_path.name}: "
+                  f"{', '.join(_unknown)} — the loader only reads "
+                  f"daily/weekly/monthly, so routines there will NEVER run",
+                  flush=True)
+
         for r in config.get("daily", []) or []:
             if not r.get("enabled", True):
                 continue
@@ -506,11 +516,11 @@ def main():
         if _reload_flag.is_set():
             _reload_flag.clear()
             ts = datetime.now().strftime("%H:%M:%S")
-            print(f"  {ts} [reload] SIGHUP received — clearing schedule and re-reading routines")
+            print(f"  {ts} [reload] SIGHUP received — clearing schedule and re-reading routines", flush=True)
             schedule.clear()
             setup_schedule()
             total = len(schedule.get_jobs())
-            print(f"  {ts} [reload] {total} routines scheduled")
+            print(f"  {ts} [reload] {total} routines scheduled", flush=True)
 
         schedule.run_pending()
         now = datetime.now()
