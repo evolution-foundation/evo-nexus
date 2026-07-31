@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """ADW: Daily Backup — Export workspace gitignored data to local ZIP (+ S3 if configured)"""
 
+import sys
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from runner import run_script, banner, summary
@@ -41,9 +42,7 @@ def main():
     banner("💾 Daily Backup", "Workspace data export | systematic")
     results = []
     results.append(run_script(_do_backup, log_name="backup", timeout=300))
-    summary(results, "Daily Backup")
-
-
+    sys.exit(1 if summary(results, "Daily Backup") else 0)
 if __name__ == "__main__":
     try:
         main()

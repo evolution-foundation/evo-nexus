@@ -479,8 +479,12 @@ def banner(title: str, subtitle: str = "", color: str = "cyan"):
     console.print(Panel(content, border_style=color, padding=(0, 2)))
 
 
-def summary(results: list, title: str = "Completed"):
-    """Show final summary in terminal."""
+def summary(results: list, title: str = "Completed") -> int:
+    """Show final summary in terminal and RETURN the failure count.
+
+    Callers use the return value as an exit code. Without it every routine
+    exits 0 even when a step failed, so the scheduler logs success and the
+    failure alert never fires."""
     total_duration = sum(r.get("duration", 0) for r in results)
     success = sum(1 for r in results if r.get("success"))
     failed = len(results) - success
@@ -499,6 +503,8 @@ def summary(results: list, title: str = "Completed"):
         border_style="green" if failed == 0 else "yellow",
         padding=(0, 2)
     ))
+
+    return failed
 
 
 def send_telegram(text: str, chat_id: str = None) -> bool:

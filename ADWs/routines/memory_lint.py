@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """ADW: Memory Lint — Weekly health check on memory/ base via Clawdia"""
 
+import sys
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from runner import run_claude, banner, summary
@@ -37,8 +38,7 @@ def main():
     banner("🔍 Memory Lint", "Health check • Contradictions • Gaps • Stale data | @clawdia")
     results = []
     results.append(run_claude(PROMPT, log_name="memory-lint", timeout=600, agent="clawdia-assistant", daily_output_kind="memory-lint"))
-    summary(results, "Memory Lint")
-
+    sys.exit(1 if summary(results, "Memory Lint") else 0)
 if __name__ == "__main__":
     try:
         main()
