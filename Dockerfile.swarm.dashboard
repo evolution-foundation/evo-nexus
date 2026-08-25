@@ -87,6 +87,17 @@ COPY --from=terminal-build /terminal/node_modules dashboard/terminal-server/node
 # Built frontend from stage 1
 COPY --from=frontend-build /frontend/dist dashboard/frontend/dist
 
+# .dockerignore excludes .git/ from the build context, so /workspace has no
+# git history baked in. claude-code/openclaude CLI sessions spawned from this
+# image use `git worktree` for agent isolation, which requires a valid HEAD —
+# without one, every worktree-isolated agent call fails with
+# "not in a git repository". An empty root commit is enough to satisfy that
+# without shipping any application source under version control.
+RUN git init /workspace \
+    && git -C /workspace config user.email "evonexus@localhost" \
+    && git -C /workspace config user.name "EvoNexus" \
+    && git -C /workspace commit --allow-empty -m "init: enable git worktree isolation for agent CLI sessions"
+
 # SQLite data dir (matches upstream Dockerfile.dashboard)
 RUN mkdir -p dashboard/data
 
