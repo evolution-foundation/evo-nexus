@@ -43,7 +43,7 @@ FROM python:3.12-slim AS runtime
 # System deps: curl for healthcheck + Node.js 22 for terminal-server binary.
 # We use NodeSource so the final image is clean (no build toolchain).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        curl ca-certificates gnupg openssl \
+        curl ca-certificates gnupg openssl git \
     && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && apt-get clean \
