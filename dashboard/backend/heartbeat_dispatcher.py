@@ -202,17 +202,23 @@ def _sync_heartbeats_to_db():
                     ),
                 )
             else:
-                # Update mutable fields but preserve enabled state set via UI
+                # The YAML is the source of truth, so `enabled` belongs in the UPDATE.
+                # It used to be omitted "to preserve the state set via the UI", but the
+                # real effect was not preservation: the column became inert. Only the
+                # initial INSERT ever set it, so editing the YAML afterwards enabled and
+                # disabled nothing. Measured on a live instance: 11 heartbeats enabled in
+                # the database against 7 in the YAML that declares them.
                 conn.execute(
                     """UPDATE heartbeats SET
                        agent=?, interval_seconds=?, max_turns=?, timeout_seconds=?,
-                       lock_timeout_seconds=?, wake_triggers=?, goal_id=?,
+                       lock_timeout_seconds=?, wake_triggers=?, enabled=?, goal_id=?,
                        required_secrets=?, decision_prompt=?, source_plugin=?,
                        updated_at=?
                        WHERE id=?""",
                     (
                         hb.agent, hb.interval_seconds, hb.max_turns, hb.timeout_seconds,
-                        hb.lock_timeout_seconds, json.dumps(hb.wake_triggers), hb.goal_id,
+                        hb.lock_timeout_seconds, json.dumps(hb.wake_triggers),
+                        int(hb.enabled), hb.goal_id,
                         json.dumps(hb.required_secrets), hb.decision_prompt,
                         hb.source_plugin, now,
                         hb.id,
