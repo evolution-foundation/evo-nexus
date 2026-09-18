@@ -10,11 +10,11 @@
     },
     "google-calendar": {
       "type": "http",
-      "url": "https://gcal.mcp.claude.com/mcp"
+      "url": "https://calendarmcp.googleapis.com/mcp/v1"
     },
     "gmail": {
       "type": "http",
-      "url": "https://gmail.mcp.claude.com/mcp"
+      "url": "https://gmailmcp.googleapis.com/mcp/v1"
     },
     "figma": {
       "type": "http",
