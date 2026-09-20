@@ -262,3 +262,51 @@ def test_empty_yaml_returns_empty_file():
         path = Path(tmpdir) / "missing.yaml"
         cfg = load_heartbeats_yaml(path)
         assert cfg.heartbeats == []
+
+
+# ---------------------------------------------------------------------------
+# lint_raw_heartbeats — pre-Pydantic raw YAML scan (Makefile `heartbeat-lint`)
+# ---------------------------------------------------------------------------
+
+def test_lint_flags_interval_missing_from_wake_triggers():
+    from heartbeat_schema import lint_raw_heartbeats
+
+    raw = {"heartbeats": [{"id": "atlas-4h", "interval_seconds": 14400, "wake_triggers": ["manual"]}]}
+    errors = lint_raw_heartbeats(raw)
+
+    assert len(errors) == 1
+    assert "atlas-4h" in errors[0]
+
+
+def test_lint_passes_when_interval_trigger_present():
+    from heartbeat_schema import lint_raw_heartbeats
+
+    raw = {"heartbeats": [{"id": "atlas-4h", "interval_seconds": 14400, "wake_triggers": ["interval"]}]}
+    assert lint_raw_heartbeats(raw) == []
+
+
+def test_lint_ignores_heartbeats_without_a_positive_interval():
+    from heartbeat_schema import lint_raw_heartbeats
+
+    raw = {"heartbeats": [{"id": "manual-only", "wake_triggers": ["manual"]}]}
+    assert lint_raw_heartbeats(raw) == []
+
+
+@pytest.mark.parametrize("raw", [
+    None,
+    [],
+    "not a mapping",
+    {"heartbeats": "not a list"},
+    {"heartbeats": [None]},
+    {"heartbeats": ["not a mapping"]},
+    {"heartbeats": [{"id": "bad-interval", "interval_seconds": "soon", "wake_triggers": ["manual"]}]},
+    {"heartbeats": [{"id": "bool-interval", "interval_seconds": True, "wake_triggers": ["manual"]}]},
+    {"heartbeats": [{"id": "bad-triggers", "interval_seconds": 3600, "wake_triggers": "manual"}]},
+])
+def test_lint_tolerates_malformed_yaml_shapes_without_raising(raw):
+    """Structurally malformed YAML must produce lint errors or an empty list,
+    never an uncaught exception that hides the real problem from the caller."""
+    from heartbeat_schema import lint_raw_heartbeats
+
+    errors = lint_raw_heartbeats(raw)
+    assert isinstance(errors, list)

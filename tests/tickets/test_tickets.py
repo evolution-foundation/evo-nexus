@@ -391,6 +391,64 @@ class TestJanitor:
             t2 = Ticket.query.get(ticket_id)
             assert t2.locked_at is not None
 
+    def test_orphan_reset_race_condition_no_false_activity(self, app):
+        """If a ticket's status changes between the janitor's orphan SELECT
+        and its conditional UPDATE (e.g. another request resolves it), the
+        janitor must not record a false status_reset activity for it."""
+        from models import db, Ticket, TicketActivity, PRIORITY_RANK
+        from datetime import datetime, timezone, timedelta
+
+        old = (datetime.now(timezone.utc) - timedelta(minutes=40)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        ticket_id = str(uuid.uuid4())
+
+        with app.app_context():
+            t = Ticket(
+                id=ticket_id,
+                title="Orphaned ticket",
+                status="in_progress",
+                priority="medium",
+                priority_rank=PRIORITY_RANK["medium"],
+                created_by="test",
+                created_at=old,
+                updated_at=old,
+                locked_at=None,
+                locked_by=None,
+            )
+            db.session.add(t)
+            db.session.commit()
+
+        with app.app_context():
+            import ticket_janitor
+
+            real_execute = db.session.execute
+            orphan_select_seen = False
+
+            def racy_execute(statement, *args, **kwargs):
+                nonlocal orphan_select_seen
+                result = real_execute(statement, *args, **kwargs)
+                sql_text = str(statement).strip()
+                if not orphan_select_seen and sql_text.startswith("SELECT") and "in_progress" in sql_text:
+                    orphan_select_seen = True
+                    # Simulate a concurrent request resolving the ticket
+                    # after the janitor's SELECT but before its UPDATE.
+                    real_execute(
+                        db.text("UPDATE tickets SET status = 'resolved' WHERE id = :id"),
+                        {"id": ticket_id},
+                    )
+                return result
+
+            db.session.execute = racy_execute
+            try:
+                ticket_janitor.release_expired_locks()
+            finally:
+                db.session.execute = real_execute
+
+            activities = TicketActivity.query.filter_by(ticket_id=ticket_id, action="status_reset").all()
+            assert activities == []
+
+            t2 = Ticket.query.get(ticket_id)
+            assert t2.status == "resolved"
+
 
 # ---------------------------------------------------------------------------
 # Integration — CRUD endpoints

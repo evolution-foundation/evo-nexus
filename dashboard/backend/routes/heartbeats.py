@@ -215,6 +215,14 @@ def update_heartbeat(heartbeat_id):
         elif hasattr(hb, field):
             setattr(hb, field, value)
 
+    # Auto-add "interval" to wake_triggers when interval_seconds > 0 and it is absent.
+    # This normalizes PATCH requests that set interval_seconds without updating wake_triggers
+    # and PATCH requests that set wake_triggers without including "interval".
+    effective_interval = data.get("interval_seconds", hb.interval_seconds) or 0
+    current_triggers = list(hb.wake_triggers_list or [])
+    if effective_interval > 0 and "interval" not in current_triggers:
+        hb.wake_triggers_list = current_triggers + ["interval"]
+
     hb.updated_at = datetime.now(timezone.utc)
     db.session.commit()
 

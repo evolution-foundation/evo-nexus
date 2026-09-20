@@ -70,6 +70,54 @@ def release_expired_locks(app=None) -> int:
             db.session.commit()
             print(f"[ticket_janitor] auto-released {released} expired lock(s)", flush=True)
 
+        # --- Reset orphaned in_progress tickets (locked_at IS NULL, no agent holding the lock) ---
+        # Grace period: 30 minutes since last update to avoid false positives on recently set tickets.
+        orphaned_rows = db.session.execute(
+            db.text(
+                "SELECT id FROM tickets "
+                "WHERE status = 'in_progress' "
+                "  AND locked_at IS NULL "
+                "  AND datetime(updated_at, '+30 minutes') < datetime('now')"
+            )
+        ).fetchall()
+
+        reset = 0
+        now_reset = _now()
+        for row in orphaned_rows:
+            ticket_id = row[0]
+
+            result = db.session.execute(
+                db.text(
+                    "UPDATE tickets SET status = 'open', updated_at = :now "
+                    "WHERE id = :id AND locked_at IS NULL AND status = 'in_progress'"
+                ),
+                {"id": ticket_id, "now": now_reset},
+            )
+
+            # A concurrent request may have locked or changed the ticket's
+            # status between the SELECT above and this UPDATE — in that case
+            # the UPDATE affects zero rows, and recording a reset activity
+            # here would be a false entry for a ticket the janitor never
+            # actually touched.
+            if result.rowcount != 1:
+                continue
+
+            activity = TicketActivity(
+                id=str(uuid.uuid4()),
+                ticket_id=ticket_id,
+                actor="system:janitor",
+                action="status_reset",
+                payload=json.dumps({"previous_status": "in_progress", "new_status": "open",
+                                    "reason": "orphaned in_progress with no lock holder"}),
+                created_at=now_reset,
+            )
+            db.session.add(activity)
+            reset += 1
+
+        if reset > 0:
+            db.session.commit()
+            print(f"[ticket_janitor] reset {reset} orphaned in_progress ticket(s) to open", flush=True)
+
     except Exception as exc:
         try:
             db.session.rollback()
