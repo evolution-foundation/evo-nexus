@@ -30,6 +30,22 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
+/* xterm.js sets `overflow-y: scroll` on .xterm-viewport without an
+   explicit overflow-x. Per the CSS Overflow spec, a non-'visible'
+   overflow-y forces the computed overflow-x to 'auto' on that same
+   element — so the viewport itself becomes an independent horizontally
+   scrollable/draggable region any time its fitted width is even
+   slightly off (e.g. right after a mobile browser's address bar
+   collapses/expands, before the next resize-triggered re-fit runs).
+   Ancestor `overflow-hidden` wrappers don't prevent this — it's the
+   viewport's own scroll affordance, not overflow spilling past it. A
+   correctly fitted terminal never needs horizontal scroll (cols already
+   match the container width; long lines wrap in the grid), so this is
+   safe to disable outright rather than clipping real content. */
+.xterm-viewport {
+  overflow-x: hidden !important;
+}
+
 /* Scrollbar styling */
 ::-webkit-scrollbar {
   width: 6px;
@@ -47,6 +63,16 @@ body {
 }
 
 /* Markdown content styling */
+.markdown-content {
+  /* Long unbroken tokens (URLs, hashes, file paths) in chat/terminal
+     markdown would otherwise force the flex ancestor wider than the
+     mobile viewport instead of wrapping — this is the actual overflow
+     source, not the scroll container itself. Excluded from <pre> below
+     since code blocks already get their own horizontal scrollbar and
+     should preserve exact formatting. */
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
 .markdown-content h1 { font-size: 1.75rem; font-weight: 700; margin: 1.5rem 0 1rem; color: var(--text-primary); }
 .markdown-content h2 { font-size: 1.375rem; font-weight: 600; margin: 1.25rem 0 0.75rem; color: var(--text-primary); }
 .markdown-content h3 { font-size: 1.125rem; font-weight: 600; margin: 1rem 0 0.5rem; color: var(--text-primary); }
@@ -66,11 +92,15 @@ body {
   border-radius: 8px;
   overflow-x: auto;
   margin: 0.75rem 0;
+  overflow-wrap: normal;
+  word-break: normal;
 }
 .markdown-content pre code {
   background: none;
   padding: 0;
   color: var(--text-secondary);
+  overflow-wrap: normal;
+  word-break: normal;
 }
 .markdown-content table {
   width: 100%;

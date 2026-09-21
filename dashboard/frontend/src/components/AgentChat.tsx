@@ -1035,7 +1035,15 @@ export default function AgentChat({ agent, sessionId, accentColor = '#00FFA7', e
       )}
 
       {/* Messages area */}
-      <div ref={scrollRef} className="flex-1 overflow-y-auto px-6 py-6 space-y-5">
+      {/* overflow-x-hidden is explicit, not incidental: setting only
+          overflow-y (auto) leaves overflow-x at its 'visible' initial
+          value, but per the CSS Overflow spec a non-'visible' overflow-y
+          forces the computed overflow-x to 'auto' too — so without this,
+          any content wider than the column (a long URL, hash, or path
+          that markdown-content's word-break rules below don't catch)
+          turned this div into its own horizontally scrollable/draggable
+          region on mobile. */}
+      <div ref={scrollRef} className="flex-1 overflow-y-auto overflow-x-hidden px-6 py-6 space-y-5">
         {messages.length === 0 && (
           <div className="flex flex-col items-center justify-center h-full text-center">
             <div
@@ -1145,7 +1153,7 @@ export default function AgentChat({ agent, sessionId, accentColor = '#00FFA7', e
                   )}
                   {/* Text bubble */}
                   {(msg as any).text && (
-                    <div className="px-4 py-2.5 rounded-2xl rounded-br-md bg-[#1a2744] border border-[#21262d] text-[#e6edf3] text-sm leading-relaxed">
+                    <div className="px-4 py-2.5 rounded-2xl rounded-br-md bg-[#1a2744] border border-[#21262d] text-[#e6edf3] text-sm leading-relaxed break-words">
                       {(msg as any).text}
                     </div>
                   )}
@@ -1162,7 +1170,7 @@ export default function AgentChat({ agent, sessionId, accentColor = '#00FFA7', e
                   {(msg as any).blocks.map((block: AssistantBlock, j: number) => (
                     <div key={j}>
                       {block.type === 'text' && (
-                        <div className="text-sm text-[#e6edf3] leading-relaxed prose-invert max-w-none">
+                        <div className="text-sm text-[#e6edf3] leading-relaxed prose-invert max-w-none break-words">
                           <Markdown>{block.text}</Markdown>
                         </div>
                       )}
