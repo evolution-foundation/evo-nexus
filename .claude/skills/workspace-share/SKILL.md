@@ -1,6 +1,9 @@
-# workspace-share
+---
+name: workspace-share
+description: Create, list, or revoke public share links for workspace files. Use when the user says "share this file", "create a public link", "share the dashboard", "compartilha esse arquivo", "list my share links", "revoke share link", or wants to share a report/HTML with someone external.
+---
 
-**Description:** Create, list, or revoke public share links for workspace files. Use when the user says "share this file", "create a public link", "share the dashboard", "compartilha esse arquivo", "list my share links", "revoke share link", or wants to share a report/HTML with someone external.
+# workspace-share
 
 ## Trigger
 
